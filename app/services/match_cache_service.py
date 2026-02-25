@@ -63,7 +63,11 @@ class MatchCacheService:
             import redis
             redis_url = os.getenv("REDIS_URL")
             if redis_url:
-                self._redis_client = redis.from_url(redis_url)
+                # Support rediss:// URLs (Upstash, etc.)
+                redis_kwargs = {}
+                if redis_url.startswith("rediss://"):
+                    redis_kwargs["ssl_cert_reqs"] = "none"
+                self._redis_client = redis.from_url(redis_url, **redis_kwargs)
                 self._redis_client.ping()
                 logger.info("Connected to Redis for match caching")
             else:

@@ -41,13 +41,17 @@ class RedisCache:
             return True
 
         try:
-            self._client = redis.from_url(
-                self._url,
-                decode_responses=False,  # We handle encoding ourselves
-                socket_timeout=5,
-                socket_connect_timeout=5,
-                retry_on_timeout=True
-            )
+            # Support rediss:// URLs (Upstash, etc.) which require ssl_cert_reqs
+            redis_kwargs = {
+                "decode_responses": False,  # We handle encoding ourselves
+                "socket_timeout": 5,
+                "socket_connect_timeout": 5,
+                "retry_on_timeout": True
+            }
+            if self._url.startswith("rediss://"):
+                redis_kwargs["ssl_cert_reqs"] = "none"
+
+            self._client = redis.from_url(self._url, **redis_kwargs)
             # Test connection
             self._client.ping()
             self._connected = True

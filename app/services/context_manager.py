@@ -148,7 +148,11 @@ class ContextManager:
         # Redis persistence
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         try:
-            self.redis = redis.from_url(self.redis_url)
+            # Support rediss:// URLs (Upstash, etc.)
+            redis_kwargs = {}
+            if self.redis_url.startswith("rediss://"):
+                redis_kwargs["ssl_cert_reqs"] = "none"
+            self.redis = redis.from_url(self.redis_url, **redis_kwargs)
             self.redis.ping()  # Test connection
             self._use_redis = True
             logger.info("Redis connected for session persistence")

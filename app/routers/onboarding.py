@@ -276,7 +276,11 @@ async def get_slots(session_id: str):
 def _get_redis_client():
     """Get Redis client for session storage."""
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    return redis.from_url(redis_url, decode_responses=True)
+    # Support rediss:// URLs (Upstash, etc.)
+    redis_kwargs = {"decode_responses": True}
+    if redis_url.startswith("rediss://"):
+        redis_kwargs["ssl_cert_reqs"] = "none"
+    return redis.from_url(redis_url, **redis_kwargs)
 
 
 class ResumeUploadResponse(BaseModel):

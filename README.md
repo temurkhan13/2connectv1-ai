@@ -1172,3 +1172,4 @@ Your backend should implement:
 - **Description**: Receives user's requirements matches (what user needs vs others' offerings)
 - **Note**: Always called after embedding generation, even with empty matches array
 ```
+# Trigger redeploy Thu, Feb 26, 2026  2:17:01 AM

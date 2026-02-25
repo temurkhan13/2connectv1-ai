@@ -1,6 +1,10 @@
 """
 Main embedding service: OpenAI embedding + pgvector storage.
 Single, reliable service for all embedding needs.
+
+Supports two modes:
+- OpenAI API embeddings (USE_OPENAI_EMBEDDINGS=true) - low memory, API-based
+- SentenceTransformers local model (default) - high memory, local inference
 """
 import logging
 import os
@@ -9,7 +13,6 @@ from dotenv import load_dotenv
 from cachetools import LRUCache
 
 from typing import Union
-from sentence_transformers import SentenceTransformer
 
 from app.adapters.postgresql import postgresql_adapter
 from app.utils.cache import cache
@@ -21,6 +24,10 @@ logger = logging.getLogger(__name__)
 # Maximum entries in local embedding cache to prevent memory leaks
 # Each 768-dim embedding is ~6KB, so 1000 entries = ~6MB max
 LOCAL_CACHE_MAX_SIZE = int(os.getenv('EMBEDDING_LOCAL_CACHE_SIZE', '1000'))
+
+# Use OpenAI API embeddings instead of local SentenceTransformers
+# Set to 'true' for low-memory deployments (e.g., Render free tier)
+USE_OPENAI_EMBEDDINGS = os.getenv('USE_OPENAI_EMBEDDINGS', 'false').lower() == 'true'
 
 # Lazy import to avoid circular dependency
 _versioning_service = None
@@ -37,7 +44,8 @@ def _get_versioning_service():
 class EmbeddingService:
     """
     Main embedding service for all embedding needs:
-    - OpenAI embeddings (via API)
+    - OpenAI embeddings (via API) when USE_OPENAI_EMBEDDINGS=true
+    - SentenceTransformers local model (default)
     - pgvector for persistent storage
     - Single, reliable service for all users
     """
@@ -45,16 +53,31 @@ class EmbeddingService:
     def __init__(self):
         # Read similarity threshold and model config from environment
         self.similarity_threshold = float(os.getenv('SIMILARITY_THRESHOLD', '0.7'))
-        self.model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-mpnet-base-v2')
-        self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
-        self.st_model = SentenceTransformer(self.model_name.replace('sentence-transformers/', ''))
-        try:
-            dim = getattr(self.st_model, 'get_sentence_embedding_dimension', None)
-            if callable(dim):
-                self.embedding_dimension = int(dim())
-        except Exception:
-            pass
-        logger.info(f"Using SentenceTransformers model: {self.model_name} with dimension: {self.embedding_dimension}")
+        self.use_openai = USE_OPENAI_EMBEDDINGS
+
+        if self.use_openai:
+            # OpenAI API mode - no local model loading
+            from openai import OpenAI
+            self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+            self.model_name = os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
+            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
+            self.st_model = None
+            logger.info(f"Using OpenAI embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
+        else:
+            # SentenceTransformers local mode
+            from sentence_transformers import SentenceTransformer
+            self.openai_client = None
+            self.model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-mpnet-base-v2')
+            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
+            self.st_model = SentenceTransformer(self.model_name.replace('sentence-transformers/', ''))
+            try:
+                dim = getattr(self.st_model, 'get_sentence_embedding_dimension', None)
+                if callable(dim):
+                    self.embedding_dimension = int(dim())
+            except Exception:
+                pass
+            logger.info(f"Using SentenceTransformers model: {self.model_name} with dimension: {self.embedding_dimension}")
+
         # Use Redis cache with LRU in-memory fallback (bounded to prevent memory leaks)
         self._local_cache: LRUCache = LRUCache(maxsize=LOCAL_CACHE_MAX_SIZE)
         self._cache_hits = 0
@@ -62,7 +85,7 @@ class EmbeddingService:
 
     def generate_embedding(self, text: str) -> Optional[List[float]]:
         """
-        Generate embedding using SentenceTransformers.
+        Generate embedding using OpenAI API or SentenceTransformers.
         Uses Redis cache for persistence with in-memory fallback.
 
         Args:
@@ -97,9 +120,18 @@ class EmbeddingService:
 
             # Generate new embedding
             try:
-                embedding_vector = self.st_model.encode(cleaned_text).tolist()
+                if self.use_openai:
+                    # OpenAI API embeddings
+                    response = self.openai_client.embeddings.create(
+                        model=self.model_name,
+                        input=cleaned_text
+                    )
+                    embedding_vector = response.data[0].embedding
+                else:
+                    # SentenceTransformers local model
+                    embedding_vector = self.st_model.encode(cleaned_text).tolist()
             except Exception as e:
-                logger.error(f"Failed to generate SentenceTransformers embedding: {str(e)}")
+                logger.error(f"Failed to generate embedding: {str(e)}")
                 return None
 
             if embedding_vector:
@@ -193,8 +225,9 @@ class EmbeddingService:
             versioning = _get_versioning_service()
             version_stats = versioning.get_version_stats() if versioning else {}
 
+            method = 'OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector'
             return {
-                'method': 'SentenceTransformers + pgvector',
+                'method': method,
                 'model': self.model_name,
                 'dimension': self.embedding_dimension,
                 'total_embeddings': len(all_embeddings),
@@ -211,13 +244,15 @@ class EmbeddingService:
                     'hit_rate_percent': round(hit_rate, 2)
                 },
                 'versioning': version_stats,
-                'cpu_only': True,
+                'cpu_only': not self.use_openai,
+                'api_based': self.use_openai,
                 'reliable': True
             }
         except Exception as e:
             logger.error(f"Error getting stats: {str(e)}")
+            method = 'OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector'
             return {
-                'method': 'SentenceTransformers + pgvector',
+                'method': method,
                 'error': str(e)
             }
         

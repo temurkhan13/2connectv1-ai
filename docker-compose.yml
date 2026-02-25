@@ -1,0 +1,221 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: reciprocity-postgres
+    environment:
+      POSTGRES_USER: reciprocity_user
+      POSTGRES_PASSWORD: reciprocity_pass
+      POSTGRES_DB: reciprocity_ai
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - reciprocity-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reciprocity_user -d reciprocity_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: reciprocity-redis
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - reciprocity-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  localstack:
+    container_name: reciprocity-localstack
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=dynamodb,s3
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - DYNAMODB_SHARE_DB=1
+      - DEFAULT_REGION=us-east-1
+      - PERSISTENCE=1
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - localstack_data:/var/lib/localstack
+    networks:
+      - reciprocity-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reciprocity-ai-service
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app  # Dev volume for code hot reload
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      # Application
+      APP_NAME: "Reciprocity AI"
+      APP_VERSION: "1.0.0"
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      DEBUG: "true"
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:3001"]'
+      ALLOWED_HOSTS: '["localhost","127.0.0.1","host.docker.internal"]'
+
+      # API Security
+      API_KEY: dev-api-key
+      BACKEND_API_KEY: dev-webhook-key
+      BACKEND_WEBHOOK_URL: http://host.docker.internal:3000/webhooks
+
+      # OpenAI
+      OPENAI_API_KEY: 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
+      OPENAI_MODEL: gpt-4.1-mini
+
+      # PostgreSQL (connect to db service)
+      DATABASE_URL: postgresql://reciprocity_user:reciprocity_pass@db:5432/reciprocity_ai
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: reciprocity_user
+      POSTGRES_PASSWORD: reciprocity_pass
+      POSTGRES_DB: reciprocity_ai
+
+      # Redis (connect to redis service)
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CACHE_ENABLED: "true"
+      CACHE_TTL_SECONDS: "86400"
+      EMBEDDING_CACHE_TTL: "604800"
+
+      # DynamoDB (connect to localstack service)
+      DYNAMO_PROFILE_TABLE_NAME: reciprocity-profiles
+      DYNAMO_QUESTIONS_TABLE_NAME: reciprocity-questions
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+
+      # Embeddings
+      EMBEDDING_MODEL: sentence-transformers/all-mpnet-base-v2
+      EMBEDDING_DIMENSION: "768"
+      SIMILARITY_THRESHOLD: "0.5"
+
+      # LLM Settings
+      LLM_TEMPERATURE: "0.7"
+      RECIPROCITY_BACKEND_URL: http://host.docker.internal:3000
+      AI_SERVICE_WEBHOOK_API_KEY: dev-webhook-key
+
+      # Multi-Vector Matching (6-dimension weighted)
+      USE_MULTI_VECTOR_MATCHING: "true"
+
+      # Backend Database (for validating matched user IDs exist in backend)
+      RECIPROCITY_BACKEND_DB_URL: postgresql://postgres:postgres@host.docker.internal:5432/reciprocity_db
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    networks:
+      - reciprocity-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reciprocity-celery-worker
+    command: celery -A app.core.celery worker --loglevel=INFO --concurrency=2
+    volumes:
+      - ./app:/app/app  # Dev volume for code hot reload
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      # Same environment as ai-service
+      APP_NAME: "Reciprocity AI Worker"
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      DEBUG: "true"
+
+      # OpenAI
+      OPENAI_API_KEY: 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
+      OPENAI_MODEL: gpt-4.1-mini
+
+      # PostgreSQL (connect to db service)
+      DATABASE_URL: postgresql://reciprocity_user:reciprocity_pass@db:5432/reciprocity_ai
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: reciprocity_user
+      POSTGRES_PASSWORD: reciprocity_pass
+      POSTGRES_DB: reciprocity_ai
+
+      # Redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+
+      # DynamoDB
+      DYNAMO_PROFILE_TABLE_NAME: reciprocity-profiles
+      DYNAMO_QUESTIONS_TABLE_NAME: reciprocity-questions
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_ENDPOINT_URL: http://localstack:4566
+
+      # Embeddings
+      EMBEDDING_MODEL: sentence-transformers/all-mpnet-base-v2
+      EMBEDDING_DIMENSION: "768"
+      SIMILARITY_THRESHOLD: "0.5"
+
+      # LLM Settings
+      LLM_TEMPERATURE: "0.7"
+      RECIPROCITY_BACKEND_URL: http://host.docker.internal:3000
+      AI_SERVICE_WEBHOOK_API_KEY: dev-webhook-key
+
+      # Multi-Vector Matching (6-dimension weighted)
+      USE_MULTI_VECTOR_MATCHING: "true"
+
+      # Backend Database (for validating matched user IDs exist in backend)
+      RECIPROCITY_BACKEND_DB_URL: postgresql://postgres:postgres@host.docker.internal:5432/reciprocity_db
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    networks:
+      - reciprocity-network
+
+volumes:
+  localstack_data:
+    driver: local
+  pgdata:
+    driver: local
+  redis_data:
+    driver: local
+  huggingface_cache:
+    driver: local
+
+networks:
+  reciprocity-network:
+    driver: bridge

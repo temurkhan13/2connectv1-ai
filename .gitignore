@@ -1,0 +1,84 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+.coverage
+.tox/
+.nox/
+.pytest_cache/
+htmlcov/
+coverage.xml
+*.cover
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Local config & secrets
+.env.local
+.env.*
+secrets.json
+
+# FastAPI / Uvicorn reload artifacts
+*.db-journal
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# DynamoDB local
+.dynamodb/
+
+# OpenAI / Pinecone / API keys (ensure env usage only)
+apikeys.json
+
+# Cache & temp
+.cache/
+*.tmp
+*.temp
+*.bak
+
+# LocalStack data
+localstack-data/

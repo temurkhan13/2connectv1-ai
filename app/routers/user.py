@@ -1,0 +1,285 @@
+"""
+User-related FastAPI routes.
+"""
+import logging
+from functools import lru_cache
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.responses import JSONResponse
+
+from app.schemas.user import (
+    UserRegistrationRequest,
+    UserRegistrationResponse,
+    UserProfileResponse,
+    ApproveSummaryRequest,
+    FeedbackRequest,
+    InitiateAIChatRequest,
+    InitiateAIChatResponse
+)
+from app.schemas.common import ErrorResponse
+from app.services.user_service import UserService
+from app.services.feedback_service import FeedbackService
+from app.workers.embedding_processing import generate_embeddings_task
+from app.workers.ai_chat_processing import simulate_ai_chat_task
+from app.workers.scheduled_matching import scheduled_matchmaking_task
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+@lru_cache()
+def get_user_service() -> UserService:
+    """Dependency injection for UserService with caching."""
+    return UserService()
+
+
+@lru_cache()
+def get_feedback_service() -> FeedbackService:
+    """Dependency injection for FeedbackService with caching."""
+    return FeedbackService()
+
+
+@router.post("/user/register")
+async def register_user(
+    request: UserRegistrationRequest,
+    user_service: UserService = Depends(get_user_service)
+):
+    """Register a new user."""
+    result = user_service.register_user(request)
+
+    if result.success:
+        return {
+            "code": 200,
+            "message": "success",
+            "result": True
+        }
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": 500,
+                "message": result.message,
+                "result": False
+            }
+        )
+@router.get("/user/run-scheduled-matchmaking")
+async def run_scheduled_matchmaking():
+    """Run scheduled matchmaking worker on demand (GET only)."""
+    try:
+        logger.info("Running scheduled matchmaking on demand")
+        task_result = scheduled_matchmaking_task.apply_async()
+        logger.info(f"Scheduled matchmaking task queued with task_id: {task_result.id}")
+        return {
+            "code": 200,
+            "message": "success",
+            "result": True
+        }
+    except Exception as e:
+        logger.error(f"Error queuing scheduled matchmaking: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": 500,
+                "message": str(e),
+                "result": False
+            }
+        )
+
+@router.get("/user/{user_id}", response_model=UserProfileResponse)
+async def get_user_profile(
+    user_id: str,
+    user_service: UserService = Depends(get_user_service)
+):
+    """Get user profile by ID."""
+    profile = user_service.get_user_profile(user_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    return profile
+
+
+@router.post("/user/approve-summary")
+async def approve_summary(request: ApproveSummaryRequest):
+    """
+    Trigger embeddings generation and matching for a user.
+    
+    This endpoint should be called after the user approves their persona summary.
+    It triggers the embeddings generation task which will:
+    1. Generate embeddings from the user's persona (requirements and offerings)
+    2. Store embeddings in PostgreSQL
+    3. Find matches and send notification to backend
+    
+    The task runs asynchronously in the background.
+    """
+    try:
+        user_id = request.user_id
+        logger.info(f"Triggering embeddings generation for user {user_id}")
+        
+        # Trigger the embeddings generation task asynchronously
+        task_result = generate_embeddings_task.apply_async(args=[user_id])
+        
+        logger.info(f"Embeddings generation task queued for user {user_id} with task_id: {task_result.id}")
+        
+        return {
+            "code": 200,
+            "message": "success",
+            "result": True
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering embeddings generation for user {request.user_id}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": 500,
+                "message": str(e),
+                "result": False
+            }
+        )
+
+
+@router.post("/user/feedback")
+async def submit_feedback(
+    data: FeedbackRequest,
+    feedback_service: FeedbackService = Depends(get_feedback_service)
+):
+    """
+    Endpoint: Accepts feedback for a specific match/chat.
+    Saves feedback and updates user's persona vector using feedback and match context.
+
+    This endpoint allows users to provide feedback on matches or chats, which is used to
+    refine their persona embeddings and improve future matching results.
+    """
+    try:
+        result = feedback_service.process_feedback(data)
+
+        if result["success"]:
+            return {
+                "code": 200,
+                "message": "success",
+                "result": True
+            }
+        else:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "code": 500,
+                    "message": result["message"],
+                    "result": False
+                }
+            )
+    except Exception as e:
+        logger.error(f"Error processing feedback for user {data.user_id}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": 500,
+                "message": str(e),
+                "result": False
+            }
+        )
+
+
+@router.post("/user/initiate-ai-chat", response_model=InitiateAIChatResponse)
+async def initiate_ai_chat(request: InitiateAIChatRequest):
+    """
+    Initiate AI-to-AI chat between two users.
+    
+    This endpoint triggers an asynchronous background task that:
+    1. Simulates a full conversation between two user personas
+    2. Stores the conversation in DynamoDB
+    3. Sends a webhook notification to the backend with the results
+    
+    The endpoint immediately returns success, and the actual chat simulation
+    happens in the background. The results are sent via webhook when ready.
+    """
+    try:
+        logger.info(f"Initiating AI chat for match {request.match_id}")
+        logger.info(f"Initiator: {request.initiator_id}, Responder: {request.responder_id}")
+        
+        # Trigger the AI chat simulation task asynchronously
+        task_result = simulate_ai_chat_task.apply_async(
+            args=[
+                request.initiator_id,
+                request.responder_id,
+                request.match_id,
+                request.template
+            ]
+        )
+        
+        logger.info(f"AI chat task queued for match {request.match_id} with task_id: {task_result.id}")
+        
+        return InitiateAIChatResponse(
+            code=200,
+            message="success",
+            result=True
+        )
+        
+    except Exception as e:
+        logger.error(f"Error initiating AI chat for match {request.match_id}: {str(e)}")
+        return InitiateAIChatResponse(
+            code=500,
+            message=str(e),
+            result=False
+        )
+
+
+@router.post("/user/regenerate-persona")
+async def regenerate_persona(
+    request: ApproveSummaryRequest,  # Reuse - just needs user_id
+    user_service: UserService = Depends(get_user_service)
+):
+    """
+    Regenerate persona for an existing user.
+
+    This endpoint:
+    1. Retrieves the user's existing Q&A data from DynamoDB
+    2. Regenerates the persona using the updated AI prompts
+    3. Updates the user's persona in DynamoDB
+    4. Triggers new embeddings generation
+
+    Use this when:
+    - User wants to refresh their AI summary
+    - Code fixes require re-running persona generation
+    - User has updated their onboarding answers
+    """
+    from app.workers.persona_processing import generate_persona_task
+    from app.adapters.dynamodb import UserProfile
+
+    try:
+        user_id = request.user_id
+        logger.info(f"Regenerating persona for user {user_id}")
+
+        # Verify user exists
+        try:
+            user_profile = UserProfile.get(user_id)
+        except UserProfile.DoesNotExist:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Reset persona status to trigger regeneration
+        user_profile.update(actions=[UserProfile.persona_status.set('pending')])
+
+        # Trigger persona regeneration task
+        task_result = generate_persona_task.apply_async(args=[user_id, True])
+
+        logger.info(f"Persona regeneration task queued for user {user_id} with task_id: {task_result.id}")
+
+        return {
+            "code": 200,
+            "message": "Persona regeneration started",
+            "result": True,
+            "task_id": task_result.id
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error regenerating persona for user {request.user_id}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": 500,
+                "message": str(e),
+                "result": False
+            }
+        )
+

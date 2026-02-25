@@ -13,7 +13,17 @@ logger = logging.getLogger(__name__)
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint at /health."""
+    return HealthResponse(
+        success=True,
+        data={"status": "healthy"},
+        message="OK"
+    )
+
+
+@router.get("/api/v1/health", response_model=HealthResponse)
+async def health_check_v1():
+    """Health check endpoint at /api/v1/health (for Render)."""
     return HealthResponse(
         success=True,
         data={"status": "healthy"},

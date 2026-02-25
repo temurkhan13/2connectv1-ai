@@ -1,0 +1,82 @@
+services:
+  - type: web
+    name: 2connectv1-ai
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: APP_NAME
+        value: 2connectv1-ai
+      - key: APP_VERSION
+        value: "1.0.0"
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PORT
+        value: "8000"
+      - key: HOST
+        value: "0.0.0.0"
+      # CORS
+      - key: CORS_ORIGINS
+        value: '["https://2connectv1-frontend.vercel.app","https://2connectv1-backend.onrender.com"]'
+      - key: ALLOWED_HOSTS
+        value: '["*"]'
+      # Redis - Upstash
+      - key: REDIS_URL
+        sync: false
+      # DynamoDB - AWS
+      - key: DYNAMO_PROFILE_TABLE_NAME
+        value: staging-user-profiles
+      - key: DYNAMO_MATCHES_TABLE_NAME
+        value: staging-user-matches
+      - key: DYNAMO_FEEDBACK_TABLE_NAME
+        value: staging-user-feedback
+      - key: DYNAMO_CHAT_TABLE_NAME
+        value: staging-ai-chat-records
+      - key: DYNAMO_NOTIFIED_PAIRS_TABLE_NAME
+        value: staging-notified-match-pairs
+      # AWS
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_DEFAULT_REGION
+        value: eu-west-2
+      # OpenAI
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: LLM_TEMPERATURE
+        value: "1"
+      # Embeddings
+      - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: EMBEDDING_DIMENSION
+        value: "1536"
+      - key: SIMILARITY_THRESHOLD
+        value: "0.7"
+      # Matching
+      - key: MAX_MATCHES_PER_CYCLE
+        value: "10"
+      - key: SCHEDULED_RECALCULATE_MATCHES
+        value: "true"
+      - key: SIMILARITY_UPPER_THRESHOLD
+        value: "0.95"
+      # Feedback
+      - key: FEEDBACK_TARGET_PORTION
+        value: requirements
+      # PostgreSQL - Supabase (AI DB with pgvector)
+      - key: DATABASE_URL
+        sync: false
+      # Backend Integration
+      - key: RECIPROCITY_BACKEND_URL
+        value: https://2connectv1-backend.onrender.com/api
+      # API Security
+      - key: API_KEY
+        generateValue: true
+      - key: WEBHOOK_API_KEY
+        sync: false

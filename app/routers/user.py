@@ -283,3 +283,103 @@ async def regenerate_persona(
             }
         )
 
+
+@router.post("/admin/import-profile")
+async def import_profile(request: dict):
+    """
+    Admin endpoint to directly import a user profile with persona.
+    Used for migrating data from LocalStack to production.
+
+    Expects:
+    {
+        "user_id": "uuid",
+        "profile": {"raw_questions": [...], ...},
+        "persona": {"name": "...", "archetype": "...", ...},
+        "persona_status": "completed"
+    }
+    """
+    from app.adapters.dynamodb import UserProfile, PersonaData, ProfileData, QuestionAnswer
+    from datetime import datetime
+    import os
+
+    # Simple API key check for admin endpoints
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    try:
+        user_id = request["user_id"]
+        profile_data = request.get("profile", {})
+        persona_data = request.get("persona", {})
+
+        # Check if user already exists
+        try:
+            existing = UserProfile.get(user_id)
+            logger.info(f"User {user_id} already exists, updating...")
+        except UserProfile.DoesNotExist:
+            existing = None
+
+        now = datetime.utcnow()
+
+        # Build profile
+        profile = ProfileData(
+            resume_link=profile_data.get("resume_link"),
+            raw_questions=[],
+            created_at=now,
+            updated_at=now
+        )
+        for q in profile_data.get("raw_questions", []):
+            profile.raw_questions.append(
+                QuestionAnswer(prompt=q.get("prompt", ""), answer=q.get("answer", ""))
+            )
+
+        # Build persona
+        persona = PersonaData(
+            name=persona_data.get("name"),
+            archetype=persona_data.get("archetype"),
+            designation=persona_data.get("designation"),
+            experience=persona_data.get("experience"),
+            focus=persona_data.get("focus"),
+            profile_essence=persona_data.get("profile_essence"),
+            investment_philosophy=persona_data.get("investment_philosophy"),
+            strategy=persona_data.get("strategy"),
+            what_theyre_looking_for=persona_data.get("what_theyre_looking_for"),
+            engagement_style=persona_data.get("engagement_style"),
+            requirements=persona_data.get("requirements"),
+            offerings=persona_data.get("offerings"),
+            user_type=persona_data.get("user_type"),
+            industry=persona_data.get("industry"),
+            generated_at=now
+        )
+
+        if existing:
+            # Update existing
+            existing.profile = profile
+            existing.persona = persona
+            existing.persona_status = request.get("persona_status", "completed")
+            existing.needs_matchmaking = "true"
+            existing.save()
+        else:
+            # Create new
+            user_profile = UserProfile(
+                user_id=user_id,
+                profile=profile,
+                persona=persona,
+                processing_status="completed",
+                persona_status=request.get("persona_status", "completed"),
+                needs_matchmaking="true"
+            )
+            user_profile.save()
+
+        logger.info(f"Imported profile for user {user_id}")
+        return {"code": 200, "message": "Profile imported", "result": True, "user_id": user_id}
+
+    except KeyError as e:
+        raise HTTPException(status_code=400, detail=f"Missing required field: {e}")
+    except Exception as e:
+        logger.error(f"Error importing profile: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"code": 500, "message": str(e), "result": False}
+        )
+

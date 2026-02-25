@@ -49,7 +49,7 @@ class RedisCache:
                 "retry_on_timeout": True
             }
             if self._url.startswith("rediss://"):
-                redis_kwargs["ssl_cert_reqs"] = "none"
+                redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
 
             self._client = redis.from_url(self._url, **redis_kwargs)
             # Test connection

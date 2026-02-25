@@ -279,7 +279,7 @@ def _get_redis_client():
     # Support rediss:// URLs (Upstash, etc.)
     redis_kwargs = {"decode_responses": True}
     if redis_url.startswith("rediss://"):
-        redis_kwargs["ssl_cert_reqs"] = "none"
+        redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
     return redis.from_url(redis_url, **redis_kwargs)
 
 

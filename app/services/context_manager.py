@@ -151,7 +151,7 @@ class ContextManager:
             # Support rediss:// URLs (Upstash, etc.)
             redis_kwargs = {}
             if self.redis_url.startswith("rediss://"):
-                redis_kwargs["ssl_cert_reqs"] = "none"
+                redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
             self.redis = redis.from_url(self.redis_url, **redis_kwargs)
             self.redis.ping()  # Test connection
             self._use_redis = True

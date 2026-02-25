@@ -1,6 +1,29 @@
 """
 FastAPI application main module.
 """
+import os
+import json
+import logging
+
+# Initialize Sentry BEFORE importing anything else (for best error capture)
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
+
+sentry_dsn = os.getenv('SENTRY_DSN')
+if sentry_dsn:
+    sentry_sdk.init(
+        dsn=sentry_dsn,
+        integrations=[
+            FastApiIntegration(),
+            StarletteIntegration(),
+        ],
+        traces_sample_rate=0.1,  # 10% of requests traced
+        environment=os.getenv('ENVIRONMENT', 'development'),
+        send_default_pii=False,
+    )
+    logging.info("Sentry initialized for error monitoring")
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
@@ -17,9 +40,6 @@ from app.routers.templates import router as templates_router
 from app.middleware.auth import APIKeyMiddleware
 from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from dotenv import load_dotenv
-import os
-import json
-import logging
 
 dotenv_override = os.getenv("DOTENV_OVERRIDE", "false").lower() == "true"
 load_dotenv(override=dotenv_override)

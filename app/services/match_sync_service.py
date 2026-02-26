@@ -168,7 +168,8 @@ class MatchSyncService:
             return {'success': True, 'message': 'No matches to sync', 'count': 0}
 
         # Send to backend webhook
-        endpoint = f"{self.backend_url}/api/v1/webhooks/matches-ready"
+        # Note: backend_url already includes /api/v1 suffix
+        endpoint = f"{self.backend_url}/webhooks/matches-ready"
         headers = {
             'Content-Type': 'application/json',
             'x-api-key': self.api_key,

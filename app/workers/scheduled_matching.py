@@ -216,7 +216,8 @@ def scheduled_matchmaking_task(self):
         
         if not users:
             notification_service = NotificationService()
-            endpoint = f"{notification_service.backend_url}/api/v1/webhooks/matches-ready"
+            # Note: backend_url already includes /api/v1 suffix
+            endpoint = f"{notification_service.backend_url}/webhooks/matches-ready"
             headers = notification_service._get_headers()
             payload = {"batch_id": batch_id, "match_pairs": []}
             logger.info(f"Sending batch matches notification to {endpoint} for batch {batch_id}")

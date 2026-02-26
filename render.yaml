@@ -21,7 +21,7 @@ services:
         value: "0.0.0.0"
       # CORS
       - key: CORS_ORIGINS
-        value: '["https://2connectv1-frontend.vercel.app","https://2connectv1-backend.onrender.com"]'
+        value: '["https://2connectv1-frontend.vercel.app","https://twoconnectv1-backend.onrender.com","https://twoconnectv1-frontend.vercel.app"]'
       - key: ALLOWED_HOSTS
         value: '["*"]'
       # Redis - Upstash
@@ -74,7 +74,7 @@ services:
         sync: false
       # Backend Integration
       - key: RECIPROCITY_BACKEND_URL
-        value: https://2connectv1-backend.onrender.com/api
+        value: https://twoconnectv1-backend.onrender.com/api/v1
       # API Security
       - key: API_KEY
         generateValue: true

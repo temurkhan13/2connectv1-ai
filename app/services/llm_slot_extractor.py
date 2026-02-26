@@ -136,6 +136,66 @@ SLOT_DEFINITIONS = {
         "description": "Equity split expectations for co-founder",
         "options": ["Equal split (50/50)", "Majority for existing founder", "Based on contribution", "Open to discuss", "Vesting with cliff"],
         "extraction_hint": "Extract from mentions of '60/40 split', 'equal equity', 'vesting'"
+    },
+    # INVESTOR-specific slots - MUST match SlotSchema for progress tracking
+    "portfolio_size": {
+        "description": "Number of current investments in portfolio",
+        "type": "number",
+        "extraction_hint": "Extract numbers: '20 companies', 'dozen investments', 'portfolio of 50'"
+    },
+    "investment_thesis": {
+        "description": "Investment philosophy and focus areas",
+        "type": "text",
+        "extraction_hint": "Extract their investment approach, what they look for, why they invest in certain companies"
+    },
+    # FOUNDER-specific slots - MUST match SlotSchema for progress tracking
+    "company_stage": {
+        "description": "Current stage of the startup",
+        "options": ["Idea", "MVP", "Product-Market Fit", "Scaling", "Established"],
+        "extraction_hint": "Map stages: 'just an idea' → Idea, 'working prototype' → MVP, 'customers paying' → Product-Market Fit"
+    },
+    "team_size": {
+        "description": "Current team size",
+        "type": "number",
+        "extraction_hint": "Extract numbers: 'team of 5', 'solo founder', '12 employees'"
+    },
+    # HIRING-specific slots - MUST match SlotSchema for progress tracking
+    "role_type": {
+        "description": "Type of role being hired for",
+        "options": ["Engineering/Technical", "Product Management", "Sales/Business Development", "Marketing/Growth", "Operations", "Executive/C-Suite", "Finance/Legal", "Other"],
+        "extraction_hint": "Map role types: 'developer' → Engineering/Technical, 'product manager' → Product Management, 'sales' → Sales/Business Development"
+    },
+    "seniority_level": {
+        "description": "Seniority level for the role",
+        "options": ["Junior/Entry-level", "Mid-level", "Senior", "Lead/Staff", "Director", "VP/Executive", "C-Suite"],
+        "extraction_hint": "Extract seniority: 'junior dev' → Junior/Entry-level, 'senior engineer' → Senior, 'CTO' → C-Suite"
+    },
+    "remote_preference": {
+        "description": "Work location preference",
+        "options": ["Fully Remote", "Hybrid", "On-site Only", "Flexible"],
+        "extraction_hint": "Extract work preferences: 'remote-first' → Fully Remote, 'in office' → On-site Only"
+    },
+    "compensation_range": {
+        "description": "Budget or compensation expectations for the role",
+        "type": "range",
+        "extraction_hint": "Extract salary ranges: '$100K-$150K', '£80K', 'competitive package'"
+    },
+    # MENTORSHIP-specific slots - MUST match SlotSchema for progress tracking
+    "mentorship_areas": {
+        "description": "Areas where mentorship is sought or offered",
+        "type": "multi_select",
+        "options": ["Leadership & Management", "Technical/Engineering", "Go-to-Market Strategy", "Fundraising", "Hiring & Team Building", "Product Development", "Sales & Business Development", "Marketing & Growth", "Operations & Scaling", "Career Development"],
+        "extraction_hint": "Map mentorship areas from their interests or expertise"
+    },
+    "mentorship_format": {
+        "description": "Preferred mentorship format",
+        "options": ["Weekly calls", "Bi-weekly calls", "Monthly sessions", "Async messaging", "Ad-hoc as needed"],
+        "extraction_hint": "Extract from meeting preferences: 'regular calls' → Weekly calls, 'flexible' → Ad-hoc as needed"
+    },
+    "mentorship_commitment": {
+        "description": "Hours per month available for mentorship",
+        "options": ["1-2 hours/month", "3-5 hours/month", "5-10 hours/month", "10+ hours/month", "Flexible"],
+        "extraction_hint": "Extract time commitment: 'few hours a month' → 3-5 hours/month"
     }
 }
 

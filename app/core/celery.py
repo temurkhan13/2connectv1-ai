@@ -44,6 +44,9 @@ celery_app.conf.update(
     task_soft_time_limit=25 * 60,  # 25 minutes
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
+    # Run tasks synchronously if no worker (staging/free tier)
+    task_always_eager=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'false').lower() == 'true',
+    task_eager_propagates=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'false').lower() == 'true',
 )
 
 # Celery Beat Schedule (Periodic Tasks)

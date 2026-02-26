@@ -27,6 +27,9 @@ services:
       # Redis - Upstash
       - key: REDIS_URL
         sync: false
+      # Celery - run tasks synchronously (no worker on free tier)
+      - key: CELERY_TASK_ALWAYS_EAGER
+        value: "true"
       # DynamoDB - AWS
       - key: DYNAMO_PROFILE_TABLE_NAME
         value: staging-user-profiles

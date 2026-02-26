@@ -284,6 +284,50 @@ async def regenerate_persona(
         )
 
 
+@router.post("/admin/init-tables")
+async def init_tables(request: dict):
+    """
+    Admin endpoint to create missing DynamoDB tables.
+    Should be called once during initial deployment.
+    """
+    from app.adapters.dynamodb import UserProfile, UserMatches
+    import os
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    results = {}
+
+    # Create UserMatches table if it doesn't exist
+    try:
+        if not UserMatches.exists():
+            UserMatches.create_table(
+                read_capacity_units=5,
+                write_capacity_units=5,
+                wait=True,
+                billing_mode='PAY_PER_REQUEST'
+            )
+            results['user_matches'] = 'created'
+            logger.info("Created UserMatches table")
+        else:
+            results['user_matches'] = 'already exists'
+    except Exception as e:
+        results['user_matches'] = f'error: {str(e)}'
+        logger.error(f"Error creating UserMatches table: {e}")
+
+    # Check UserProfile table
+    try:
+        if UserProfile.exists():
+            results['user_profiles'] = 'exists'
+        else:
+            results['user_profiles'] = 'missing'
+    except Exception as e:
+        results['user_profiles'] = f'error: {str(e)}'
+
+    return {"code": 200, "message": "Table initialization complete", "result": results}
+
+
 @router.post("/admin/import-profile")
 async def import_profile(request: dict):
     """

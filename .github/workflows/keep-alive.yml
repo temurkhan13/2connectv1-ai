@@ -18,7 +18,7 @@ jobs:
       - name: Ping AI Service
         run: |
           curl -s -o /dev/null -w "AI Service: %{http_code}\n" \
-            https://2connectv1-ai.onrender.com/api/v1/health || true
+            https://twoconnectv1-ai.onrender.com/api/v1/health || true
 
       - name: Log timestamp
         run: echo "Pinged at $(date -u)"

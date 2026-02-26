@@ -98,6 +98,23 @@ class SlotSchema:
             ],
             extract_keywords=["invest", "funding", "capital", "co-founder", "partner", "mentor", "advisor", "network", "hire", "hiring", "recruit"]
         ),
+        # CRITICAL: These slots are required for embedding generation and matching
+        SlotDefinition(
+            name="requirements",
+            display_name="What You Need",
+            slot_type=SlotType.FREE_TEXT,
+            description="What the user needs from connections (funding, advisors, talent, partnerships, etc.)",
+            required=True,
+            extract_keywords=["need", "looking for", "seeking", "want", "require", "find", "help with", "searching for", "interested in"]
+        ),
+        SlotDefinition(
+            name="offerings",
+            display_name="What You Offer",
+            slot_type=SlotType.FREE_TEXT,
+            description="What the user can offer to connections (capital, mentorship, introductions, expertise, etc.)",
+            required=True,
+            extract_keywords=["offer", "provide", "bring", "give", "contribute", "help with", "can do", "experience in", "expertise", "invest", "mentor"]
+        ),
         SlotDefinition(
             name="user_type",
             display_name="User Type",
@@ -518,8 +535,8 @@ class SlotSchema:
         except Exception:
             focus_slot_names = []
 
-        # Universal slots always included
-        universal_slots = ["primary_goal", "user_type", "industry_focus", "geography", "dealbreakers"]
+        # Universal slots always included (requirements/offerings are CRITICAL for matching)
+        universal_slots = ["primary_goal", "user_type", "industry_focus", "geography", "dealbreakers", "requirements", "offerings"]
 
         # Start with universal slots from CORE_SLOTS
         slots = [s for s in cls.CORE_SLOTS if s.name in universal_slots]

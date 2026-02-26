@@ -172,7 +172,8 @@ class NotificationService:
             }
             
             # Send notification to backend
-            endpoint = f"{self.backend_url}/api/v1/webhooks/summary-ready"
+            # Note: backend_url already contains /api/v1 suffix
+            endpoint = f"{self.backend_url}/webhooks/summary-ready"
             headers = self._get_headers()
             # SECURITY: Don't log payloads (contain PII) or headers (contain API keys)
             logger.info(f"Sending persona ready notification for user {user_id}")
@@ -299,7 +300,8 @@ class NotificationService:
             }
             
             # Send notification to backend
-            endpoint = f"{self.backend_url}/api/v1/webhooks/user-matches-ready"
+            # Note: backend_url already contains /api/v1 suffix
+            endpoint = f"{self.backend_url}/webhooks/user-matches-ready"
             headers = self._get_headers()
             # SECURITY: Don't log payloads or headers
             logger.info(f"Sending matches notification for user {user_id} ({len(matches_payload)} matches)")
@@ -390,7 +392,8 @@ class NotificationService:
             }
             
             # Send notification to backend
-            endpoint = f"{self.backend_url}/api/v1/webhooks/matches-ready"
+            # Note: backend_url already contains /api/v1 suffix
+            endpoint = f"{self.backend_url}/webhooks/matches-ready"
             headers = self._get_headers()
             # SECURITY: Don't log payloads or headers
             logger.info(f"Sending batch matches notification for batch {batch_id} ({len(match_pairs)} matches)")
@@ -484,7 +487,8 @@ class NotificationService:
             }
             
             # Send notification to backend
-            endpoint = f"{self.backend_url}/api/v1/webhooks/ai-chat-ready"
+            # Note: backend_url already contains /api/v1 suffix
+            endpoint = f"{self.backend_url}/webhooks/ai-chat-ready"
             headers = self._get_headers()
             # SECURITY: Don't log payloads (contain conversation data) or headers
             logger.info(f"Sending AI chat ready notification for match {match_id}")

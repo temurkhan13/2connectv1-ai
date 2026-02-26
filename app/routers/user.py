@@ -342,7 +342,7 @@ async def import_profile(request: dict):
         "persona_status": "completed"
     }
     """
-    from app.adapters.dynamodb import UserProfile, PersonaData, ProfileData, QuestionAnswer
+    from app.adapters.dynamodb import UserProfile, PersonaData, ProfileData, QuestionAnswer, ResumeTextData
     from datetime import datetime
     import os
 
@@ -408,6 +408,7 @@ async def import_profile(request: dict):
             user_profile = UserProfile(
                 user_id=user_id,
                 profile=profile,
+                resume_text=ResumeTextData(text=None, extracted_at=None, extraction_method=None),
                 persona=persona,
                 processing_status="completed",
                 persona_status=request.get("persona_status", "completed"),

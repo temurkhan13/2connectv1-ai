@@ -434,8 +434,23 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             "investment_stage": "What stages do you invest in?",
         }
 
+        # Internal slots that should NOT be stored as user questions
+        # These are metadata/debug fields from the LLM extraction process
+        INTERNAL_SLOTS_TO_SKIP = {
+            "missing_important_slots",
+            "follow_up_question",
+            "understanding_summary",
+            "user_type_inference",
+            "extraction_confidence",
+            "extracted_slots",  # This is a nested container, not a value
+        }
+
         slots = slot_summary.get("slots", {})
         for slot_name, slot_data in slots.items():
+            # Skip internal/metadata slots
+            if slot_name in INTERNAL_SLOTS_TO_SKIP:
+                continue
+
             if isinstance(slot_data, dict):
                 value = slot_data.get("value", slot_data.get("raw_value", ""))
             else:

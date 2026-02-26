@@ -113,6 +113,29 @@ SLOT_DEFINITIONS = {
         "description": "User's name",
         "type": "text",
         "extraction_hint": "Extract their name if they introduce themselves"
+    },
+    # COFOUNDER-specific slots - MUST match SlotSchema for progress tracking
+    "skills_have": {
+        "description": "Skills the user brings to a co-founder partnership",
+        "type": "multi_select",
+        "options": ["Technical/Engineering", "Product Management", "Sales/Business Development", "Marketing/Growth", "Finance/Operations", "Design/UX", "Domain Expertise", "Fundraising Experience"],
+        "extraction_hint": "Map their stated skills: 'backend developer' → Technical/Engineering, 'sold products' → Sales/Business Development"
+    },
+    "skills_need": {
+        "description": "Skills the user needs in a co-founder",
+        "type": "multi_select",
+        "options": ["Technical/Engineering", "Product Management", "Sales/Business Development", "Marketing/Growth", "Finance/Operations", "Design/UX", "Domain Expertise", "Fundraising Experience"],
+        "extraction_hint": "Map their needs: 'frontend developer' → Technical/Engineering, 'sales experience' → Sales/Business Development, 'fundraising' → Fundraising Experience"
+    },
+    "commitment_level": {
+        "description": "Expected commitment level for co-founder",
+        "options": ["Full-time immediately", "Full-time after funding", "Part-time initially", "Nights & weekends", "Flexible/discuss"],
+        "extraction_hint": "Extract commitment expectations from phrases like 'work together daily', 'full-time', 'weekends'"
+    },
+    "equity_expectations": {
+        "description": "Equity split expectations for co-founder",
+        "options": ["Equal split (50/50)", "Majority for existing founder", "Based on contribution", "Open to discuss", "Vesting with cliff"],
+        "extraction_hint": "Extract from mentions of '60/40 split', 'equal equity', 'vesting'"
     }
 }
 

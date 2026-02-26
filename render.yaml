@@ -52,8 +52,12 @@ services:
         value: gpt-4o-mini
       - key: LLM_TEMPERATURE
         value: "1"
-      # Embeddings
+      # Embeddings - Using OpenAI API (not local SentenceTransformers)
+      - key: USE_OPENAI_EMBEDDINGS
+        value: "true"
       - key: EMBEDDING_MODEL
+        value: text-embedding-3-small
+      - key: OPENAI_EMBEDDING_MODEL
         value: text-embedding-3-small
       - key: EMBEDDING_DIMENSION
         value: "1536"
@@ -71,6 +75,9 @@ services:
         value: requirements
       # PostgreSQL - Supabase (AI DB with pgvector)
       - key: DATABASE_URL
+        sync: false
+      # Backend PostgreSQL DB (for user_summaries, onboarding_status updates)
+      - key: RECIPROCITY_BACKEND_DB_URL
         sync: false
       # Backend Integration
       - key: RECIPROCITY_BACKEND_URL

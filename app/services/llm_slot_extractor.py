@@ -73,11 +73,11 @@ SLOT_DEFINITIONS = {
         "type": "text",
         "extraction_hint": "Extract investment ranges like '$25K-$100K', '$1M-$5M', etc."
     },
-    "geographic_focus": {
+    "geography": {
         "description": "Geographic regions of interest",
         "type": "multi_select",
-        "options": ["US", "UK", "Europe", "Asia", "MENA", "Global", "Other"],
-        "extraction_hint": "Extract mentioned regions or countries"
+        "options": ["UK", "US", "Europe", "Asia", "Middle East", "Latin America", "Africa", "Global/Remote"],
+        "extraction_hint": "Extract mentioned regions or countries. Map specific countries to regions: London/UK → UK, Silicon Valley/US → US, etc."
     },
     "company_name": {
         "description": "Name of the user's company (if founder/executive)",
@@ -319,12 +319,32 @@ The following information has ALREADY been collected. Do NOT ask for these again
 CRITICAL: Your follow_up_question must NEVER ask for information listed above. Only ask about what's MISSING.
 """
 
+        # Determine which REQUIRED slots are still missing
+        required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "stage_preference", "geography"]
+        missing_required = [s for s in required_slots if s not in already_filled]
+
+        missing_required_text = ""
+        if missing_required:
+            missing_required_text = f"""
+## ⚠️ PRIORITY: REQUIRED SLOTS STILL MISSING
+These slots are REQUIRED for profile completion. Your follow-up question should naturally guide toward collecting one of these:
+{', '.join(missing_required)}
+
+- requirements = What they NEED from connections (funding, advisors, partnerships, etc.)
+- offerings = What they can OFFER to connections (capital, expertise, introductions, etc.)
+- geography = Where they're focused (UK, US, Europe, Asia, Global, etc.)
+- stage_preference = What company stages they work with (Pre-seed, Seed, Series A, etc.)
+
+CRITICAL: If 3+ required slots are missing, prioritize collecting them over drilling into details.
+"""
+
         return f"""You are a warm, curious conversationalist helping someone tell their story.
 
 ## Your Task
 1. Extract new profile information from the user's latest message
 2. Generate a natural, conversational follow-up that BUILDS ON what they just shared
-
+3. **PRIORITY**: Guide conversation toward collecting MISSING REQUIRED SLOTS (see below)
+{missing_required_text}
 ## ⚠️ CRITICAL: True Indirect Elicitation
 
 You MUST sound like a curious friend at a coffee chat, NOT a survey. The key is to pick up on SPECIFIC details they mentioned.
@@ -395,7 +415,7 @@ Return valid JSON:
     }},
     "user_type_inference": "founder|investor|advisor|executive|service_provider|unknown",
     "understanding_summary": "INTERNAL ONLY - not shown to user - your private notes",
-    "missing_important_slots": ["slots", "still", "needed"],
+    "missing_important_slots": ["REQUIRED slots first: primary_goal, requirements, offerings, user_type, industry_focus, stage_preference, geography"],
     "follow_up_question": "QUESTION ONLY - no acknowledgment, no summary, no 'The user is...'"
 }}
 
@@ -444,6 +464,26 @@ GOOD (builds on their experience):
 User said: "I have experience with startups that reached Series A"
 Response: "Getting to Series A is no small feat - what made those companies successful?"
 
+## How to Naturally Collect REQUIRED Slots
+
+When missing required slots, weave them into conversation naturally:
+
+**geography** (missing):
+- "Are you focused on a particular region, or more global?"
+- "Where's your main market - UK, US, somewhere else?"
+
+**requirements** (what they NEED - missing):
+- "What would be most helpful for you right now?"
+- "What's the biggest gap you're trying to fill?"
+
+**offerings** (what they OFFER - missing):
+- "What do you bring to the table for potential partners?"
+- "How do you typically help the companies/people you work with?"
+
+**stage_preference** (missing):
+- "Do you have a sweet spot in terms of company stage?"
+- "Early-stage, growth, or somewhere in between?"
+
 ## Example
 
 User already provided: name=Sarah, company=TechVenture, stage=Series A
@@ -456,7 +496,7 @@ Response:
     }},
     "user_type_inference": "founder",
     "understanding_summary": "Founder raising $3M Series A",
-    "missing_important_slots": ["timeline", "geographic_focus"],
+    "missing_important_slots": ["geography", "requirements", "offerings"],
     "follow_up_question": "How are you thinking about timing?"
 }}
 

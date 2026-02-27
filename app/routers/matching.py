@@ -32,6 +32,23 @@ def get_default_similarity_threshold() -> float:
     return float(os.getenv('SIMILARITY_THRESHOLD', '0.3'))
 
 
+def sanitize_threshold(threshold: Optional[float]) -> Optional[float]:
+    """Sanitize similarity threshold, handling NaN and invalid values."""
+    import math
+    if threshold is None:
+        return None
+    # Handle NaN (sent by some backend implementations)
+    if math.isnan(threshold):
+        logger.warning("Received NaN similarity_threshold, using default")
+        return None
+    # Clamp to valid range
+    if threshold < 0.0:
+        return 0.0
+    if threshold > 1.0:
+        return 1.0
+    return threshold
+
+
 # Validation Helpers
 def _sync_validate_user_profile(user_id: str) -> UserProfile:
     """Synchronous DynamoDB validation (called from thread pool)."""
@@ -154,7 +171,7 @@ def validate_user_offerings(user_profile: Optional[UserProfile], user_id: str) -
 @router.get("/{user_id}/matches", response_model=UserMatchesResponse)
 async def get_user_matches(
     user_id: str,
-    similarity_threshold: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
+    similarity_threshold: Optional[float] = Query(None, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
     skip_validation: bool = Query(False, description="Skip DynamoDB validation (use for faster queries)")
 ):
     """
@@ -167,8 +184,9 @@ async def get_user_matches(
         # Validate user profile with timeout (can fall back to PostgreSQL-only)
         await validate_user_profile(user_id, skip_dynamo=skip_validation)
 
-        # Use environment default if threshold not specified
-        threshold = similarity_threshold if similarity_threshold is not None else get_default_similarity_threshold()
+        # Sanitize and use environment default if threshold not specified or NaN
+        sanitized = sanitize_threshold(similarity_threshold)
+        threshold = sanitized if sanitized is not None else get_default_similarity_threshold()
 
         return matching_service.get_all_user_matches(user_id, threshold)
     except HTTPException:
@@ -181,7 +199,7 @@ async def get_user_matches(
 @router.get("/{user_id}/requirements-matches")
 async def get_user_requirements_matches(
     user_id: str,
-    similarity_threshold: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
+    similarity_threshold: Optional[float] = Query(None, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
     skip_validation: bool = Query(False, description="Skip DynamoDB validation (use for faster queries)")
 ):
     """
@@ -194,8 +212,9 @@ async def get_user_requirements_matches(
         user_profile = await validate_user_profile(user_id, skip_dynamo=skip_validation)
         validate_user_requirements(user_profile, user_id)
 
-        # Use environment default if threshold not specified
-        threshold = similarity_threshold if similarity_threshold is not None else get_default_similarity_threshold()
+        # Sanitize and use environment default if threshold not specified or NaN
+        sanitized = sanitize_threshold(similarity_threshold)
+        threshold = sanitized if sanitized is not None else get_default_similarity_threshold()
 
         return matching_service.get_requirements_matches(user_id, threshold)
     except HTTPException:
@@ -208,7 +227,7 @@ async def get_user_requirements_matches(
 @router.get("/{user_id}/offerings-matches")
 async def get_user_offerings_matches(
     user_id: str,
-    similarity_threshold: Optional[float] = Query(None, ge=0.0, le=1.0, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
+    similarity_threshold: Optional[float] = Query(None, description="Minimum similarity score (0.0 to 1.0). Uses SIMILARITY_THRESHOLD env var if not specified."),
     skip_validation: bool = Query(False, description="Skip DynamoDB validation (use for faster queries)")
 ):
     """
@@ -221,8 +240,9 @@ async def get_user_offerings_matches(
         user_profile = await validate_user_profile(user_id, skip_dynamo=skip_validation)
         validate_user_offerings(user_profile, user_id)
 
-        # Use environment default if threshold not specified
-        threshold = similarity_threshold if similarity_threshold is not None else get_default_similarity_threshold()
+        # Sanitize and use environment default if threshold not specified or NaN
+        sanitized = sanitize_threshold(similarity_threshold)
+        threshold = sanitized if sanitized is not None else get_default_similarity_threshold()
 
         return matching_service.get_offerings_matches(user_id, threshold)
     except HTTPException:

@@ -691,6 +691,130 @@ async def get_user_diagnostics(email: str):
     return {"code": 200, "message": "Diagnostics complete", "result": diagnostics}
 
 
+@router.get("/admin/list-users")
+async def list_all_users():
+    """
+    List all users with their onboarding/matching status.
+    Returns summary status for each user without deep diagnostics.
+    """
+    import os
+    import psycopg2
+    from app.adapters.dynamodb import UserProfile
+
+    users = []
+
+    try:
+        backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
+        ai_db_url = os.getenv('DATABASE_URL')
+
+        if not backend_db_url:
+            return {"code": 500, "message": "RECIPROCITY_BACKEND_DB_URL not configured", "result": []}
+
+        # Get all users from backend
+        conn = psycopg2.connect(backend_db_url)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, email, first_name, last_name, onboarding_status, created_at
+            FROM users
+            ORDER BY created_at DESC
+        """)
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        # Get embedding counts in bulk
+        embedding_counts = {}
+        if ai_db_url:
+            try:
+                ai_conn = psycopg2.connect(ai_db_url)
+                ai_cursor = ai_conn.cursor()
+                ai_cursor.execute("""
+                    SELECT user_id, COUNT(*) FROM user_embeddings GROUP BY user_id
+                """)
+                for row in ai_cursor.fetchall():
+                    embedding_counts[str(row[0])] = row[1]
+                ai_cursor.close()
+                ai_conn.close()
+            except Exception as e:
+                logger.error(f"Error fetching embedding counts: {e}")
+
+        # Get match counts from backend
+        match_counts = {}
+        try:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, COUNT(*) FROM matches GROUP BY user_id
+            """)
+            for row in cursor.fetchall():
+                match_counts[str(row[0])] = row[1]
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error fetching match counts: {e}")
+
+        # Build user list with status
+        for row in rows:
+            user_id = str(row[0])
+            embed_count = embedding_counts.get(user_id, 0)
+            match_count = match_counts.get(user_id, 0)
+
+            # Check persona in DynamoDB
+            persona_status = "unknown"
+            try:
+                profile = UserProfile.get(user_id)
+                if profile.persona and profile.persona.name:
+                    persona_status = "completed"
+                else:
+                    persona_status = profile.persona_status or "pending"
+            except UserProfile.DoesNotExist:
+                persona_status = "no_profile"
+            except Exception:
+                persona_status = "error"
+
+            # Determine overall status
+            onboarding_status = row[4] or "unknown"
+            if onboarding_status != "completed":
+                status = "onboarding_incomplete"
+            elif persona_status != "completed":
+                status = "persona_missing"
+            elif embed_count == 0:
+                status = "embeddings_missing"
+            elif match_count == 0:
+                status = "matches_missing"
+            else:
+                status = "healthy"
+
+            users.append({
+                "user_id": user_id,
+                "email": row[1],
+                "name": f"{row[2] or ''} {row[3] or ''}".strip() or None,
+                "onboarding_status": onboarding_status,
+                "persona_status": persona_status,
+                "embeddings_count": embed_count,
+                "matches_count": match_count,
+                "status": status,
+                "created_at": str(row[5]) if row[5] else None
+            })
+
+        return {
+            "code": 200,
+            "message": f"Found {len(users)} users",
+            "result": users,
+            "summary": {
+                "total": len(users),
+                "healthy": len([u for u in users if u["status"] == "healthy"]),
+                "embeddings_missing": len([u for u in users if u["status"] == "embeddings_missing"]),
+                "matches_missing": len([u for u in users if u["status"] == "matches_missing"]),
+                "onboarding_incomplete": len([u for u in users if u["status"] == "onboarding_incomplete"])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing users: {e}")
+        return {"code": 500, "message": str(e), "result": []}
+
+
 @router.post("/admin/regenerate-embeddings")
 async def regenerate_embeddings(request: dict):
     """

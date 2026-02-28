@@ -21,7 +21,7 @@ services:
         value: "0.0.0.0"
       # CORS
       - key: CORS_ORIGINS
-        value: '["https://2connectv1-frontend.vercel.app","https://twoconnectv1-backend.onrender.com","https://twoconnectv1-frontend.vercel.app"]'
+        value: '["https://2connectv1-frontend.vercel.app","https://twoconnectv1-backend.onrender.com","https://2connect-admin-dashboard.vercel.app"]'
       - key: ALLOWED_HOSTS
         value: '["*"]'
       # Redis - Upstash

@@ -284,6 +284,44 @@ async def regenerate_persona(
         )
 
 
+@router.get("/admin/search-user")
+async def search_user_by_email(email: str):
+    """
+    Debug endpoint to search for a user by email in the backend database.
+    Returns the user ID if found.
+    """
+    import os
+    import psycopg2
+
+    try:
+        conn = psycopg2.connect(
+            os.getenv('RECIPROCITY_BACKEND_DB_URL',
+                     'postgresql://postgres:postgres@localhost:5432/reciprocity_db')
+        )
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, email, is_onboarding_completed, created_at FROM users WHERE email ILIKE %s",
+            (f"%{email}%",)
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
+
+        users = []
+        for row in rows:
+            users.append({
+                "id": str(row[0]),
+                "email": row[1],
+                "is_onboarding_completed": row[2],
+                "created_at": str(row[3]) if row[3] else None
+            })
+
+        return {"code": 200, "message": "Search complete", "result": users, "count": len(users)}
+    except Exception as e:
+        logger.error(f"Error searching user: {e}")
+        return {"code": 500, "message": str(e), "result": [], "count": 0}
+
+
 @router.post("/admin/init-tables")
 async def init_tables(request: dict):
     """

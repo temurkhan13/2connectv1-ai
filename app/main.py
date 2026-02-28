@@ -72,6 +72,17 @@ try:
 except json.JSONDecodeError:
     cors_origins = None
 
+# Always allow admin dashboard
+ADMIN_DASHBOARD_ORIGINS = [
+    "https://2connect-admin-dashboard.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173"
+]
+if cors_origins:
+    for origin in ADMIN_DASHBOARD_ORIGINS:
+        if origin not in cors_origins:
+            cors_origins.append(origin)
+
 # Parse allowed hosts from JSON string
 allowed_hosts_str = os.getenv('ALLOWED_HOSTS')
 try:

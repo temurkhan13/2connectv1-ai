@@ -757,17 +757,24 @@ async def list_all_users():
         cursor.close()
         conn.close()
 
-        # Get embedding counts in bulk
+        # Get embedding counts and types in bulk
         embedding_counts = {}
+        embedding_types = {}
         if ai_db_url:
             try:
                 ai_conn = psycopg2.connect(ai_db_url)
                 ai_cursor = ai_conn.cursor()
                 ai_cursor.execute("""
-                    SELECT user_id, COUNT(*) FROM user_embeddings GROUP BY user_id
+                    SELECT user_id, COUNT(*), array_agg(DISTINCT embedding_type)
+                    FROM user_embeddings GROUP BY user_id
                 """)
                 for row in ai_cursor.fetchall():
-                    embedding_counts[str(row[0])] = row[1]
+                    uid = str(row[0])
+                    embedding_counts[uid] = row[1]
+                    # Format types nicely
+                    types = row[2] if row[2] else []
+                    type_labels = {'requirements': 'Requirements', 'offerings': 'Offerings', 'combined': 'Combined'}
+                    embedding_types[uid] = [type_labels.get(t, t) for t in types if t]
                 ai_cursor.close()
                 ai_conn.close()
             except Exception as e:
@@ -797,23 +804,48 @@ async def list_all_users():
             # Check persona and slots in DynamoDB
             persona_status = "unknown"
             slots_filled = 0
+            filled_slots = []  # List of filled slot names
             questions_answered = 0
+            persona_name = None
             try:
                 profile = UserProfile.get(user_id)
                 if profile.persona and profile.persona.name:
                     persona_status = "completed"
-                    # Count slots filled
-                    if profile.persona.name: slots_filled += 1
-                    if profile.persona.archetype: slots_filled += 1
-                    if profile.persona.designation: slots_filled += 1
-                    if profile.persona.experience: slots_filled += 1
-                    if profile.persona.focus: slots_filled += 1
-                    if profile.persona.profile_essence: slots_filled += 1
-                    if profile.persona.investment_philosophy: slots_filled += 1
-                    if profile.persona.what_theyre_looking_for: slots_filled += 1
-                    if profile.persona.engagement_style: slots_filled += 1
-                    if profile.persona.requirements: slots_filled += 1
-                    if profile.persona.offerings: slots_filled += 1
+                    persona_name = profile.persona.name
+                    # Count and track slots filled
+                    if profile.persona.name:
+                        slots_filled += 1
+                        filled_slots.append("Name")
+                    if profile.persona.archetype:
+                        slots_filled += 1
+                        filled_slots.append("Archetype")
+                    if profile.persona.designation:
+                        slots_filled += 1
+                        filled_slots.append("Designation")
+                    if profile.persona.experience:
+                        slots_filled += 1
+                        filled_slots.append("Experience")
+                    if profile.persona.focus:
+                        slots_filled += 1
+                        filled_slots.append("Focus")
+                    if profile.persona.profile_essence:
+                        slots_filled += 1
+                        filled_slots.append("Essence")
+                    if profile.persona.investment_philosophy:
+                        slots_filled += 1
+                        filled_slots.append("Philosophy")
+                    if profile.persona.what_theyre_looking_for:
+                        slots_filled += 1
+                        filled_slots.append("Seeking")
+                    if profile.persona.engagement_style:
+                        slots_filled += 1
+                        filled_slots.append("Style")
+                    if profile.persona.requirements:
+                        slots_filled += 1
+                        filled_slots.append("Requirements")
+                    if profile.persona.offerings:
+                        slots_filled += 1
+                        filled_slots.append("Offerings")
                 else:
                     persona_status = profile.persona_status or "pending"
                 # Count questions answered
@@ -843,10 +875,13 @@ async def list_all_users():
                 "name": f"{row[2] or ''} {row[3] or ''}".strip() or None,
                 "onboarding_status": onboarding_status,
                 "persona_status": persona_status,
+                "persona_name": persona_name,
                 "slots_filled": slots_filled,
                 "slots_total": 11,
+                "filled_slots": filled_slots,  # List of slot names
                 "questions_answered": questions_answered,
                 "embeddings_count": embed_count,
+                "embedding_types": embedding_types.get(user_id, []),  # List of types
                 "matches_count": match_count,
                 "status": status,
                 "created_at": str(row[5]) if row[5] else None

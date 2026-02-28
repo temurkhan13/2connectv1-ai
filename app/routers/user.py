@@ -606,18 +606,29 @@ async def get_user_diagnostics(email: str):
             if ai_db_url:
                 conn = psycopg2.connect(ai_db_url)
                 cursor = conn.cursor()
+                # Get embedding count and types
                 cursor.execute("""
-                    SELECT COUNT(*), MAX(created_at)
+                    SELECT COUNT(*), MAX(created_at), array_agg(DISTINCT embedding_type)
                     FROM user_embeddings WHERE user_id = %s
                 """, (user_id,))
                 row = cursor.fetchone()
 
                 if row and row[0] > 0:
+                    # Format embedding types nicely
+                    embed_types = row[2] if row[2] else []
+                    type_labels = {
+                        'requirements': 'Requirements',
+                        'offerings': 'Offerings',
+                        'combined': 'Combined'
+                    }
+                    formatted_types = [type_labels.get(t, t) for t in embed_types if t]
+
                     diagnostics["embeddings"] = {
                         "status": "found",
                         "count": row[0],
                         "details": {
-                            "last_created": str(row[1]) if row[1] else None
+                            "last_created": str(row[1]) if row[1] else None,
+                            "types": formatted_types
                         }
                     }
                     if row[1]:

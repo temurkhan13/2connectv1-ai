@@ -554,6 +554,24 @@ async def get_user_diagnostics(email: str):
             questions_count = len(profile.profile.raw_questions) if profile.profile and profile.profile.raw_questions else 0
             diagnostics["onboarding"]["details"]["questions_answered"] = questions_count
 
+            # Count slots filled (profile data points extracted from questions)
+            slots_total = 11  # name, archetype, designation, experience, focus, profile_essence, strategy, seeking, style, requirements, offerings
+            slots_filled = 0
+            if profile.persona:
+                if profile.persona.name: slots_filled += 1
+                if profile.persona.archetype: slots_filled += 1
+                if profile.persona.designation: slots_filled += 1
+                if profile.persona.experience: slots_filled += 1
+                if profile.persona.focus: slots_filled += 1
+                if profile.persona.profile_essence: slots_filled += 1
+                if profile.persona.investment_philosophy: slots_filled += 1
+                if profile.persona.what_theyre_looking_for: slots_filled += 1
+                if profile.persona.engagement_style: slots_filled += 1
+                if profile.persona.requirements: slots_filled += 1
+                if profile.persona.offerings: slots_filled += 1
+            diagnostics["onboarding"]["details"]["slots_filled"] = slots_filled
+            diagnostics["onboarding"]["details"]["slots_total"] = slots_total
+
             # Check persona
             if profile.persona and profile.persona.name:
                 diagnostics["persona"] = {
@@ -759,14 +777,31 @@ async def list_all_users():
             embed_count = embedding_counts.get(user_id, 0)
             match_count = match_counts.get(user_id, 0)
 
-            # Check persona in DynamoDB
+            # Check persona and slots in DynamoDB
             persona_status = "unknown"
+            slots_filled = 0
+            questions_answered = 0
             try:
                 profile = UserProfile.get(user_id)
                 if profile.persona and profile.persona.name:
                     persona_status = "completed"
+                    # Count slots filled
+                    if profile.persona.name: slots_filled += 1
+                    if profile.persona.archetype: slots_filled += 1
+                    if profile.persona.designation: slots_filled += 1
+                    if profile.persona.experience: slots_filled += 1
+                    if profile.persona.focus: slots_filled += 1
+                    if profile.persona.profile_essence: slots_filled += 1
+                    if profile.persona.investment_philosophy: slots_filled += 1
+                    if profile.persona.what_theyre_looking_for: slots_filled += 1
+                    if profile.persona.engagement_style: slots_filled += 1
+                    if profile.persona.requirements: slots_filled += 1
+                    if profile.persona.offerings: slots_filled += 1
                 else:
                     persona_status = profile.persona_status or "pending"
+                # Count questions answered
+                if profile.profile and profile.profile.raw_questions:
+                    questions_answered = len(profile.profile.raw_questions)
             except UserProfile.DoesNotExist:
                 persona_status = "no_profile"
             except Exception:
@@ -791,6 +826,9 @@ async def list_all_users():
                 "name": f"{row[2] or ''} {row[3] or ''}".strip() or None,
                 "onboarding_status": onboarding_status,
                 "persona_status": persona_status,
+                "slots_filled": slots_filled,
+                "slots_total": 11,
+                "questions_answered": questions_answered,
                 "embeddings_count": embed_count,
                 "matches_count": match_count,
                 "status": status,

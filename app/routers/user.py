@@ -300,7 +300,7 @@ async def search_user_by_email(email: str):
         )
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, email, is_onboarding_completed, created_at FROM users WHERE email ILIKE %s",
+            "SELECT id, email, onboarding_status, created_at FROM users WHERE email ILIKE %s",
             (f"%{email}%",)
         )
         rows = cursor.fetchall()
@@ -312,7 +312,7 @@ async def search_user_by_email(email: str):
             users.append({
                 "id": str(row[0]),
                 "email": row[1],
-                "is_onboarding_completed": row[2],
+                "onboarding_status": row[2],
                 "created_at": str(row[3]) if row[3] else None
             })
 

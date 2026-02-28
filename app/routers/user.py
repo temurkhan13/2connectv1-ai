@@ -466,3 +466,278 @@ async def import_profile(request: dict):
             content={"code": 500, "message": str(e), "result": False}
         )
 
+
+@router.get("/admin/user-diagnostics")
+async def get_user_diagnostics(email: str):
+    """
+    Comprehensive diagnostic endpoint for user journey debugging.
+    Returns complete status of: account, onboarding, persona, embeddings, matches.
+    """
+    import os
+    import psycopg2
+    from datetime import datetime
+    from app.adapters.dynamodb import UserProfile, UserMatches
+
+    diagnostics = {
+        "email": email,
+        "timestamp": datetime.utcnow().isoformat(),
+        "account": {"status": "not_found", "details": None},
+        "onboarding": {"status": "unknown", "details": None},
+        "persona": {"status": "not_found", "details": None},
+        "embeddings": {"status": "not_found", "count": 0, "details": None},
+        "matches": {"status": "not_found", "count": 0, "details": None},
+        "timeline": [],
+        "issues": []
+    }
+
+    user_id = None
+
+    # 1. Check backend PostgreSQL for account
+    try:
+        backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
+        if backend_db_url:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, email, first_name, last_name, onboarding_status,
+                       is_email_verified, created_at, updated_at
+                FROM users WHERE email ILIKE %s
+            """, (email,))
+            row = cursor.fetchone()
+
+            if row:
+                user_id = str(row[0])
+                diagnostics["account"] = {
+                    "status": "found",
+                    "details": {
+                        "user_id": user_id,
+                        "email": row[1],
+                        "name": f"{row[2] or ''} {row[3] or ''}".strip(),
+                        "onboarding_status": row[4],
+                        "email_verified": row[5],
+                        "created_at": str(row[6]) if row[6] else None,
+                        "updated_at": str(row[7]) if row[7] else None
+                    }
+                }
+                diagnostics["onboarding"] = {
+                    "status": row[4] or "unknown",
+                    "details": {"backend_status": row[4]}
+                }
+                diagnostics["timeline"].append({
+                    "event": "account_created",
+                    "timestamp": str(row[6]) if row[6] else None
+                })
+            else:
+                diagnostics["issues"].append("User not found in backend database")
+
+            cursor.close()
+            conn.close()
+        else:
+            diagnostics["issues"].append("RECIPROCITY_BACKEND_DB_URL not configured")
+    except Exception as e:
+        logger.error(f"Error checking backend DB: {e}")
+        diagnostics["issues"].append(f"Backend DB error: {str(e)}")
+
+    # 2. Check DynamoDB for profile and persona
+    if user_id:
+        try:
+            profile = UserProfile.get(user_id)
+
+            # Profile exists
+            diagnostics["onboarding"]["details"] = diagnostics["onboarding"].get("details", {})
+            diagnostics["onboarding"]["details"]["dynamodb_profile"] = True
+            diagnostics["onboarding"]["details"]["processing_status"] = profile.processing_status
+            diagnostics["onboarding"]["details"]["persona_status"] = profile.persona_status
+            diagnostics["onboarding"]["details"]["needs_matchmaking"] = profile.needs_matchmaking
+
+            # Count questions answered
+            questions_count = len(profile.profile.raw_questions) if profile.profile and profile.profile.raw_questions else 0
+            diagnostics["onboarding"]["details"]["questions_answered"] = questions_count
+
+            # Check persona
+            if profile.persona and profile.persona.name:
+                diagnostics["persona"] = {
+                    "status": profile.persona_status or "completed",
+                    "details": {
+                        "name": profile.persona.name,
+                        "archetype": profile.persona.archetype,
+                        "designation": profile.persona.designation,
+                        "generated_at": str(profile.persona.generated_at) if profile.persona.generated_at else None,
+                        "has_requirements": bool(profile.persona.requirements),
+                        "has_offerings": bool(profile.persona.offerings)
+                    }
+                }
+                if profile.persona.generated_at:
+                    diagnostics["timeline"].append({
+                        "event": "persona_generated",
+                        "timestamp": str(profile.persona.generated_at)
+                    })
+            else:
+                diagnostics["issues"].append("Persona not generated")
+
+        except UserProfile.DoesNotExist:
+            diagnostics["issues"].append("User profile not found in DynamoDB")
+        except Exception as e:
+            logger.error(f"Error checking DynamoDB: {e}")
+            diagnostics["issues"].append(f"DynamoDB error: {str(e)}")
+
+    # 3. Check pgvector for embeddings
+    if user_id:
+        try:
+            ai_db_url = os.getenv('DATABASE_URL')
+            if ai_db_url:
+                conn = psycopg2.connect(ai_db_url)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT COUNT(*), MAX(created_at),
+                           array_agg(DISTINCT content_type)
+                    FROM user_embeddings WHERE user_id = %s
+                """, (user_id,))
+                row = cursor.fetchone()
+
+                if row and row[0] > 0:
+                    diagnostics["embeddings"] = {
+                        "status": "found",
+                        "count": row[0],
+                        "details": {
+                            "last_created": str(row[1]) if row[1] else None,
+                            "content_types": row[2] if row[2] else []
+                        }
+                    }
+                    if row[1]:
+                        diagnostics["timeline"].append({
+                            "event": "embeddings_created",
+                            "timestamp": str(row[1])
+                        })
+                else:
+                    diagnostics["issues"].append("No embeddings found - matching will fail")
+
+                cursor.close()
+                conn.close()
+            else:
+                diagnostics["issues"].append("DATABASE_URL not configured")
+        except Exception as e:
+            logger.error(f"Error checking embeddings: {e}")
+            diagnostics["issues"].append(f"Embeddings DB error: {str(e)}")
+
+    # 4. Check matches in DynamoDB
+    if user_id:
+        try:
+            matches = UserMatches.get(user_id)
+            match_count = len(matches.matches) if matches.matches else 0
+            diagnostics["matches"] = {
+                "status": "found" if match_count > 0 else "empty",
+                "count": match_count,
+                "details": {
+                    "stored_at": str(matches.created_at) if matches.created_at else None,
+                    "algorithm": matches.algorithm if hasattr(matches, 'algorithm') else None
+                }
+            }
+            if matches.created_at:
+                diagnostics["timeline"].append({
+                    "event": "matches_calculated",
+                    "timestamp": str(matches.created_at)
+                })
+        except UserMatches.DoesNotExist:
+            diagnostics["issues"].append("No matches stored yet")
+        except Exception as e:
+            logger.error(f"Error checking matches: {e}")
+            diagnostics["issues"].append(f"Matches error: {str(e)}")
+
+    # 5. Check backend matches table
+    if user_id:
+        try:
+            backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
+            if backend_db_url:
+                conn = psycopg2.connect(backend_db_url)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT COUNT(*), MAX(created_at)
+                    FROM matches WHERE user_id = %s
+                """, (user_id,))
+                row = cursor.fetchone()
+
+                if row and row[0] > 0:
+                    diagnostics["matches"]["details"] = diagnostics["matches"].get("details", {})
+                    diagnostics["matches"]["details"]["backend_count"] = row[0]
+                    diagnostics["matches"]["details"]["backend_last_sync"] = str(row[1]) if row[1] else None
+                else:
+                    if diagnostics["matches"]["count"] > 0:
+                        diagnostics["issues"].append("Matches in DynamoDB but not synced to backend")
+
+                cursor.close()
+                conn.close()
+        except Exception as e:
+            logger.error(f"Error checking backend matches: {e}")
+
+    # Sort timeline
+    diagnostics["timeline"] = sorted(
+        [t for t in diagnostics["timeline"] if t.get("timestamp")],
+        key=lambda x: x["timestamp"]
+    )
+
+    # Generate summary status
+    if not user_id:
+        diagnostics["summary"] = "USER_NOT_FOUND"
+    elif diagnostics["embeddings"]["count"] == 0:
+        diagnostics["summary"] = "EMBEDDINGS_MISSING"
+    elif diagnostics["matches"]["count"] == 0:
+        diagnostics["summary"] = "MATCHES_NOT_CALCULATED"
+    elif len(diagnostics["issues"]) > 0:
+        diagnostics["summary"] = "ISSUES_DETECTED"
+    else:
+        diagnostics["summary"] = "HEALTHY"
+
+    return {"code": 200, "message": "Diagnostics complete", "result": diagnostics}
+
+
+@router.post("/admin/regenerate-embeddings")
+async def regenerate_embeddings(request: dict):
+    """
+    Trigger embedding regeneration for a user.
+    Use after fixing the send_task() bug to backfill missing embeddings.
+    """
+    import os
+    from app.workers.embedding_processing import generate_embeddings_task
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    try:
+        # Trigger embedding generation
+        logger.info(f"Manually triggering embedding generation for user: {user_id}")
+        generate_embeddings_task.delay(user_id)
+        return {"code": 200, "message": "Embedding generation triggered", "user_id": user_id}
+    except Exception as e:
+        logger.error(f"Error triggering embeddings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/regenerate-matches")
+async def regenerate_matches(request: dict):
+    """
+    Trigger match recalculation for a user.
+    """
+    import os
+    from app.services.match_sync_service import match_sync_service
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    try:
+        logger.info(f"Manually triggering match calculation for user: {user_id}")
+        result = match_sync_service.calculate_and_sync_matches(user_id)
+        return {"code": 200, "message": "Match calculation complete", "result": result}
+    except Exception as e:
+        logger.error(f"Error calculating matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

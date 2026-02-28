@@ -167,10 +167,10 @@ app.add_middleware(
 app.add_middleware(SlowAPIMiddleware)
 
 # Add API key authentication middleware
-# Excludes health check, verification, docs, and OpenAPI endpoints
+# Excludes health check, verification, docs, templates (public), and OpenAPI endpoints
 app.add_middleware(
     APIKeyMiddleware,
-    exclude_paths=["/health", "/verify", "/", "/docs", "/redoc", "/openapi.json"]
+    exclude_paths=["/health", "/verify", "/", "/docs", "/redoc", "/openapi.json", "/api/v1/templates"]
 )
 
 app.include_router(health_router)

@@ -865,3 +865,85 @@ async def regenerate_matches(request: dict):
     except Exception as e:
         logger.error(f"Error calculating matches: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/regenerate-embeddings-sync")
+async def regenerate_embeddings_sync(request: dict):
+    """
+    SYNCHRONOUSLY generate embeddings for a user.
+    Bypasses Celery entirely - needed because CELERY_TASK_ALWAYS_EAGER
+    doesn't work properly in Render's single-process environment.
+    """
+    import os
+    from app.services.embedding_service import embedding_service
+    from app.adapters.dynamodb import UserProfile, UserMatches, NotifiedMatchPairs
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    try:
+        logger.info(f"[SYNC] Starting embedding generation for user: {user_id}")
+
+        # Get user profile
+        try:
+            user_profile = UserProfile.get(user_id)
+        except UserProfile.DoesNotExist:
+            raise HTTPException(status_code=404, detail="User profile not found in DynamoDB")
+
+        # Check persona status
+        if user_profile.persona_status != 'completed':
+            raise HTTPException(
+                status_code=400,
+                detail=f"Persona not completed. Status: {user_profile.persona_status}"
+            )
+
+        # Get requirements and offerings
+        requirements = user_profile.persona.requirements if user_profile.persona else None
+        offerings = user_profile.persona.offerings if user_profile.persona else None
+
+        if not requirements and not offerings:
+            raise HTTPException(status_code=400, detail="No requirements or offerings found in persona")
+
+        logger.info(f"[SYNC] Found requirements ({len(requirements) if requirements else 0} chars) and offerings ({len(offerings) if offerings else 0} chars)")
+
+        # Clear old matches
+        logger.info(f"[SYNC] Clearing old matches for user {user_id}")
+        UserMatches.clear_user_matches(user_id)
+        NotifiedMatchPairs.clear_user_pairs(user_id)
+
+        # Generate embeddings
+        logger.info(f"[SYNC] Generating embeddings for user {user_id}")
+        success = embedding_service.store_user_embeddings(
+            user_id=user_id,
+            requirements=requirements or "",
+            offerings=offerings or ""
+        )
+
+        if success:
+            logger.info(f"[SYNC] Embeddings generated successfully for user {user_id}")
+
+            # Also trigger matching
+            from app.services.match_sync_service import match_sync_service
+            logger.info(f"[SYNC] Triggering match calculation for user {user_id}")
+            match_result = match_sync_service.calculate_and_sync_matches(user_id)
+
+            return {
+                "code": 200,
+                "message": "Embeddings and matches generated successfully",
+                "user_id": user_id,
+                "embeddings": True,
+                "matches": match_result
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Embedding generation failed")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[SYNC] Error generating embeddings: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

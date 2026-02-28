@@ -572,17 +572,25 @@ async def get_user_diagnostics(email: str):
             diagnostics["onboarding"]["details"]["slots_filled"] = slots_filled
             diagnostics["onboarding"]["details"]["slots_total"] = slots_total
 
-            # Check persona
+            # Check persona - include all 11 slots
             if profile.persona and profile.persona.name:
                 diagnostics["persona"] = {
                     "status": profile.persona_status or "completed",
                     "details": {
+                        # Core slots (11 total)
                         "name": profile.persona.name,
                         "archetype": profile.persona.archetype,
                         "designation": profile.persona.designation,
-                        "generated_at": str(profile.persona.generated_at) if profile.persona.generated_at else None,
+                        "experience": profile.persona.experience,
+                        "focus": profile.persona.focus,
+                        "profile_essence": profile.persona.profile_essence,
+                        "investment_philosophy": profile.persona.investment_philosophy,
+                        "what_theyre_looking_for": profile.persona.what_theyre_looking_for,
+                        "engagement_style": profile.persona.engagement_style,
                         "has_requirements": bool(profile.persona.requirements),
-                        "has_offerings": bool(profile.persona.offerings)
+                        "has_offerings": bool(profile.persona.offerings),
+                        # Metadata
+                        "generated_at": str(profile.persona.generated_at) if profile.persona.generated_at else None
                     }
                 }
                 if profile.persona.generated_at:

@@ -128,9 +128,9 @@ SLOT_DEFINITIONS = {
         "extraction_hint": "Map their needs: 'frontend developer' → Technical/Engineering, 'sales experience' → Sales/Business Development, 'fundraising' → Fundraising Experience"
     },
     "commitment_level": {
-        "description": "Expected commitment level for co-founder",
+        "description": "Expected commitment level for CO-FOUNDER PARTNERSHIP (NOT their current job status)",
         "options": ["Full-time immediately", "Full-time after funding", "Part-time initially", "Nights & weekends", "Flexible/discuss"],
-        "extraction_hint": "Extract commitment expectations from phrases like 'work together daily', 'full-time', 'weekends'"
+        "extraction_hint": "CRITICAL: This is about commitment to the CO-FOUNDER SEARCH/STARTUP, NOT their current employment. If user mentions having a 'full-time job' or 'day job', that means they can only commit 'Part-time initially' or 'Nights & weekends' to the startup. Only extract 'Full-time immediately' if they explicitly say they're available full-time for the STARTUP/partnership right now (e.g., 'I quit my job', 'I'm full-time on this', 'ready to go all-in')."
     },
     "equity_expectations": {
         "description": "Equity split expectations for co-founder",

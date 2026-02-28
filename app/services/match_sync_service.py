@@ -219,10 +219,12 @@ class MatchSyncService:
         logger.info(f"Found {total} potential matches for user {user_id}")
 
         if total == 0:
-            return {'success': True, 'message': 'No matches found', 'count': 0}
+            return {'success': True, 'message': 'No matches found', 'count': 0, 'total_found': 0}
 
         # Sync to backend
-        return self.sync_matches_to_backend(user_id, matches)
+        result = self.sync_matches_to_backend(user_id, matches)
+        result['total_found'] = total  # Include total found before filtering
+        return result
 
 
 # Singleton instance

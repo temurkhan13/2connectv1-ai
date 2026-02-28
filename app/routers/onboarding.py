@@ -366,6 +366,18 @@ class CompleteOnboardingRequest(BaseModel):
     user_id: str = Field(..., description="User ID for the profile")
 
 
+class OnboardingDiagnostics(BaseModel):
+    """Diagnostics for debugging onboarding issues."""
+    dynamo_profile_created: bool = False
+    postgres_status_updated: bool = False
+    user_summary_created: bool = False
+    multi_vector_embeddings_count: int = 0
+    basic_embeddings_stored: bool = False
+    matches_found: int = 0
+    matches_synced: int = 0
+    match_sync_error: Optional[str] = None
+
+
 class CompleteOnboardingResponse(BaseModel):
     """Response after completing onboarding."""
     success: bool
@@ -373,6 +385,7 @@ class CompleteOnboardingResponse(BaseModel):
     message: str
     profile_created: bool
     persona_task_id: Optional[str] = None
+    diagnostics: Optional[OnboardingDiagnostics] = None
 
 
 @router.post("/complete", response_model=CompleteOnboardingResponse)
@@ -469,6 +482,9 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 profile_created=False
             )
 
+        # Initialize diagnostics tracker
+        diag = OnboardingDiagnostics()
+
         # Create user profile in DynamoDB
         try:
             user_profile = UserProfile.create_user(
@@ -478,6 +494,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             )
             user_profile.needs_matchmaking = "true"  # Enable scheduled matching
             user_profile.save()
+            diag.dynamo_profile_created = True
             logger.info(f"Created DynamoDB profile for user {user_id} with {len(questions)} Q&A pairs")
         except Exception as e:
             logger.error(f"Failed to create DynamoDB profile: {e}")
@@ -489,6 +506,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             from app.adapters.postgresql import postgresql_adapter
             status_updated = postgresql_adapter.update_user_onboarding_status(user_id, 'completed')
             if status_updated:
+                diag.postgres_status_updated = True
                 logger.info(f"Updated PostgreSQL onboarding_status='completed' for user {user_id}")
             else:
                 logger.warning(f"Could not update PostgreSQL onboarding_status for user {user_id}")
@@ -518,6 +536,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 urgency='ongoing'
             )
             if summary_id:
+                diag.user_summary_created = True
                 logger.info(f"Created user_summary {summary_id} for user {user_id}")
             else:
                 logger.warning(f"Could not create user_summary for user {user_id}")
@@ -560,6 +579,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             )
 
             stored_count = sum(1 for v in {**req_results, **off_results}.values() if v)
+            diag.multi_vector_embeddings_count = stored_count
             logger.info(f"Stored {stored_count} multi-vector embeddings for user {user_id}")
         except Exception as e:
             # Log but don't fail - user can still use platform with basic matching
@@ -579,6 +599,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                     offerings=offerings_text
                 )
                 if basic_stored:
+                    diag.basic_embeddings_stored = True
                     logger.info(f"Stored basic embeddings for user {user_id}")
         except Exception as e:
             logger.warning(f"Failed to generate basic embeddings: {e}")
@@ -590,11 +611,16 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             sync_result = match_sync_service.sync_user_matches(user_id)
             if sync_result.get('success'):
                 match_count = sync_result.get('count', 0)
+                diag.matches_synced = match_count
+                # Also capture total matches found (before filtering)
+                diag.matches_found = sync_result.get('total_found', match_count)
                 logger.info(f"Synced {match_count} matches to backend for user {user_id}")
             else:
+                diag.match_sync_error = sync_result.get('error', 'Unknown error')
                 logger.warning(f"Match sync returned unsuccessful for {user_id}: {sync_result.get('error')}")
         except Exception as e:
             # Log but don't fail - user can still use platform, matches will sync later
+            diag.match_sync_error = str(e)
             logger.warning(f"Failed to sync matches to backend: {e}")
 
         # Trigger persona generation pipeline
@@ -629,12 +655,16 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             logger.warning(f"Failed to start persona pipeline: {e}")
             task_id = None
 
+        # Log full diagnostics for debugging
+        logger.info(f"Onboarding diagnostics for {user_id}: {diag.model_dump()}")
+
         return CompleteOnboardingResponse(
             success=True,
             user_id=user_id,
             message=f"Profile created with {len(questions)} data points. Persona generation started.",
             profile_created=True,
-            persona_task_id=task_id
+            persona_task_id=task_id,
+            diagnostics=diag
         )
 
     except HTTPException:

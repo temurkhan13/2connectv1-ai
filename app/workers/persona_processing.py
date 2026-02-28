@@ -100,10 +100,11 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
 
             # AUTO-TRIGGER EMBEDDING GENERATION
             # This ensures embeddings are generated regardless of backend notification status
+            # NOTE: Using .delay() instead of send_task() so CELERY_TASK_ALWAYS_EAGER works
             try:
-                from app.core.celery import celery_app
+                from app.workers.embedding_processing import generate_embeddings_task
                 logger.info(f"Auto-triggering embedding generation for user: {user_id}")
-                celery_app.send_task('generate_embeddings', args=[user_id])
+                generate_embeddings_task.delay(user_id)
                 logger.info(f"Embedding generation task queued for user: {user_id}")
             except Exception as embed_error:
                 logger.error(f"Failed to trigger embedding generation for user {user_id}: {embed_error}")

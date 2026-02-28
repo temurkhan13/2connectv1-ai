@@ -679,7 +679,7 @@ async def get_user_diagnostics(email: str):
             logger.error(f"Error checking matches: {e}")
             diagnostics["issues"].append(f"Matches error: {str(e)}")
 
-    # 5. Check backend matches table
+    # 5. Check backend matches table (uses user_a_id and user_b_id columns)
     if user_id:
         try:
             backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
@@ -688,8 +688,8 @@ async def get_user_diagnostics(email: str):
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT COUNT(*), MAX(created_at)
-                    FROM matches WHERE user_id = %s
-                """, (user_id,))
+                    FROM matches WHERE user_a_id = %s OR user_b_id = %s
+                """, (user_id, user_id))
                 row = cursor.fetchone()
 
                 if row and row[0] > 0:
@@ -780,13 +780,19 @@ async def list_all_users():
             except Exception as e:
                 logger.error(f"Error fetching embedding counts: {e}")
 
-        # Get match counts from backend
+        # Get match counts from backend (matches table has user_a_id and user_b_id)
         match_counts = {}
         try:
             conn = psycopg2.connect(backend_db_url)
             cursor = conn.cursor()
+            # Count matches where user appears as either user_a or user_b
             cursor.execute("""
-                SELECT user_id, COUNT(*) FROM matches GROUP BY user_id
+                SELECT user_id, COUNT(*) FROM (
+                    SELECT user_a_id as user_id FROM matches
+                    UNION ALL
+                    SELECT user_b_id as user_id FROM matches
+                ) as all_matches
+                GROUP BY user_id
             """)
             for row in cursor.fetchall():
                 match_counts[str(row[0])] = row[1]

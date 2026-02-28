@@ -607,8 +607,7 @@ async def get_user_diagnostics(email: str):
                 conn = psycopg2.connect(ai_db_url)
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT COUNT(*), MAX(created_at),
-                           array_agg(DISTINCT content_type)
+                    SELECT COUNT(*), MAX(created_at)
                     FROM user_embeddings WHERE user_id = %s
                 """, (user_id,))
                 row = cursor.fetchone()
@@ -618,8 +617,7 @@ async def get_user_diagnostics(email: str):
                         "status": "found",
                         "count": row[0],
                         "details": {
-                            "last_created": str(row[1]) if row[1] else None,
-                            "content_types": row[2] if row[2] else []
+                            "last_created": str(row[1]) if row[1] else None
                         }
                     }
                     if row[1]:
@@ -898,7 +896,7 @@ async def regenerate_matches(request: dict):
 
     try:
         logger.info(f"Manually triggering match calculation for user: {user_id}")
-        result = match_sync_service.calculate_and_sync_matches(user_id)
+        result = match_sync_service.sync_user_matches(user_id)
         return {"code": 200, "message": "Match calculation complete", "result": result}
     except Exception as e:
         logger.error(f"Error calculating matches: {e}")
@@ -968,7 +966,7 @@ async def regenerate_embeddings_sync(request: dict):
             # Also trigger matching
             from app.services.match_sync_service import match_sync_service
             logger.info(f"[SYNC] Triggering match calculation for user {user_id}")
-            match_result = match_sync_service.calculate_and_sync_matches(user_id)
+            match_result = match_sync_service.sync_user_matches(user_id)
 
             return {
                 "code": 200,

@@ -611,12 +611,86 @@ class PostgreSQLAdapter:
             logger.error(f"Error creating user_summary for user {user_id}: {str(e)}")
             if conn:
                 conn.rollback()
-            return None
+            # Fallback to Supabase REST API
+            return self._create_user_summary_via_rest(user_id, summary, status, urgency)
         finally:
             if cursor:
                 cursor.close()
             if conn:
                 conn.close()
+
+    def _create_user_summary_via_rest(
+        self,
+        user_id: str,
+        summary: str,
+        status: str = 'draft',
+        urgency: str = 'ongoing'
+    ) -> Optional[str]:
+        """
+        Fallback: Create user summary via Supabase REST API.
+
+        Used when direct database connection fails (e.g., RECIPROCITY_BACKEND_DB_URL not set).
+        """
+        import uuid
+        import requests
+        from datetime import datetime, timezone
+
+        supabase_url = os.getenv('SUPABASE_URL')
+        supabase_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY')
+
+        if not supabase_url or not supabase_key:
+            logger.warning("Supabase REST API credentials not configured - cannot create user_summary")
+            return None
+
+        try:
+            summary_id = str(uuid.uuid4())
+            now = datetime.now(timezone.utc).isoformat()
+
+            headers = {
+                'apikey': supabase_key,
+                'Authorization': f'Bearer {supabase_key}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+            }
+
+            # Get next version
+            version_resp = requests.get(
+                f'{supabase_url}/rest/v1/user_summaries?select=version&user_id=eq.{user_id}&order=version.desc&limit=1',
+                headers=headers
+            )
+            if version_resp.status_code == 200 and version_resp.json():
+                next_version = version_resp.json()[0].get('version', 0) + 1
+            else:
+                next_version = 1
+
+            payload = {
+                'id': summary_id,
+                'user_id': user_id,
+                'summary': summary,
+                'status': status,
+                'version': next_version,
+                'webhook': True,
+                'urgency': urgency,
+                'created_at': now,
+                'updated_at': now
+            }
+
+            resp = requests.post(
+                f'{supabase_url}/rest/v1/user_summaries',
+                headers=headers,
+                json=payload
+            )
+
+            if resp.status_code in [200, 201]:
+                logger.info(f"Created user_summary via REST API for user {user_id} (version {next_version})")
+                return summary_id
+            else:
+                logger.error(f"REST API failed to create user_summary: {resp.status_code} - {resp.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"REST API error creating user_summary for {user_id}: {e}")
+            return None
 
 
 # Global adapter instance

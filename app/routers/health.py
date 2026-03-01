@@ -123,6 +123,10 @@ async def get_system_health():
             "status": "healthy",
             "components": {}
         },
+        "onboarding": {
+            "status": "healthy",
+            "components": {}
+        },
         "matching": {
             "status": "healthy",
             "components": {}
@@ -274,6 +278,105 @@ async def get_system_health():
         }
         issues.append("DynamoDB connection failed")
 
+    # ===== ONBOARDING COMPONENTS =====
+
+    # 1. Slot Extractor (LLM-based)
+    try:
+        from app.services.llm_slot_extractor import llm_slot_extractor
+        if hasattr(llm_slot_extractor, '_clean_follow_up_question'):
+            health["onboarding"]["components"]["slot_extractor"] = {
+                "status": "healthy",
+                "detail": "LLM extraction active"
+            }
+        else:
+            health["onboarding"]["components"]["slot_extractor"] = {
+                "status": "warning",
+                "detail": "Missing cleanup method"
+            }
+    except Exception as e:
+        health["onboarding"]["components"]["slot_extractor"] = {
+            "status": "error",
+            "detail": str(e)[:50]
+        }
+        issues.append("Slot extractor unavailable")
+
+    # 2. Persona Generation
+    try:
+        from app.services.persona_generator import persona_generator
+        if hasattr(persona_generator, 'generate_persona'):
+            health["onboarding"]["components"]["persona_generation"] = {
+                "status": "healthy",
+                "detail": "Persona generator ready"
+            }
+        else:
+            health["onboarding"]["components"]["persona_generation"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except Exception as e:
+        health["onboarding"]["components"]["persona_generation"] = {
+            "status": "error",
+            "detail": str(e)[:50]
+        }
+        issues.append("Persona generation unavailable")
+
+    # 3. Conversational Onboarding
+    try:
+        from app.services.conversational_onboarding import conversational_onboarding_service
+        if hasattr(conversational_onboarding_service, 'process_message'):
+            health["onboarding"]["components"]["conversational_onboarding"] = {
+                "status": "healthy",
+                "detail": "Chat-based flow active"
+            }
+        else:
+            health["onboarding"]["components"]["conversational_onboarding"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except Exception as e:
+        health["onboarding"]["components"]["conversational_onboarding"] = {
+            "status": "error",
+            "detail": str(e)[:50]
+        }
+
+    # 4. Progressive Disclosure
+    try:
+        from app.services.progressive_disclosure import progressive_disclosure_service
+        if hasattr(progressive_disclosure_service, 'get_next_question'):
+            health["onboarding"]["components"]["progressive_disclosure"] = {
+                "status": "healthy",
+                "detail": "Adaptive questions active"
+            }
+        else:
+            health["onboarding"]["components"]["progressive_disclosure"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except Exception as e:
+        health["onboarding"]["components"]["progressive_disclosure"] = {
+            "status": "warning",
+            "detail": "Optional component"
+        }
+
+    # 5. Resume Processing
+    try:
+        from app.services.resume_service import resume_service
+        if hasattr(resume_service, 'process_resume'):
+            health["onboarding"]["components"]["resume_processing"] = {
+                "status": "healthy",
+                "detail": "PDF/DOCX supported"
+            }
+        else:
+            health["onboarding"]["components"]["resume_processing"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except Exception as e:
+        health["onboarding"]["components"]["resume_processing"] = {
+            "status": "warning",
+            "detail": "Optional component"
+        }
+
     # ===== MATCHING COMPONENTS =====
 
     # 1. Intent Classification
@@ -388,7 +491,7 @@ async def get_system_health():
     # ===== Calculate Overall Status =====
 
     # Calculate overall status per category
-    for category in ["services", "matching"]:
+    for category in ["services", "onboarding", "matching"]:
         components = health[category]["components"]
         error_count = sum(1 for c in components.values() if c.get("status") == "error")
         warning_count = sum(1 for c in components.values() if c.get("status") == "warning")
@@ -401,9 +504,9 @@ async def get_system_health():
             health[category]["status"] = "healthy"
 
     # Calculate overall system status
-    if any(health[c]["status"] == "error" for c in ["services", "matching"]):
+    if any(health[c]["status"] == "error" for c in ["services", "onboarding", "matching"]):
         health["overall_status"] = "error"
-    elif any(health[c]["status"] == "warning" for c in ["services", "matching"]):
+    elif any(health[c]["status"] == "warning" for c in ["services", "onboarding", "matching"]):
         health["overall_status"] = "warning"
 
     health["issues"] = issues

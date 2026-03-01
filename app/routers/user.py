@@ -996,10 +996,11 @@ async def regenerate_all_matches(request: dict):
     dry_run = request.get("dry_run", False)
 
     try:
-        # Get all users with completed onboarding and embeddings
+        # Get all users with completed persona (onboarding complete)
         completed_users = []
         for profile in UserProfile.scan():
-            if profile.onboarding_status == "completed":
+            # persona_status == 'completed' means onboarding is done and persona generated
+            if profile.persona_status == "completed":
                 completed_users.append(profile.user_id)
 
         logger.info(f"Found {len(completed_users)} completed users for match recalculation")

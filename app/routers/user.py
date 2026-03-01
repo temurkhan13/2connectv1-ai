@@ -1355,3 +1355,121 @@ async def backfill_multi_vector_embeddings(request: dict, background_tasks: Back
         "job_id": job_id,
         "note": "Check logs for progress"
     }
+
+
+@router.post("/admin/clear-and-resync-matches")
+async def clear_and_resync_matches(request: dict):
+    """
+    Clear all matches from backend PostgreSQL and re-sync from DynamoDB.
+
+    Use this after batch recalculation to replace old "everyone matches everyone"
+    matches with the new hybrid algorithm results stored in DynamoDB.
+
+    Steps:
+    1. Delete all rows from backend matches table
+    2. For each user with matches in DynamoDB, sync to backend
+    """
+    import os
+    import psycopg2
+    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.services.match_sync_service import match_sync_service
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    dry_run = request.get("dry_run", False)
+
+    result = {
+        "deleted_from_backend": 0,
+        "users_synced": 0,
+        "matches_synced": 0,
+        "errors": []
+    }
+
+    try:
+        # Step 1: Delete all matches from backend PostgreSQL
+        backend_db_url = os.getenv("BACKEND_DATABASE_URL")
+        if not backend_db_url:
+            raise HTTPException(status_code=500, detail="BACKEND_DATABASE_URL not configured")
+
+        if not dry_run:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+
+            # Count before delete
+            cursor.execute("SELECT COUNT(*) FROM matches")
+            count_before = cursor.fetchone()[0]
+
+            # Delete all matches
+            cursor.execute("DELETE FROM matches")
+            result["deleted_from_backend"] = count_before
+
+            conn.commit()
+            cursor.close()
+            conn.close()
+            logger.info(f"[CLEAR-RESYNC] Deleted {count_before} matches from backend")
+        else:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM matches")
+            count = cursor.fetchone()[0]
+            result["deleted_from_backend"] = f"Would delete {count} (dry run)"
+            cursor.close()
+            conn.close()
+
+        # Step 2: Get all completed users from DynamoDB
+        completed_users = []
+        for profile in UserProfile.scan():
+            if profile.persona_status == 'completed':
+                completed_users.append(profile.user_id)
+
+        logger.info(f"[CLEAR-RESYNC] Found {len(completed_users)} completed users to sync")
+
+        # Step 3: Re-sync each user's matches from DynamoDB to backend
+        for user_id in completed_users:
+            try:
+                # Get matches from DynamoDB
+                stored_matches = UserMatches.get_user_matches(user_id)
+
+                if not stored_matches or not stored_matches.get("matches"):
+                    continue
+
+                if dry_run:
+                    result["users_synced"] += 1
+                    result["matches_synced"] += len(stored_matches.get("matches", []))
+                    continue
+
+                # Convert to sync format
+                matches_for_sync = {
+                    "requirements_matches": stored_matches.get("matches", []),
+                    "offerings_matches": []
+                }
+
+                # Sync to backend
+                sync_result = match_sync_service.sync_matches_to_backend(user_id, matches_for_sync)
+
+                if sync_result.get("success"):
+                    result["users_synced"] += 1
+                    result["matches_synced"] += sync_result.get("count", 0)
+                else:
+                    result["errors"].append({
+                        "user_id": user_id,
+                        "error": sync_result.get("error", "Unknown sync error")
+                    })
+
+            except Exception as e:
+                result["errors"].append({
+                    "user_id": user_id,
+                    "error": str(e)[:100]
+                })
+
+        return {
+            "code": 200,
+            "message": f"Clear and resync complete. Deleted {result['deleted_from_backend']}, synced {result['users_synced']} users with {result['matches_synced']} matches.",
+            "result": result
+        }
+
+    except Exception as e:
+        logger.error(f"Error in clear-and-resync: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

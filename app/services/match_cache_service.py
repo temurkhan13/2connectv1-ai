@@ -17,6 +17,7 @@ Date: February 2026
 import os
 import json
 import logging
+import ssl
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -66,7 +67,7 @@ class MatchCacheService:
                 # Support rediss:// URLs (Upstash, etc.)
                 redis_kwargs = {}
                 if redis_url.startswith("rediss://"):
-                    redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
+                    redis_kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
                 self._redis_client = redis.from_url(redis_url, **redis_kwargs)
                 self._redis_client.ping()
                 logger.info("Connected to Redis for match caching")

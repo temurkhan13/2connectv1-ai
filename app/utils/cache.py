@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import logging
+import ssl
 from typing import Any, Optional, List, Union
 from functools import wraps
 import redis
@@ -49,7 +50,7 @@ class RedisCache:
                 "retry_on_timeout": True
             }
             if self._url.startswith("rediss://"):
-                redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
+                redis_kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
 
             self._client = redis.from_url(self._url, **redis_kwargs)
             # Test connection

@@ -14,6 +14,7 @@ Key features:
 import os
 import json
 import logging
+import ssl
 import redis
 from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
@@ -151,7 +152,7 @@ class ContextManager:
             # Support rediss:// URLs (Upstash, etc.)
             redis_kwargs = {}
             if self.redis_url.startswith("rediss://"):
-                redis_kwargs["ssl_cert_reqs"] = "CERT_NONE"
+                redis_kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
             self.redis = redis.from_url(self.redis_url, **redis_kwargs)
             self.redis.ping()  # Test connection
             self._use_redis = True

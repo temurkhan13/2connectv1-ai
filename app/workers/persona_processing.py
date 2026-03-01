@@ -7,9 +7,57 @@ from app.services.persona_service import PersonaService
 from app.adapters.dynamodb import UserProfile
 from app.services.notification_service import NotificationService
 from datetime import datetime
+from typing import Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, offerings: str) -> str:
+    """
+    Convert persona data to markdown format for storage.
+
+    This is used by the direct DB write fallback to ensure AI summary
+    is created even if the webhook notification fails.
+    """
+    parts = []
+
+    if persona.get('name'):
+        parts.append(f"# {persona['name']}")
+
+    if persona.get('archetype'):
+        parts.append(f"**Archetype:** {persona['archetype']}")
+
+    if persona.get('designation'):
+        parts.append(f"**Designation:** {persona['designation']}")
+
+    if persona.get('experience'):
+        parts.append(f"**Experience:** {persona['experience']}")
+
+    if persona.get('focus'):
+        parts.append(f"\n## Focus\n{persona['focus']}")
+
+    if persona.get('profile_essence'):
+        parts.append(f"\n## Profile Essence\n{persona['profile_essence']}")
+
+    # Strategy field (role-agnostic, replaces investment_philosophy)
+    strategy = persona.get('strategy') or persona.get('investment_philosophy')
+    if strategy:
+        parts.append(f"\n## Strategy\n{strategy}")
+
+    if persona.get('what_theyre_looking_for'):
+        parts.append(f"\n## What They're Looking For\n{persona['what_theyre_looking_for']}")
+
+    if persona.get('engagement_style'):
+        parts.append(f"\n## Engagement Style\n{persona['engagement_style']}")
+
+    if requirements:
+        parts.append(f"\n## Requirements\n{requirements}")
+
+    if offerings:
+        parts.append(f"\n## Offerings\n{offerings}")
+
+    return "\n\n".join(parts)
 
 @celery_app.task(bind=True, name='generate_persona')
 def generate_persona_task(self, user_id: str, send_notification: bool = True):
@@ -76,8 +124,28 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             
             logger.info(f"Successfully stored persona data for user {user_id}")
             logger.info(f"Successfully generated persona for user {user_id}: {persona.get('name')}")
-            
-            # Send notification to backend (only if requested)
+
+            # Generate markdown summary for backend storage
+            markdown_summary = _convert_persona_to_markdown(persona, requirements, offerings)
+
+            # DIRECT DB WRITE (March 2026) - Ensure AI summary is created regardless of webhook status
+            # This is a fallback to prevent "No AI summary found" issues
+            try:
+                from app.adapters.postgresql import postgresql_adapter
+                summary_id = postgresql_adapter.create_user_summary(
+                    user_id=user_id,
+                    summary=markdown_summary,
+                    status='approved',
+                    urgency='ongoing'
+                )
+                if summary_id:
+                    logger.info(f"Created user_summary directly in PostgreSQL for user {user_id}")
+                else:
+                    logger.warning(f"Failed to create user_summary in PostgreSQL for user {user_id}")
+            except Exception as db_error:
+                logger.error(f"Error creating user_summary in PostgreSQL for user {user_id}: {db_error}")
+
+            # Send notification to backend (only if requested) - may be redundant now but keeps webhook flow
             logger.info(f"Notification check for user {user_id}: send_notification={send_notification}")
             notification_service = NotificationService()
             logger.info(f"NotificationService backend_url={notification_service.backend_url}, is_configured={notification_service.is_configured()}")

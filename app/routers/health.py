@@ -411,6 +411,48 @@ async def get_system_health():
     return health
 
 
+def _generate_match_explanation(score: float, fwd: float, rev: float,
+                                 user_requirements: str, user_offerings: str,
+                                 matched_archetype: str) -> str:
+    """Generate a human-readable explanation for why users matched."""
+    explanations = []
+
+    # Score-based explanation
+    if score >= 0.8:
+        explanations.append("Very high compatibility")
+    elif score >= 0.6:
+        explanations.append("Good compatibility")
+    elif score >= 0.4:
+        explanations.append("Moderate compatibility")
+    else:
+        explanations.append("Low compatibility")
+
+    # Bidirectional balance
+    if fwd and rev:
+        balance = min(fwd, rev) / max(fwd, rev) if max(fwd, rev) > 0 else 0
+        if balance > 0.85:
+            explanations.append("mutually beneficial")
+        elif fwd > rev:
+            explanations.append("you benefit more")
+        else:
+            explanations.append("they benefit more")
+
+    # Requirements match
+    if user_requirements and matched_archetype:
+        req_lower = user_requirements.lower() if user_requirements else ""
+        arch_lower = matched_archetype.lower() if matched_archetype else ""
+        if "investor" in req_lower and "investor" in arch_lower:
+            explanations.append("matches your investor requirement")
+        elif "founder" in req_lower and "founder" in arch_lower:
+            explanations.append("matches your founder requirement")
+        elif "mentor" in req_lower and ("mentor" in arch_lower or "advisor" in arch_lower):
+            explanations.append("matches your mentorship need")
+        elif "technical" in req_lower and "technical" in arch_lower:
+            explanations.append("matches technical expertise")
+
+    return " - ".join(explanations) if explanations else "Potential collaboration opportunity"
+
+
 @router.get("/admin/matching-diagnostics")
 async def get_matching_diagnostics():
     """
@@ -450,6 +492,16 @@ async def get_matching_diagnostics():
         rows = cursor.fetchall()
         cursor.close()
         conn.close()
+
+        # Build user lookup for names
+        user_lookup = {}
+        for row in rows:
+            uid = str(row[0])
+            name = f"{row[2] or ''} {row[3] or ''}".strip() or row[1].split('@')[0]
+            user_lookup[uid] = {
+                "name": name,
+                "email": row[1]
+            }
 
         # Get all embeddings info in bulk
         embedding_info = {}
@@ -514,8 +566,10 @@ async def get_matching_diagnostics():
                     if uid not in match_info:
                         match_info[uid] = {"count": 0, "matches": []}
                     match_info[uid]["count"] += 1
+                    matched_user = user_lookup.get(other_uid, {})
                     match_info[uid]["matches"].append({
                         "matched_with": other_uid,
+                        "matched_user_name": matched_user.get("name", "Unknown"),
                         "decision": row[2] if uid == user_a else row[3],
                         "ai_remarks": row[4][:100] if row[4] else None,
                         "created_at": str(row[5]) if row[5] else None
@@ -575,12 +629,28 @@ async def get_matching_diagnostics():
                 if stored:
                     req_matches = stored.get("requirements_matches", [])
                     for m in req_matches[:10]:  # Limit to top 10
+                        matched_uid = m.get("user_id")
+                        matched_user = user_lookup.get(matched_uid, {})
+                        score = m.get("similarity_score", 0)
+                        fwd = m.get("forward_score", score)
+                        rev = m.get("reverse_score", score)
+
+                        # Generate match explanation
+                        explanation = _generate_match_explanation(
+                            score, fwd, rev,
+                            persona_data.get("requirements"),
+                            persona_data.get("offerings"),
+                            matched_user.get("archetype")
+                        )
+
                         dynamo_matches.append({
-                            "user_id": m.get("user_id"),
-                            "similarity_score": m.get("similarity_score"),
+                            "user_id": matched_uid,
+                            "matched_user_name": matched_user.get("name", "Unknown"),
+                            "similarity_score": score,
                             "match_type": m.get("match_type", "requirements"),
-                            "forward_score": m.get("forward_score"),
-                            "reverse_score": m.get("reverse_score")
+                            "forward_score": fwd,
+                            "reverse_score": rev,
+                            "explanation": explanation
                         })
             except Exception:
                 pass

@@ -605,24 +605,35 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         except Exception as e:
             logger.warning(f"Failed to generate basic embeddings: {e}")
 
-        # Automatically sync matches to backend so they appear in frontend
-        # This is the permanent fix - all future users get matches synced automatically
+        # INLINE BIDIRECTIONAL MATCHING (March 2026)
+        # =========================================
+        # This replaces the old approach of waiting for the 4-hour cron job.
+        # New users get immediate matches AND appear in existing users' match lists.
+        #
+        # The cron job (scheduled_matching.py) still runs for:
+        # - Recalculating matches when embeddings change
+        # - Platform-wide batch updates
+        #
+        # See: app/services/inline_matching_service.py for architecture docs
         try:
-            from app.services.match_sync_service import match_sync_service
-            sync_result = match_sync_service.sync_user_matches(user_id)
-            if sync_result.get('success'):
-                match_count = sync_result.get('count', 0)
-                diag.matches_synced = match_count
-                # Also capture total matches found (before filtering)
-                diag.matches_found = sync_result.get('total_found', match_count)
-                logger.info(f"Synced {match_count} matches to backend for user {user_id}")
+            from app.services.inline_matching_service import inline_matching_service
+            match_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id)
+
+            if match_result.get('success'):
+                diag.matches_found = match_result.get('new_user_matches', 0)
+                diag.matches_synced = match_result.get('new_user_matches', 0) if match_result.get('backend_synced') else 0
+                logger.info(
+                    f"[INLINE MATCH] {user_id}: "
+                    f"{match_result.get('new_user_matches', 0)} matches, "
+                    f"{match_result.get('reciprocal_updates', 0)} reciprocal updates"
+                )
             else:
-                diag.match_sync_error = sync_result.get('error', 'Unknown error')
-                logger.warning(f"Match sync returned unsuccessful for {user_id}: {sync_result.get('error')}")
+                diag.match_sync_error = '; '.join(match_result.get('errors', ['Unknown error']))
+                logger.warning(f"[INLINE MATCH] Failed for {user_id}: {diag.match_sync_error}")
         except Exception as e:
-            # Log but don't fail - user can still use platform, matches will sync later
+            # Log but don't fail - user can still use platform, matches will sync via cron
             diag.match_sync_error = str(e)
-            logger.warning(f"Failed to sync matches to backend: {e}")
+            logger.warning(f"[INLINE MATCH] Exception for {user_id}: {e}")
 
         # Trigger persona generation pipeline
         try:

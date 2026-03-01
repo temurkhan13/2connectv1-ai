@@ -17,6 +17,16 @@ This inline service handles:
 - Bidirectional updates (adds new user to existing users' match lists)
 - Real-time sync to backend
 
+ENHANCED MATCHING FEATURES (March 2026):
+----------------------------------------
+When USE_ENHANCED_MATCHING=true, this service uses:
+- Intent Classification: Detects INVESTOR↔FOUNDER, MENTOR↔MENTEE pairs
+- Dealbreaker Filtering: Excludes matches based on user's hard no's
+- Same-Objective Blocking: Prevents INVESTOR↔INVESTOR, TALENT↔TALENT matches
+- Activity Boost: Active users ranked higher
+- Temporal Boost: New users get visibility boost for 14 days
+- Bidirectional Scoring: Both parties must benefit (geometric mean)
+
 FLOW:
 -----
 1. User completes onboarding
@@ -38,6 +48,10 @@ import logging
 from typing import Dict, Any, List, Set, Optional
 
 logger = logging.getLogger(__name__)
+
+# Feature flags for advanced matching
+USE_ENHANCED_MATCHING = os.getenv("USE_ENHANCED_MATCHING", "false").lower() == "true"
+USE_MULTI_VECTOR_MATCHING = os.getenv("USE_MULTI_VECTOR_MATCHING", "false").lower() == "true"
 
 
 class InlineMatchingService:
@@ -69,6 +83,10 @@ class InlineMatchingService:
         2. Update existing users' match lists to include this new user
         3. Sync all affected matches to backend
 
+        ENHANCED MATCHING (when USE_ENHANCED_MATCHING=true):
+        Uses intent classification, dealbreaker filtering, same-objective blocking,
+        activity boost, and temporal boost for smarter matches.
+
         Args:
             user_id: The new user's ID
             threshold: Minimum similarity score (default from env)
@@ -89,16 +107,26 @@ class InlineMatchingService:
             "new_user_matches": 0,
             "reciprocal_updates": 0,
             "backend_synced": False,
+            "algorithm": "basic",
             "errors": []
         }
 
         try:
             logger.info(f"[INLINE MATCH] Starting bidirectional matching for user {user_id}")
 
-            # STEP 1: Calculate matches for the new user
-            # This finds who the new user should see in their Discover page
-            # Pass the threshold to ensure consistent filtering
-            matches_result = matching_service.find_and_store_user_matches(user_id, threshold=threshold)
+            # STEP 1: Calculate matches using the appropriate algorithm
+            if USE_ENHANCED_MATCHING:
+                # Use enhanced matching with intent classification, dealbreakers, etc.
+                matches_result = self._calculate_enhanced_matches(user_id, threshold)
+                result["algorithm"] = "enhanced_bidirectional"
+            elif USE_MULTI_VECTOR_MATCHING:
+                # Use multi-vector weighted matching (6 dimensions)
+                matches_result = self._calculate_multi_vector_matches(user_id, threshold)
+                result["algorithm"] = "multi_vector"
+            else:
+                # Use basic 2-vector matching
+                matches_result = matching_service.find_and_store_user_matches(user_id, threshold=threshold)
+                result["algorithm"] = "basic"
 
             if not matches_result.get("success"):
                 result["errors"].append(f"Failed to calculate matches: {matches_result.get('message')}")
@@ -289,6 +317,200 @@ class InlineMatchingService:
                 affected.add(match["user_id"])
 
         return list(affected)
+
+    def _calculate_enhanced_matches(
+        self,
+        user_id: str,
+        threshold: float
+    ) -> Dict[str, Any]:
+        """
+        Calculate matches using the enhanced bidirectional matching service.
+
+        Features enabled:
+        - Intent Classification (INVESTOR↔FOUNDER, MENTOR↔MENTEE, etc.)
+        - Dealbreaker Filtering (when ENFORCE_HARD_DEALBREAKERS=true)
+        - Same-Objective Blocking (when BLOCK_SAME_OBJECTIVE=true)
+        - Activity Boost (active users ranked higher)
+        - Temporal Boost (new users get visibility)
+        - Bidirectional Scoring (geometric mean of forward/reverse)
+
+        Returns dict in same format as matching_service.find_and_store_user_matches()
+        """
+        from app.services.enhanced_matching_service import enhanced_matching_service
+        from app.adapters.dynamodb import UserMatches
+
+        try:
+            logger.info(f"[INLINE MATCH] Using ENHANCED matching for user {user_id}")
+
+            # Get enhanced bidirectional matches
+            matches = enhanced_matching_service.find_bidirectional_matches(
+                user_id=user_id,
+                threshold=threshold,
+                limit=self.max_matches,
+                include_explanations=True
+            )
+
+            if not matches:
+                logger.warning(f"[INLINE MATCH] Enhanced matching found 0 matches for {user_id}")
+                return {
+                    "success": True,
+                    "total_matches": 0,
+                    "requirements_matches": [],
+                    "offerings_matches": [],
+                    "algorithm": "enhanced_bidirectional"
+                }
+
+            # Convert BidirectionalMatch objects to legacy format for compatibility
+            # All enhanced matches go into requirements_matches (they're bidirectional)
+            requirements_matches = []
+            offerings_matches = []
+
+            for m in matches:
+                match_data = {
+                    "user_id": m.user_id,
+                    "similarity_score": m.final_score,  # Use final score with all factors
+                    "match_type": "enhanced_bidirectional",
+                    "forward_score": m.forward_score,
+                    "reverse_score": m.reverse_score,
+                    "intent_quality": m.intent_match_quality,
+                    "activity_boost": m.activity_boost,
+                    "temporal_boost": m.temporal_boost,
+                    "explanation": m.match_reasons[0] if m.match_reasons else "Strong bidirectional match"
+                }
+
+                # Put in both lists for reciprocal updates to work correctly
+                # Forward = their offerings match my requirements
+                # Reverse = my offerings match their requirements
+                if m.forward_score >= threshold:
+                    requirements_matches.append(match_data)
+                if m.reverse_score >= threshold:
+                    offerings_matches.append(match_data)
+
+            # Store in DynamoDB
+            matches_to_store = {
+                "requirements_matches": requirements_matches,
+                "offerings_matches": offerings_matches,
+                "algorithm": "enhanced_bidirectional",
+                "threshold": threshold
+            }
+            UserMatches.store_user_matches(user_id, matches_to_store)
+
+            logger.info(
+                f"[INLINE MATCH] Enhanced matching complete for {user_id}: "
+                f"{len(requirements_matches)} requirements, {len(offerings_matches)} offerings"
+            )
+
+            return {
+                "success": True,
+                "total_matches": len(set(m["user_id"] for m in requirements_matches + offerings_matches)),
+                "requirements_matches": requirements_matches,
+                "offerings_matches": offerings_matches,
+                "algorithm": "enhanced_bidirectional"
+            }
+
+        except Exception as e:
+            logger.error(f"[INLINE MATCH] Enhanced matching failed for {user_id}: {e}")
+            # Fall back to basic matching
+            logger.info(f"[INLINE MATCH] Falling back to basic matching for {user_id}")
+            from app.services.matching_service import matching_service
+            return matching_service.find_and_store_user_matches(user_id, threshold=threshold)
+
+    def _calculate_multi_vector_matches(
+        self,
+        user_id: str,
+        threshold: float
+    ) -> Dict[str, Any]:
+        """
+        Calculate matches using multi-vector weighted matching (6 dimensions).
+
+        Dimensions:
+        - primary_goal (20% weight)
+        - industry (25% weight)
+        - stage (20% weight)
+        - geography (15% weight)
+        - engagement_style (10% weight)
+        - dealbreakers (10% weight)
+
+        Returns dict in same format as matching_service.find_and_store_user_matches()
+        """
+        from app.services.multi_vector_matcher import MultiVectorMatcher, MatchTier
+        from app.adapters.dynamodb import UserMatches
+
+        try:
+            logger.info(f"[INLINE MATCH] Using MULTI-VECTOR matching for user {user_id}")
+
+            matcher = MultiVectorMatcher()
+
+            # Map threshold to tier: 0.7+ = STRONG, 0.55+ = WORTH_EXPLORING, else LOW
+            if threshold >= 0.7:
+                min_tier = MatchTier.STRONG
+            elif threshold >= 0.55:
+                min_tier = MatchTier.WORTH_EXPLORING
+            else:
+                min_tier = MatchTier.LOW
+
+            # Find multi-vector matches
+            matches = matcher.find_multi_vector_matches(
+                user_id=user_id,
+                min_tier=min_tier,
+                limit=self.max_matches
+            )
+
+            if not matches:
+                logger.warning(f"[INLINE MATCH] Multi-vector matching found 0 matches for {user_id}")
+                return {
+                    "success": True,
+                    "total_matches": 0,
+                    "requirements_matches": [],
+                    "offerings_matches": [],
+                    "algorithm": "multi_vector"
+                }
+
+            # Convert MultiVectorMatchResult objects to legacy format
+            requirements_matches = []
+            for m in matches:
+                if m.tier != MatchTier.LOW:
+                    match_data = {
+                        "user_id": m.user_id,
+                        "similarity_score": m.total_score,
+                        "match_type": "multi_vector",
+                        "tier": m.tier.value,
+                        "dimension_scores": [
+                            {"dimension": ds.dimension, "score": ds.weighted_score}
+                            for ds in m.dimension_scores
+                        ],
+                        "explanation": m.explanation or f"Multi-vector {m.tier.value} match"
+                    }
+                    requirements_matches.append(match_data)
+
+            # Store in DynamoDB
+            matches_to_store = {
+                "requirements_matches": requirements_matches,
+                "offerings_matches": [],  # Multi-vector currently does requirements only
+                "algorithm": "multi_vector",
+                "threshold": threshold
+            }
+            UserMatches.store_user_matches(user_id, matches_to_store)
+
+            logger.info(
+                f"[INLINE MATCH] Multi-vector matching complete for {user_id}: "
+                f"{len(requirements_matches)} matches"
+            )
+
+            return {
+                "success": True,
+                "total_matches": len(requirements_matches),
+                "requirements_matches": requirements_matches,
+                "offerings_matches": [],
+                "algorithm": "multi_vector"
+            }
+
+        except Exception as e:
+            logger.error(f"[INLINE MATCH] Multi-vector matching failed for {user_id}: {e}")
+            # Fall back to basic matching
+            logger.info(f"[INLINE MATCH] Falling back to basic matching for {user_id}")
+            from app.services.matching_service import matching_service
+            return matching_service.find_and_store_user_matches(user_id, threshold=threshold)
 
 
 # Singleton instance

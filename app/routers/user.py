@@ -941,10 +941,15 @@ async def regenerate_embeddings(request: dict):
 @router.post("/admin/regenerate-matches")
 async def regenerate_matches(request: dict):
     """
-    Trigger match recalculation for a user.
+    Trigger match recalculation for a user using the inline bidirectional matching service.
+
+    This uses the same matching logic as onboarding completion:
+    - Calculates matches for the user (threshold 0.5)
+    - Updates reciprocal matches (other users' match lists)
+    - Syncs to backend
     """
     import os
-    from app.services.match_sync_service import match_sync_service
+    from app.services.inline_matching_service import inline_matching_service
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -954,12 +959,92 @@ async def regenerate_matches(request: dict):
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
+    # Optional: allow custom threshold (default 0.5)
+    threshold = request.get("threshold", 0.5)
+
     try:
-        logger.info(f"Manually triggering match calculation for user: {user_id}")
-        result = match_sync_service.sync_user_matches(user_id)
-        return {"code": 200, "message": "Match calculation complete", "result": result}
+        logger.info(f"Manually triggering bidirectional match calculation for user: {user_id} (threshold: {threshold})")
+        result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id, threshold=threshold)
+        return {"code": 200, "message": "Bidirectional match calculation complete", "result": result}
     except Exception as e:
         logger.error(f"Error calculating matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/regenerate-all-matches")
+async def regenerate_all_matches(request: dict):
+    """
+    Batch recalculate matches for ALL completed users.
+
+    This fixes the BUG-009 issue where everyone matched with everyone
+    due to 0.0 threshold. Running this will:
+    - Recalculate matches with proper threshold (0.5)
+    - Update all reciprocal match lists
+    - Sync all affected users to backend
+
+    WARNING: This can take several minutes for large user bases.
+    """
+    import os
+    from app.services.inline_matching_service import inline_matching_service
+    from app.adapters.dynamodb import UserProfile
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    threshold = request.get("threshold", 0.5)
+    dry_run = request.get("dry_run", False)
+
+    try:
+        # Get all users with completed onboarding and embeddings
+        completed_users = []
+        for profile in UserProfile.scan():
+            if profile.onboarding_status == "completed":
+                completed_users.append(profile.user_id)
+
+        logger.info(f"Found {len(completed_users)} completed users for match recalculation")
+
+        if dry_run:
+            return {
+                "code": 200,
+                "message": "Dry run - no changes made",
+                "users_to_process": len(completed_users),
+                "threshold": threshold
+            }
+
+        results = {
+            "processed": 0,
+            "success": 0,
+            "failed": 0,
+            "errors": []
+        }
+
+        for user_id in completed_users:
+            try:
+                logger.info(f"Recalculating matches for user {user_id}")
+                result = inline_matching_service.calculate_and_sync_matches_bidirectional(
+                    user_id,
+                    threshold=threshold
+                )
+                results["processed"] += 1
+                if result.get("success"):
+                    results["success"] += 1
+                else:
+                    results["failed"] += 1
+                    results["errors"].append({"user_id": user_id, "error": result.get("errors", [])})
+            except Exception as e:
+                results["processed"] += 1
+                results["failed"] += 1
+                results["errors"].append({"user_id": user_id, "error": str(e)})
+                logger.error(f"Error recalculating matches for {user_id}: {e}")
+
+        return {
+            "code": 200,
+            "message": f"Batch match recalculation complete. {results['success']}/{results['processed']} succeeded.",
+            "result": results
+        }
+    except Exception as e:
+        logger.error(f"Error in batch match recalculation: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

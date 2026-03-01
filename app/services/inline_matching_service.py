@@ -52,6 +52,10 @@ logger = logging.getLogger(__name__)
 # Feature flags for advanced matching
 USE_ENHANCED_MATCHING = os.getenv("USE_ENHANCED_MATCHING", "false").lower() == "true"
 USE_MULTI_VECTOR_MATCHING = os.getenv("USE_MULTI_VECTOR_MATCHING", "false").lower() == "true"
+USE_HYBRID_MATCHING = os.getenv("USE_HYBRID_MATCHING", "false").lower() == "true"
+
+# HYBRID = Multi-Vector base (6 dimensions) + Enhanced features (intent, bidirectional, etc.)
+# When HYBRID is enabled, it combines the best of both systems
 
 
 class InlineMatchingService:
@@ -115,7 +119,13 @@ class InlineMatchingService:
             logger.info(f"[INLINE MATCH] Starting bidirectional matching for user {user_id}")
 
             # STEP 1: Calculate matches using the appropriate algorithm
-            if USE_ENHANCED_MATCHING:
+            # Priority: HYBRID > ENHANCED > MULTI_VECTOR > BASIC
+            if USE_HYBRID_MATCHING:
+                # HYBRID: Multi-vector base (6 dimensions) + Enhanced features
+                # Combines the best of both systems
+                matches_result = self._calculate_hybrid_matches(user_id, threshold)
+                result["algorithm"] = "hybrid_full"
+            elif USE_ENHANCED_MATCHING:
                 # Use enhanced matching with intent classification, dealbreakers, etc.
                 matches_result = self._calculate_enhanced_matches(user_id, threshold)
                 result["algorithm"] = "enhanced_bidirectional"
@@ -511,6 +521,362 @@ class InlineMatchingService:
             logger.info(f"[INLINE MATCH] Falling back to basic matching for {user_id}")
             from app.services.matching_service import matching_service
             return matching_service.find_and_store_user_matches(user_id, threshold=threshold)
+
+    def _calculate_hybrid_matches(
+        self,
+        user_id: str,
+        threshold: float
+    ) -> Dict[str, Any]:
+        """
+        HYBRID MATCHING: Combines Multi-Vector (6 dimensions) + Enhanced Features.
+
+        This is the most comprehensive matching algorithm:
+
+        MULTI-VECTOR BASE (6 dimensions with weights):
+        - primary_goal (20% weight) - User's main objective
+        - industry (25% weight) - Industry/sector focus
+        - stage (20% weight) - Investment/company stage
+        - geography (15% weight) - Geographic preferences
+        - engagement_style (10% weight) - Communication preferences
+        - dealbreakers (10% weight) - Hard exclusion criteria
+
+        ENHANCED FEATURES (applied on top):
+        - Intent Classification (INVESTOR↔FOUNDER, MENTOR↔MENTEE detection)
+        - Bidirectional Scoring (geometric mean: both parties must benefit)
+        - Dealbreaker Filtering (when ENFORCE_HARD_DEALBREAKERS=true)
+        - Same-Objective Blocking (when BLOCK_SAME_OBJECTIVE=true)
+        - Activity Boost (active users ranked higher)
+        - Temporal Boost (new users get visibility for 14 days)
+
+        Returns dict in same format as matching_service.find_and_store_user_matches()
+        """
+        import math
+        from app.services.multi_vector_matcher import MultiVectorMatcher, MatchTier
+        from app.services.enhanced_matching_service import (
+            enhanced_matching_service,
+            IntentClassifier,
+            MatchIntent,
+            INTENT_SCORING_CONFIGS
+        )
+        from app.adapters.dynamodb import UserProfile, UserMatches
+
+        try:
+            logger.info(f"[INLINE MATCH] Using HYBRID matching for user {user_id}")
+
+            # STEP 1: Get multi-vector base scores (6 dimensions)
+            matcher = MultiVectorMatcher()
+            multi_vector_matches = matcher.find_multi_vector_matches(
+                user_id=user_id,
+                min_tier=MatchTier.LOW,  # Get all, we'll filter later
+                limit=self.max_matches * 2  # Get more, we'll filter down
+            )
+
+            if not multi_vector_matches:
+                logger.warning(f"[INLINE MATCH] Hybrid matching found 0 multi-vector candidates for {user_id}")
+                return {
+                    "success": True,
+                    "total_matches": 0,
+                    "requirements_matches": [],
+                    "offerings_matches": [],
+                    "algorithm": "hybrid_full"
+                }
+
+            # STEP 2: Get user's persona for enhanced features
+            try:
+                user_profile = UserProfile.get(user_id)
+                user_persona = user_profile.persona
+            except Exception as e:
+                logger.warning(f"[INLINE MATCH] Could not load persona for {user_id}: {e}")
+                user_persona = None
+
+            # STEP 3: Classify user intent
+            intent_classifier = IntentClassifier()
+            if user_persona:
+                user_intent, intent_confidence = intent_classifier.classify({
+                    "what_theyre_looking_for": getattr(user_persona, "what_theyre_looking_for", ""),
+                    "requirements": getattr(user_persona, "requirements", ""),
+                    "offerings": getattr(user_persona, "offerings", ""),
+                    "archetype": getattr(user_persona, "archetype", ""),
+                    "focus": getattr(user_persona, "focus", "")
+                })
+            else:
+                user_intent, intent_confidence = MatchIntent.GENERAL, 0.5
+
+            # STEP 4: Get user's dealbreakers
+            user_dealbreakers = []
+            if user_persona:
+                # Extract dealbreakers from persona
+                dealbreaker_text = getattr(user_persona, "what_theyre_looking_for", "") or ""
+                # Look for "not interested in", "avoid", "no" patterns
+                import re
+                patterns = [
+                    r"not interested in ([^,\.]+)",
+                    r"avoid ([^,\.]+)",
+                    r"no ([^,\.]+) please"
+                ]
+                for pattern in patterns:
+                    matches = re.findall(pattern, dealbreaker_text.lower())
+                    user_dealbreakers.extend(matches)
+
+            # STEP 5: Apply enhanced features to each multi-vector match
+            enhanced_matches = []
+            blocked_count = 0
+            dealbreaker_count = 0
+
+            for mv_match in multi_vector_matches:
+                candidate_id = mv_match.user_id
+                base_score = mv_match.total_score  # Multi-vector weighted score
+
+                # Skip if below base threshold
+                if base_score < threshold * 0.7:  # Allow some below threshold for boosts
+                    continue
+
+                # Get candidate persona for intent matching
+                try:
+                    candidate_profile = UserProfile.get(candidate_id)
+                    candidate_persona = candidate_profile.persona
+                except Exception:
+                    candidate_persona = None
+
+                # 5a. Classify candidate intent
+                if candidate_persona:
+                    candidate_intent, _ = intent_classifier.classify({
+                        "what_theyre_looking_for": getattr(candidate_persona, "what_theyre_looking_for", ""),
+                        "requirements": getattr(candidate_persona, "requirements", ""),
+                        "offerings": getattr(candidate_persona, "offerings", ""),
+                        "archetype": getattr(candidate_persona, "archetype", ""),
+                        "focus": getattr(candidate_persona, "focus", "")
+                    })
+                else:
+                    candidate_intent = MatchIntent.GENERAL
+
+                # 5b. Check intent complementarity
+                intent_quality = self._get_intent_quality(user_intent, candidate_intent)
+
+                # 5c. Check same-objective blocking
+                if enhanced_matching_service.block_same_objective:
+                    if self._should_block_same_objective(user_intent, candidate_intent):
+                        blocked_count += 1
+                        continue
+
+                # 5d. Check dealbreakers
+                if enhanced_matching_service.enforce_hard_dealbreakers and user_dealbreakers:
+                    if candidate_persona:
+                        candidate_text = " ".join([
+                            str(getattr(candidate_persona, "focus", "") or ""),
+                            str(getattr(candidate_persona, "archetype", "") or ""),
+                        ]).lower()
+                        violated = any(db in candidate_text for db in user_dealbreakers)
+                        if violated:
+                            dealbreaker_count += 1
+                            continue
+
+                # 5e. Calculate bidirectional adjustment
+                # Use enhanced service's bidirectional calculation
+                bidirectional_factor = 1.0
+                try:
+                    bidirectional_matches = enhanced_matching_service.find_bidirectional_matches(
+                        user_id=user_id,
+                        threshold=0.3,  # Low threshold, we're filtering ourselves
+                        limit=1,
+                        candidate_ids=[candidate_id],
+                        include_explanations=False
+                    )
+                    if bidirectional_matches:
+                        bm = bidirectional_matches[0]
+                        # Geometric mean of forward and reverse
+                        bidirectional_factor = math.sqrt(bm.forward_score * bm.reverse_score) / base_score
+                        bidirectional_factor = max(0.5, min(1.5, bidirectional_factor))  # Cap adjustment
+                except Exception:
+                    pass  # Use default factor
+
+                # 5f. Calculate activity boost
+                activity_boost = enhanced_matching_service._calculate_activity_boost(candidate_id)
+
+                # 5g. Calculate temporal boost
+                temporal_boost = enhanced_matching_service._calculate_temporal_boost(candidate_id)
+
+                # STEP 6: Calculate final hybrid score
+                # Base (multi-vector) × intent × bidirectional × boosts
+                final_score = (
+                    base_score *
+                    (0.7 + 0.3 * intent_quality) *  # Intent can boost by 30%
+                    bidirectional_factor *
+                    (0.9 + 0.1 * activity_boost) *  # Activity can boost by 10%
+                    (0.95 + 0.05 * temporal_boost)   # Temporal can boost by 5%
+                )
+
+                # Only include if above threshold
+                if final_score >= threshold:
+                    match_data = {
+                        "user_id": candidate_id,
+                        "similarity_score": round(final_score, 4),
+                        "match_type": "hybrid_full",
+                        # Multi-vector components
+                        "base_score": round(base_score, 4),
+                        "tier": mv_match.tier.value,
+                        "dimension_scores": [
+                            {"dimension": ds.dimension, "score": round(ds.weighted_score, 4)}
+                            for ds in mv_match.dimension_scores
+                        ],
+                        # Enhanced components
+                        "intent_quality": round(intent_quality, 2),
+                        "user_intent": user_intent.value,
+                        "candidate_intent": candidate_intent.value,
+                        "activity_boost": round(activity_boost, 2),
+                        "temporal_boost": round(temporal_boost, 2),
+                        "bidirectional_factor": round(bidirectional_factor, 2),
+                        "explanation": self._generate_hybrid_explanation(
+                            mv_match, user_intent, candidate_intent, intent_quality
+                        )
+                    }
+                    enhanced_matches.append(match_data)
+
+            # Sort by final score
+            enhanced_matches.sort(key=lambda x: x["similarity_score"], reverse=True)
+
+            # Limit to max_matches
+            enhanced_matches = enhanced_matches[:self.max_matches]
+
+            # Store in DynamoDB
+            matches_to_store = {
+                "requirements_matches": enhanced_matches,
+                "offerings_matches": enhanced_matches,  # Bidirectional, same list
+                "algorithm": "hybrid_full",
+                "threshold": threshold
+            }
+            UserMatches.store_user_matches(user_id, matches_to_store)
+
+            logger.info(
+                f"[INLINE MATCH] Hybrid matching complete for {user_id}: "
+                f"{len(enhanced_matches)} matches (blocked: {blocked_count}, dealbreakers: {dealbreaker_count})"
+            )
+
+            return {
+                "success": True,
+                "total_matches": len(enhanced_matches),
+                "requirements_matches": enhanced_matches,
+                "offerings_matches": enhanced_matches,
+                "algorithm": "hybrid_full",
+                "stats": {
+                    "candidates_evaluated": len(multi_vector_matches),
+                    "blocked_same_objective": blocked_count,
+                    "blocked_dealbreakers": dealbreaker_count
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"[INLINE MATCH] Hybrid matching failed for {user_id}: {e}")
+            # Fall back to enhanced matching
+            logger.info(f"[INLINE MATCH] Falling back to enhanced matching for {user_id}")
+            return self._calculate_enhanced_matches(user_id, threshold)
+
+    def _get_intent_quality(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> float:
+        """
+        Calculate intent complementarity score (0-1).
+
+        Perfect matches (1.0):
+        - INVESTOR_FOUNDER ↔ FOUNDER_INVESTOR
+        - MENTOR_MENTEE ↔ MENTEE_MENTOR
+        - TALENT_SEEKING ↔ OPPORTUNITY_SEEKING
+
+        Good matches (0.8):
+        - COFOUNDER ↔ COFOUNDER
+        - PARTNERSHIP ↔ PARTNERSHIP
+
+        Neutral (0.5):
+        - GENERAL ↔ anything
+
+        Poor matches (0.3):
+        - Same-seeking intents (INVESTOR_FOUNDER ↔ INVESTOR_FOUNDER)
+        """
+        from app.services.enhanced_matching_service import MatchIntent
+
+        # Perfect complementary pairs
+        complementary_pairs = {
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 1.0,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 1.0,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 1.0,
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE): 1.0,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 1.0,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
+        }
+
+        # Same-type matches (both seeking the same thing)
+        same_type_pairs = {
+            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
+            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
+        }
+
+        pair = (user_intent, candidate_intent)
+
+        if pair in complementary_pairs:
+            return complementary_pairs[pair]
+        if pair in same_type_pairs:
+            return same_type_pairs[pair]
+        if user_intent == MatchIntent.GENERAL or candidate_intent == MatchIntent.GENERAL:
+            return 0.5
+        if user_intent == candidate_intent:
+            return 0.3  # Both seeking same thing (e.g., both INVESTOR_FOUNDER)
+        return 0.4  # Unrelated intents
+
+    def _should_block_same_objective(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> bool:
+        """
+        Check if two users should be blocked from matching due to same objective.
+
+        Blocks:
+        - Two investors both looking for founders
+        - Two founders both raising
+        - Two job seekers
+        - Two hiring companies
+        """
+        from app.services.enhanced_matching_service import MatchIntent
+
+        blocked_same_pairs = [
+            MatchIntent.INVESTOR_FOUNDER,  # Two investors
+            MatchIntent.FOUNDER_INVESTOR,  # Two founders raising
+            MatchIntent.OPPORTUNITY_SEEKING,  # Two job seekers
+            MatchIntent.TALENT_SEEKING,  # Two hiring companies
+            MatchIntent.MENTEE_MENTOR,  # Two mentees seeking mentors
+        ]
+
+        return user_intent == candidate_intent and user_intent in blocked_same_pairs
+
+    def _generate_hybrid_explanation(
+        self,
+        mv_match: Any,
+        user_intent: 'MatchIntent',
+        candidate_intent: 'MatchIntent',
+        intent_quality: float
+    ) -> str:
+        """Generate human-readable explanation for hybrid match."""
+        from app.services.enhanced_matching_service import MatchIntent
+
+        # Base explanation from tier
+        tier_explanations = {
+            "perfect": "Exceptional match across all dimensions",
+            "strong": "Strong compatibility",
+            "worth_exploring": "Worth exploring",
+            "low": "Potential connection"
+        }
+        base = tier_explanations.get(mv_match.tier.value, "Match found")
+
+        # Add intent context
+        if intent_quality >= 0.9:
+            if user_intent == MatchIntent.INVESTOR_FOUNDER and candidate_intent == MatchIntent.FOUNDER_INVESTOR:
+                return f"{base} — Investor meets Founder seeking funding"
+            elif user_intent == MatchIntent.FOUNDER_INVESTOR and candidate_intent == MatchIntent.INVESTOR_FOUNDER:
+                return f"{base} — Founder meets active Investor"
+            elif user_intent == MatchIntent.MENTOR_MENTEE and candidate_intent == MatchIntent.MENTEE_MENTOR:
+                return f"{base} — Mentor meets eager Mentee"
+            elif user_intent == MatchIntent.MENTEE_MENTOR and candidate_intent == MatchIntent.MENTOR_MENTEE:
+                return f"{base} — Mentee meets experienced Mentor"
+            else:
+                return f"{base} — Complementary objectives"
+        elif intent_quality >= 0.7:
+            return f"{base} — Good alignment on goals"
+        else:
+            return base
 
 
 # Singleton instance

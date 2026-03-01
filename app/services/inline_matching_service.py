@@ -49,7 +49,9 @@ class InlineMatchingService:
     """
 
     def __init__(self):
-        self.threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.3"))
+        # BUG FIX: Increased default from 0.3 to 0.5 for more meaningful matches
+        # 0.3 was too permissive, causing everyone to match with everyone
+        self.threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.5"))
         self.max_matches = int(os.getenv("MAX_INLINE_MATCHES", "50"))
 
     def calculate_and_sync_matches_bidirectional(
@@ -95,7 +97,8 @@ class InlineMatchingService:
 
             # STEP 1: Calculate matches for the new user
             # This finds who the new user should see in their Discover page
-            matches_result = matching_service.find_and_store_user_matches(user_id)
+            # Pass the threshold to ensure consistent filtering
+            matches_result = matching_service.find_and_store_user_matches(user_id, threshold=threshold)
 
             if not matches_result.get("success"):
                 result["errors"].append(f"Failed to calculate matches: {matches_result.get('message')}")

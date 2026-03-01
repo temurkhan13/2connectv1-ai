@@ -220,12 +220,22 @@ class MatchingService:
             logger.error(f"Error getting stats: {str(e)}")
             raise e
     
-    def find_and_store_user_matches(self, user_id: str) -> Dict[str, Any]:
-        """Find matches and store them in DynamoDB."""
+    def find_and_store_user_matches(self, user_id: str, threshold: float = None) -> Dict[str, Any]:
+        """Find matches and store them in DynamoDB.
+
+        Args:
+            user_id: User ID to find matches for
+            threshold: Minimum similarity score (defaults to embedding_service.similarity_threshold)
+        """
         try:
             logger.info(f"Finding and storing matches for user {user_id}")
-            
-            matches_result = self.find_user_matches(user_id, 0.0)
+
+            # BUG FIX: Use proper threshold instead of 0.0 which returned ALL users as matches
+            # Default to embedding service's threshold (0.7 from SIMILARITY_THRESHOLD env var)
+            if threshold is None:
+                threshold = self.embedding_service.similarity_threshold
+
+            matches_result = self.find_user_matches(user_id, threshold)
             
             # Format the result like other methods
             requirements_matches = self.format_match_results(

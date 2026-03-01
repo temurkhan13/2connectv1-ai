@@ -1513,14 +1513,18 @@ async def sync_matches_from_dynamodb(request: dict):
                 # Get matches from DynamoDB
                 stored_matches = UserMatches.get_user_matches(user_id)
 
-                if not stored_matches or not stored_matches.get("matches"):
+                # Check for matches in correct structure (requirements_matches + offerings_matches)
+                req_matches = stored_matches.get("requirements_matches", []) if stored_matches else []
+                off_matches = stored_matches.get("offerings_matches", []) if stored_matches else []
+
+                if not req_matches and not off_matches:
                     result["users_skipped"] += 1
                     continue
 
-                # Convert to sync format
+                # Pass through the matches as-is (get_user_matches already returns correct format)
                 matches_for_sync = {
-                    "requirements_matches": stored_matches.get("matches", []),
-                    "offerings_matches": []
+                    "requirements_matches": req_matches,
+                    "offerings_matches": off_matches
                 }
 
                 # Sync to backend

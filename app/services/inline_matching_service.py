@@ -572,14 +572,9 @@ class InlineMatchingService:
             )
 
             if not multi_vector_matches:
-                logger.warning(f"[INLINE MATCH] Hybrid matching found 0 multi-vector candidates for {user_id}")
-                return {
-                    "success": True,
-                    "total_matches": 0,
-                    "requirements_matches": [],
-                    "offerings_matches": [],
-                    "algorithm": "hybrid_full"
-                }
+                # Multi-vector embeddings don't exist yet, fall back to enhanced matching
+                logger.warning(f"[INLINE MATCH] No multi-vector embeddings for {user_id}, falling back to enhanced matching")
+                return self._calculate_enhanced_matches(user_id, threshold)
 
             # STEP 2: Get user's persona for enhanced features
             try:

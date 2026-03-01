@@ -794,3 +794,172 @@ def _generate_contextual_response(
 
     # All core slots filled - wrap up conversationally
     return "This is great context. Feel free to share anything else, or we can move forward whenever you're ready."
+
+
+# =============================================================================
+# DIAGNOSTIC/BACKFILL ENDPOINTS
+# =============================================================================
+
+class BackfillResponse(BaseModel):
+    """Response from backfill operations."""
+    success: bool
+    total_users_checked: int
+    users_missing_summaries: int
+    summaries_created: int
+    errors: List[str]
+
+
+@router.get("/backfill/user-summaries", response_model=BackfillResponse)
+async def backfill_user_summaries():
+    """
+    UX-003 FIX: Backfill missing UserSummaries for completed users.
+
+    Users who complete onboarding but don't have UserSummaries won't appear
+    on the Discover page. This endpoint finds and fixes those users.
+    """
+    from app.adapters.postgresql import PostgreSQLAdapter
+    import json
+
+    errors = []
+    total_checked = 0
+    missing_count = 0
+    created_count = 0
+
+    try:
+        postgresql_adapter = PostgreSQLAdapter()
+        conn = postgresql_adapter.get_backend_connection()
+        cursor = conn.cursor()
+
+        # Find completed users without summaries
+        cursor.execute("""
+            SELECT u.id, u.first_name, u.last_name, u.objective
+            FROM users u
+            LEFT JOIN user_summaries us ON us.user_id = u.id
+            WHERE u.deleted_at IS NULL
+            AND u.onboarding_status = 'completed'
+            AND u.is_active = true
+            AND us.id IS NULL
+            ORDER BY u.created_at DESC
+        """)
+        users_without_summaries = cursor.fetchall()
+        total_checked = len(users_without_summaries)
+        missing_count = total_checked
+
+        logger.info(f"Found {missing_count} users without summaries")
+
+        for user in users_without_summaries:
+            user_id, first_name, last_name, objective = user
+            try:
+                # Create a basic summary from available data
+                summary_data = {
+                    "profile_type": "professional",
+                    "industry": "",
+                    "stage": "",
+                    "goal": objective or "seeking connections",
+                    "geography": "",
+                    "offerings": f"{first_name} is a professional seeking meaningful connections.",
+                    "requirements": "",
+                }
+                summary_json = json.dumps(summary_data)
+
+                summary_id = postgresql_adapter.create_user_summary(
+                    user_id=user_id,
+                    summary=summary_json,
+                    status='draft',
+                    urgency='ongoing'
+                )
+
+                if summary_id:
+                    created_count += 1
+                    logger.info(f"Created summary for user {user_id}")
+                else:
+                    errors.append(f"Failed to create summary for {user_id}")
+            except Exception as e:
+                errors.append(f"Error for {user_id}: {str(e)}")
+
+        cursor.close()
+        conn.close()
+
+    except Exception as e:
+        logger.error(f"Backfill error: {e}")
+        errors.append(f"Connection error: {str(e)}")
+
+    return BackfillResponse(
+        success=len(errors) == 0,
+        total_users_checked=total_checked,
+        users_missing_summaries=missing_count,
+        summaries_created=created_count,
+        errors=errors[:10]  # Limit error list
+    )
+
+
+@router.get("/diagnostics/discover-eligibility")
+async def check_discover_eligibility():
+    """
+    Diagnostic endpoint to check why users might not appear on Discover page.
+    """
+    from app.adapters.postgresql import PostgreSQLAdapter
+
+    try:
+        postgresql_adapter = PostgreSQLAdapter()
+        conn = postgresql_adapter.get_backend_connection()
+        cursor = conn.cursor()
+
+        # Total users
+        cursor.execute("SELECT COUNT(*) FROM users WHERE deleted_at IS NULL")
+        total = cursor.fetchone()[0]
+
+        # By onboarding status
+        cursor.execute("""
+            SELECT onboarding_status, COUNT(*)
+            FROM users
+            WHERE deleted_at IS NULL
+            GROUP BY onboarding_status
+        """)
+        by_status = {row[0]: row[1] for row in cursor.fetchall()}
+
+        # Discoverable (completed + active + not test)
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM users
+            WHERE deleted_at IS NULL
+            AND onboarding_status = 'completed'
+            AND is_active = true
+            AND is_test = false
+        """)
+        discoverable = cursor.fetchone()[0]
+
+        # With summaries
+        cursor.execute("""
+            SELECT COUNT(DISTINCT u.id)
+            FROM users u
+            JOIN user_summaries us ON us.user_id = u.id
+            WHERE u.deleted_at IS NULL
+            AND u.onboarding_status = 'completed'
+            AND u.is_active = true
+            AND u.is_test = false
+        """)
+        with_summaries = cursor.fetchone()[0]
+
+        cursor.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "data": {
+                "total_users": total,
+                "by_onboarding_status": by_status,
+                "discoverable_users": discoverable,
+                "with_summaries": with_summaries,
+                "missing_summaries": discoverable - with_summaries,
+                "issue": "Users missing summaries won't appear on Discover" if discoverable > with_summaries else None
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Diagnostics error: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "hint": "Check RECIPROCITY_BACKEND_DB_URL environment variable"
+        }

@@ -3,7 +3,7 @@ User-related FastAPI routes.
 """
 import logging
 from functools import lru_cache
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
 
 from app.schemas.user import (

@@ -760,6 +760,11 @@ async def list_all_users():
         # Get embedding counts and types in bulk
         embedding_counts = {}
         embedding_types = {}
+        multi_vector_info = {}  # Track multi-vector embedding status
+
+        # Multi-vector dimensions (6 total)
+        MV_DIMENSIONS = ['primary_goal', 'industry', 'stage', 'geography', 'engagement_style', 'dealbreakers']
+
         if ai_db_url:
             try:
                 ai_conn = psycopg2.connect(ai_db_url)
@@ -775,6 +780,28 @@ async def list_all_users():
                     types = row[2] if row[2] else []
                     type_labels = {'requirements': 'Requirements', 'offerings': 'Offerings', 'combined': 'Combined'}
                     embedding_types[uid] = [type_labels.get(t, t) for t in types if t]
+
+                    # Calculate multi-vector coverage
+                    mv_present = []
+                    mv_missing = []
+                    for dim in MV_DIMENSIONS:
+                        # Check if both requirements and offerings exist for this dimension
+                        has_req = f'requirements_{dim}' in types
+                        has_off = f'offerings_{dim}' in types
+                        if has_req and has_off:
+                            mv_present.append(dim)
+                        elif has_req or has_off:
+                            mv_present.append(f'{dim}(partial)')
+                        else:
+                            mv_missing.append(dim)
+
+                    multi_vector_info[uid] = {
+                        'count': len([d for d in mv_present if '(partial)' not in d]),
+                        'total': len(MV_DIMENSIONS),
+                        'present': mv_present,
+                        'missing': mv_missing,
+                        'complete': len(mv_missing) == 0 and '(partial)' not in str(mv_present)
+                    }
                 ai_cursor.close()
                 ai_conn.close()
             except Exception as e:
@@ -875,6 +902,11 @@ async def list_all_users():
             else:
                 status = "healthy"
 
+            # Get multi-vector info for this user
+            mv_info = multi_vector_info.get(user_id, {
+                'count': 0, 'total': 6, 'present': [], 'missing': MV_DIMENSIONS, 'complete': False
+            })
+
             users.append({
                 "user_id": user_id,
                 "email": row[1],
@@ -888,6 +920,7 @@ async def list_all_users():
                 "questions_answered": questions_answered,
                 "embeddings_count": embed_count,
                 "embedding_types": embedding_types.get(user_id, []),  # List of types
+                "multi_vector": mv_info,  # Multi-vector embedding status
                 "matches_count": match_count,
                 "status": status,
                 "created_at": str(row[5]) if row[5] else None
@@ -902,7 +935,10 @@ async def list_all_users():
                 "healthy": len([u for u in users if u["status"] == "healthy"]),
                 "embeddings_missing": len([u for u in users if u["status"] == "embeddings_missing"]),
                 "matches_missing": len([u for u in users if u["status"] == "matches_missing"]),
-                "onboarding_incomplete": len([u for u in users if u["status"] == "onboarding_incomplete"])
+                "onboarding_incomplete": len([u for u in users if u["status"] == "onboarding_incomplete"]),
+                "multi_vector_complete": len([u for u in users if u.get("multi_vector", {}).get("complete", False)]),
+                "multi_vector_partial": len([u for u in users if 0 < u.get("multi_vector", {}).get("count", 0) < 6]),
+                "multi_vector_none": len([u for u in users if u.get("multi_vector", {}).get("count", 0) == 0])
             }
         }
 

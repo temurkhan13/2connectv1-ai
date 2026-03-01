@@ -182,15 +182,25 @@ async def chat(request: ChatMessageRequest):
         progress = progressive_disclosure.get_progress_summary(session_id)
         completion = progress.get("progress_percent", 0.0)
 
-        # Generate AI response using LLM result if available
-        # NOTE: Only show follow_up_question to user - understanding_summary is internal
-        llm_result = context_manager.get_llm_response(session_id)
-        if llm_result and llm_result.follow_up_question:
-            # Use only the follow-up question - don't repeat back what user said
-            ai_response = llm_result.follow_up_question
+        # BUG-001 FIX: Check if user signals completion BEFORE generating response
+        # This prevents the AI from asking follow-up questions when user says "I'm done"
+        is_complete = context_manager.is_complete(session_id)
+
+        if is_complete:
+            # User signaled completion OR all required slots filled
+            # Skip follow-up question generation entirely
+            ai_response = "Perfect! I have everything I need to find your matches. Click the button below to complete your profile."
+            logger.info(f"Session {session_id}: User completion detected, skipping follow-up")
         else:
-            # Fallback to template-based response
-            ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
+            # Generate AI response using LLM result if available
+            # NOTE: Only show follow_up_question to user - understanding_summary is internal
+            llm_result = context_manager.get_llm_response(session_id)
+            if llm_result and llm_result.follow_up_question:
+                # Use only the follow-up question - don't repeat back what user said
+                ai_response = llm_result.follow_up_question
+            else:
+                # Fallback to template-based response
+                ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
 
         # Add assistant turn
         context_manager.add_turn(
@@ -199,14 +209,14 @@ async def chat(request: ChatMessageRequest):
             content=ai_response
         )
 
-        # Get next questions
-        batch = progressive_disclosure.get_next_batch(session_id)
+        # Get next questions (only if not complete)
         next_questions = []
-        if batch:
-            next_questions = [q.question_text for q in batch.questions]
+        if not is_complete:
+            batch = progressive_disclosure.get_next_batch(session_id)
+            if batch:
+                next_questions = [q.question_text for q in batch.questions]
 
-        # Check if complete
-        is_complete = context_manager.is_complete(session_id)
+        # is_complete already computed above (BUG-001 fix)
 
         return ChatMessageResponse(
             session_id=session_id,

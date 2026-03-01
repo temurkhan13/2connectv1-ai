@@ -240,6 +240,18 @@ class LLMSlotExtractor:
         already_filled = already_filled_slots or {}
         history = conversation_history or []
 
+        # BUG-001 FIX: Check for completion intent BEFORE calling LLM
+        # If user signals they're done, return early with empty follow_up_question
+        if self._user_wants_to_finish(user_message, already_filled):
+            logger.info(f"User completion signal detected in message: '{user_message[:50]}...'")
+            return LLMExtractionResult(
+                extracted_slots={},
+                user_type_inference=already_filled.get("user_type", "unknown"),
+                follow_up_question="",  # Empty = no more questions
+                missing_slots=[],
+                understanding_summary="User signaled completion"
+            )
+
         # Build the extraction prompt
         system_prompt = self._build_system_prompt(already_filled, target_slots)
 
@@ -591,6 +603,49 @@ Extract only what's NEW in this message. Generate a SHORT follow-up about what's
                 cleaned = text
 
         return cleaned.strip()
+
+    def _user_wants_to_finish(
+        self,
+        message: str,
+        already_filled: Dict[str, Any]
+    ) -> bool:
+        """
+        Detect if user wants to end onboarding.
+
+        BUG-001 FIX: This prevents the LLM from generating follow-up questions
+        when the user explicitly signals they're done.
+
+        Args:
+            message: User's message
+            already_filled: Already collected slots (need minimum for valid profile)
+
+        Returns:
+            True if user wants to finish and has enough data
+        """
+        # Completion phrases that indicate user wants to finish
+        completion_phrases = [
+            "done", "that's all", "that's everything", "i'm done", "im done",
+            "show me my matches", "find my matches", "i'm ready", "im ready",
+            "start matching", "no more", "nothing else", "finish", "complete",
+            "let's start", "lets start", "proceed", "move on", "that covers",
+            "ready to match", "see my matches"
+        ]
+
+        msg_lower = message.lower().strip()
+
+        # Check if message contains completion signal
+        has_completion_signal = any(phrase in msg_lower for phrase in completion_phrases)
+
+        if not has_completion_signal:
+            return False
+
+        # Only allow completion if we have minimum viable profile (at least 3 slots)
+        filled_count = len([v for v in already_filled.values() if v])
+        if filled_count < 3:
+            logger.info(f"Completion signal detected but only {filled_count} slots filled (need 3)")
+            return False
+
+        return True
 
     def generate_response(
         self,

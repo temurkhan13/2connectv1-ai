@@ -1473,3 +1473,80 @@ async def clear_and_resync_matches(request: dict):
     except Exception as e:
         logger.error(f"Error in clear-and-resync: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/sync-matches-from-dynamodb")
+async def sync_matches_from_dynamodb(request: dict):
+    """
+    Sync matches from DynamoDB to backend (without clearing first).
+
+    Use this after manually clearing backend matches to re-populate them
+    from DynamoDB UserMatches table.
+    """
+    import os
+    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.services.match_sync_service import match_sync_service
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    result = {
+        "users_synced": 0,
+        "matches_synced": 0,
+        "users_skipped": 0,
+        "errors": []
+    }
+
+    try:
+        # Get all completed users from DynamoDB
+        completed_users = []
+        for profile in UserProfile.scan():
+            if profile.persona_status == 'completed':
+                completed_users.append(profile.user_id)
+
+        logger.info(f"[SYNC-MATCHES] Found {len(completed_users)} completed users to sync")
+
+        # Sync each user's matches from DynamoDB to backend
+        for user_id in completed_users:
+            try:
+                # Get matches from DynamoDB
+                stored_matches = UserMatches.get_user_matches(user_id)
+
+                if not stored_matches or not stored_matches.get("matches"):
+                    result["users_skipped"] += 1
+                    continue
+
+                # Convert to sync format
+                matches_for_sync = {
+                    "requirements_matches": stored_matches.get("matches", []),
+                    "offerings_matches": []
+                }
+
+                # Sync to backend
+                sync_result = match_sync_service.sync_matches_to_backend(user_id, matches_for_sync)
+
+                if sync_result.get("success"):
+                    result["users_synced"] += 1
+                    result["matches_synced"] += sync_result.get("count", 0)
+                else:
+                    result["errors"].append({
+                        "user_id": user_id[:8] + "...",
+                        "error": sync_result.get("error", "Unknown sync error")[:100]
+                    })
+
+            except Exception as e:
+                result["errors"].append({
+                    "user_id": user_id[:8] + "...",
+                    "error": str(e)[:100]
+                })
+
+        return {
+            "code": 200,
+            "message": f"Sync complete. Synced {result['users_synced']} users with {result['matches_synced']} matches.",
+            "result": result
+        }
+
+    except Exception as e:
+        logger.error(f"Error in sync-matches: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

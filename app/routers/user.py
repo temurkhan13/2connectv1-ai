@@ -1129,3 +1129,193 @@ async def regenerate_embeddings_sync(request: dict):
     except Exception as e:
         logger.error(f"[SYNC] Error generating embeddings: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/generate-multi-vector-embeddings")
+async def generate_multi_vector_embeddings(request: dict):
+    """
+    Generate multi-vector embeddings (6 dimensions) for a user.
+
+    This creates the embeddings needed for HYBRID matching:
+    - primary_goal (20% weight)
+    - industry (25% weight)
+    - stage (20% weight)
+    - geography (15% weight)
+    - engagement_style (10% weight)
+    - dealbreakers (10% weight)
+
+    Requires user to have persona data in DynamoDB.
+    """
+    import os
+    from app.services.multi_vector_matcher import multi_vector_matcher
+    from app.adapters.dynamodb import UserProfile
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    user_id = request.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id required")
+
+    try:
+        # Get user's persona from DynamoDB
+        logger.info(f"[MULTI-VECTOR] Getting persona for user {user_id}")
+        user_profile = UserProfile.get(user_id)
+
+        if not user_profile or not user_profile.persona:
+            raise HTTPException(status_code=404, detail=f"No persona found for user {user_id}")
+
+        persona = user_profile.persona
+
+        # Build persona_data dict with all relevant fields
+        persona_data = {
+            "primary_goal": getattr(persona, 'archetype', '') or getattr(persona, 'user_type', '') or '',
+            "industry": getattr(persona, 'industry', '') or getattr(persona, 'focus', '') or '',
+            "stage": getattr(persona, 'designation', '') or '',
+            "geography": '',  # Often not collected
+            "engagement_style": getattr(persona, 'engagement_style', '') or '',
+            "dealbreakers": '',  # Often not collected
+            "requirements": getattr(persona, 'requirements', '') or getattr(persona, 'what_theyre_looking_for', '') or '',
+            "offerings": getattr(persona, 'offerings', '') or '',
+        }
+
+        # If primary_goal is empty, try to infer from profile_essence
+        if not persona_data["primary_goal"]:
+            profile_essence = getattr(persona, 'profile_essence', '') or ''
+            if 'investor' in profile_essence.lower():
+                persona_data["primary_goal"] = "investor"
+            elif 'founder' in profile_essence.lower():
+                persona_data["primary_goal"] = "founder"
+            elif 'advisor' in profile_essence.lower():
+                persona_data["primary_goal"] = "advisor"
+
+        # If industry is empty, try to extract from profile_essence
+        if not persona_data["industry"]:
+            profile_essence = getattr(persona, 'profile_essence', '') or ''
+            industries = ['technology', 'healthcare', 'fintech', 'saas', 'ai', 'biotech', 'retail', 'ecommerce']
+            for ind in industries:
+                if ind in profile_essence.lower():
+                    persona_data["industry"] = ind
+                    break
+
+        logger.info(f"[MULTI-VECTOR] Building embeddings for user {user_id}")
+        logger.info(f"[MULTI-VECTOR] Persona data: primary_goal={persona_data['primary_goal']}, industry={persona_data['industry']}")
+
+        # Generate requirements embeddings (6 dimensions)
+        req_results = multi_vector_matcher.store_multi_vector_embeddings(
+            user_id=user_id,
+            persona_data=persona_data,
+            direction="requirements"
+        )
+
+        # Generate offerings embeddings (6 dimensions)
+        off_results = multi_vector_matcher.store_multi_vector_embeddings(
+            user_id=user_id,
+            persona_data=persona_data,
+            direction="offerings"
+        )
+
+        # Count embeddings generated
+        req_count = sum(1 for v in req_results.values() if v) if req_results else 0
+        off_count = sum(1 for v in off_results.values() if v) if off_results else 0
+        total_count = req_count + off_count
+
+        logger.info(f"[MULTI-VECTOR] Generated {total_count} embeddings for user {user_id} (req: {req_count}, off: {off_count})")
+
+        return {
+            "code": 200,
+            "message": f"Generated {total_count} multi-vector embeddings",
+            "user_id": user_id,
+            "requirements_embeddings": req_count,
+            "offerings_embeddings": off_count,
+            "total_embeddings": total_count,
+            "persona_data": {
+                "primary_goal": persona_data["primary_goal"] or "(empty)",
+                "industry": persona_data["industry"] or "(empty)",
+                "stage": persona_data["stage"] or "(empty)"
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[MULTI-VECTOR] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/backfill-multi-vector-embeddings")
+async def backfill_multi_vector_embeddings(request: dict, background_tasks: BackgroundTasks):
+    """
+    Backfill multi-vector embeddings for ALL users with personas.
+
+    This runs in the background to avoid timeout.
+    Returns immediately with a job ID to check status.
+    """
+    import os
+    import uuid
+    from app.adapters.dynamodb import UserProfile
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    # Generate job ID
+    job_id = str(uuid.uuid4())[:8]
+
+    # Start background task
+    async def run_backfill():
+        from app.services.multi_vector_matcher import multi_vector_matcher
+
+        logger.info(f"[BACKFILL {job_id}] Starting multi-vector embedding backfill")
+
+        # Get all users from DynamoDB
+        users = list(UserProfile.scan())
+        logger.info(f"[BACKFILL {job_id}] Found {len(users)} users")
+
+        stats = {"total": len(users), "processed": 0, "success": 0, "skipped": 0, "errors": []}
+
+        for user in users:
+            user_id = user.user_id
+
+            try:
+                if not user.persona:
+                    stats["skipped"] += 1
+                    continue
+
+                persona = user.persona
+                persona_data = {
+                    "primary_goal": getattr(persona, 'archetype', '') or getattr(persona, 'user_type', '') or '',
+                    "industry": getattr(persona, 'industry', '') or getattr(persona, 'focus', '') or '',
+                    "stage": getattr(persona, 'designation', '') or '',
+                    "geography": '',
+                    "engagement_style": getattr(persona, 'engagement_style', '') or '',
+                    "dealbreakers": '',
+                    "requirements": getattr(persona, 'requirements', '') or getattr(persona, 'what_theyre_looking_for', '') or '',
+                    "offerings": getattr(persona, 'offerings', '') or '',
+                }
+
+                # Generate embeddings
+                multi_vector_matcher.store_multi_vector_embeddings(user_id, persona_data, "requirements")
+                multi_vector_matcher.store_multi_vector_embeddings(user_id, persona_data, "offerings")
+
+                stats["success"] += 1
+
+            except Exception as e:
+                stats["errors"].append({"user_id": user_id, "error": str(e)[:100]})
+
+            stats["processed"] += 1
+
+            if stats["processed"] % 10 == 0:
+                logger.info(f"[BACKFILL {job_id}] Progress: {stats['processed']}/{stats['total']}")
+
+        logger.info(f"[BACKFILL {job_id}] Complete: {stats['success']} success, {stats['skipped']} skipped, {len(stats['errors'])} errors")
+
+    background_tasks.add_task(run_backfill)
+
+    return {
+        "code": 200,
+        "message": "Backfill started in background",
+        "job_id": job_id,
+        "note": "Check logs for progress"
+    }

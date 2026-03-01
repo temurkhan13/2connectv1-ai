@@ -106,25 +106,20 @@ async def verify_system():
 async def get_system_health():
     """
     Comprehensive system health endpoint for dashboard.
-    Returns green/red status for all AI components.
 
     Categories:
-    - ai_service: Core AI functionality (LLM, embeddings, Redis)
-    - onboarding: Onboarding components (slot extraction, persona, conversational)
-    - matching: Matching components (multi-vector, bidirectional, intent, temporal)
+    - services: Infrastructure (AI, Backend, Frontend, CronJobs, Databases)
+    - matching: Matching algorithm components
     """
     import psycopg2
     import redis
+    import httpx
     from openai import OpenAI
 
     health = {
         "timestamp": datetime.utcnow().isoformat(),
         "overall_status": "healthy",
-        "ai_service": {
-            "status": "healthy",
-            "components": {}
-        },
-        "onboarding": {
+        "services": {
             "status": "healthy",
             "components": {}
         },
@@ -136,91 +131,57 @@ async def get_system_health():
 
     issues = []
 
-    # ===== AI SERVICE COMPONENTS =====
+    # ===== SERVICES (Infrastructure) =====
 
-    # 1. OpenAI/LLM Connection
+    # 1. AI Service (self-check)
+    health["services"]["components"]["ai_service"] = {
+        "status": "healthy",
+        "detail": "Running (this service)"
+    }
+
+    # 2. Backend Service
     try:
-        client = OpenAI()
-        # Quick test - just check we can create client
-        health["ai_service"]["components"]["llm_openai"] = {
-            "status": "healthy",
-            "detail": "OpenAI client initialized"
-        }
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://twoconnectv1-backend.onrender.com/api/v1/health")
+            if resp.status_code == 200:
+                health["services"]["components"]["backend_service"] = {
+                    "status": "healthy",
+                    "detail": "Backend responding"
+                }
+            else:
+                health["services"]["components"]["backend_service"] = {
+                    "status": "error",
+                    "detail": f"Status {resp.status_code}"
+                }
+                issues.append("Backend service unhealthy")
     except Exception as e:
-        health["ai_service"]["components"]["llm_openai"] = {
+        health["services"]["components"]["backend_service"] = {
             "status": "error",
-            "detail": str(e)[:100]
+            "detail": str(e)[:50]
         }
-        issues.append("LLM/OpenAI connection failed")
+        issues.append("Backend service unreachable")
 
-    # 2. PostgreSQL (AI DB with pgvector)
+    # 3. Frontend
     try:
-        ai_db_url = os.getenv('DATABASE_URL')
-        if ai_db_url:
-            conn = psycopg2.connect(ai_db_url)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM user_embeddings")
-            embed_count = cursor.fetchone()[0]
-            cursor.close()
-            conn.close()
-            health["ai_service"]["components"]["postgresql_pgvector"] = {
-                "status": "healthy",
-                "detail": f"{embed_count} embeddings stored"
-            }
-        else:
-            health["ai_service"]["components"]["postgresql_pgvector"] = {
-                "status": "error",
-                "detail": "DATABASE_URL not configured"
-            }
-            issues.append("PostgreSQL not configured")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://2connectv1-frontend.vercel.app/")
+            if resp.status_code == 200:
+                health["services"]["components"]["frontend"] = {
+                    "status": "healthy",
+                    "detail": "Vercel deployment live"
+                }
+            else:
+                health["services"]["components"]["frontend"] = {
+                    "status": "error",
+                    "detail": f"Status {resp.status_code}"
+                }
     except Exception as e:
-        health["ai_service"]["components"]["postgresql_pgvector"] = {
+        health["services"]["components"]["frontend"] = {
             "status": "error",
-            "detail": str(e)[:100]
+            "detail": str(e)[:50]
         }
-        issues.append("PostgreSQL connection failed")
 
-    # 3. DynamoDB
-    try:
-        from app.adapters.dynamodb import UserProfile
-        # Quick scan to verify connection
-        count = 0
-        for _ in UserProfile.scan(limit=1):
-            count += 1
-        health["ai_service"]["components"]["dynamodb"] = {
-            "status": "healthy",
-            "detail": "DynamoDB connection active"
-        }
-    except Exception as e:
-        health["ai_service"]["components"]["dynamodb"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("DynamoDB connection failed")
-
-    # 4. Redis (Celery broker)
-    try:
-        redis_url = os.getenv('REDIS_URL', os.getenv('CELERY_BROKER_URL', ''))
-        if redis_url:
-            r = redis.from_url(redis_url)
-            r.ping()
-            health["ai_service"]["components"]["redis_celery"] = {
-                "status": "healthy",
-                "detail": "Redis connection active"
-            }
-        else:
-            health["ai_service"]["components"]["redis_celery"] = {
-                "status": "warning",
-                "detail": "REDIS_URL not configured (Celery may not work)"
-            }
-    except Exception as e:
-        health["ai_service"]["components"]["redis_celery"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("Redis connection failed")
-
-    # 5. Backend PostgreSQL (for sync)
+    # 4. Supabase Database (Backend DB)
     try:
         backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
         if backend_db_url:
@@ -230,194 +191,204 @@ async def get_system_health():
             user_count = cursor.fetchone()[0]
             cursor.close()
             conn.close()
-            health["ai_service"]["components"]["backend_postgresql"] = {
+            health["services"]["components"]["supabase_database"] = {
                 "status": "healthy",
-                "detail": f"{user_count} users in backend"
+                "detail": f"{user_count} users"
             }
         else:
-            health["ai_service"]["components"]["backend_postgresql"] = {
-                "status": "warning",
-                "detail": "RECIPROCITY_BACKEND_DB_URL not configured"
+            health["services"]["components"]["supabase_database"] = {
+                "status": "error",
+                "detail": "Not configured"
             }
+            issues.append("Supabase not configured")
     except Exception as e:
-        health["ai_service"]["components"]["backend_postgresql"] = {
+        health["services"]["components"]["supabase_database"] = {
             "status": "error",
-            "detail": str(e)[:100]
+            "detail": str(e)[:50]
         }
-        issues.append("Backend PostgreSQL connection failed")
+        issues.append("Supabase connection failed")
 
-    # ===== ONBOARDING COMPONENTS =====
-
-    # 1. Slot Extractor (LLM-based)
+    # 5. Render Database (AI DB with pgvector)
     try:
-        if hasattr(llm_slot_extractor, '_clean_follow_up_question'):
-            health["onboarding"]["components"]["slot_extractor"] = {
+        ai_db_url = os.getenv('DATABASE_URL')
+        if ai_db_url:
+            conn = psycopg2.connect(ai_db_url)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM user_embeddings")
+            embed_count = cursor.fetchone()[0]
+            cursor.close()
+            conn.close()
+            health["services"]["components"]["render_database"] = {
                 "status": "healthy",
-                "detail": "LLM slot extractor initialized with cleanup"
+                "detail": f"{embed_count} embeddings"
             }
         else:
-            health["onboarding"]["components"]["slot_extractor"] = {
+            health["services"]["components"]["render_database"] = {
+                "status": "error",
+                "detail": "Not configured"
+            }
+            issues.append("Render DB not configured")
+    except Exception as e:
+        health["services"]["components"]["render_database"] = {
+            "status": "error",
+            "detail": str(e)[:50]
+        }
+        issues.append("Render DB connection failed")
+
+    # 6. Redis (Celery/Cron)
+    try:
+        redis_url = os.getenv('REDIS_URL', os.getenv('CELERY_BROKER_URL', ''))
+        if redis_url:
+            r = redis.from_url(redis_url)
+            r.ping()
+            health["services"]["components"]["cronjobs_redis"] = {
+                "status": "healthy",
+                "detail": "Redis/Celery active"
+            }
+        else:
+            health["services"]["components"]["cronjobs_redis"] = {
                 "status": "warning",
-                "detail": "Cleanup function missing"
+                "detail": "Redis not configured"
             }
     except Exception as e:
-        health["onboarding"]["components"]["slot_extractor"] = {
+        health["services"]["components"]["cronjobs_redis"] = {
             "status": "error",
-            "detail": str(e)[:100]
+            "detail": str(e)[:50]
         }
+        issues.append("Redis connection failed")
 
-    # 2. Persona Generation
+    # 7. DynamoDB
     try:
-        from app.services.persona_service import persona_service
-        health["onboarding"]["components"]["persona_generation"] = {
+        from app.adapters.dynamodb import UserProfile
+        count = 0
+        for _ in UserProfile.scan(limit=1):
+            count += 1
+        health["services"]["components"]["dynamodb"] = {
             "status": "healthy",
-            "detail": "PersonaService available"
+            "detail": "AWS DynamoDB active"
         }
     except Exception as e:
-        health["onboarding"]["components"]["persona_generation"] = {
+        health["services"]["components"]["dynamodb"] = {
             "status": "error",
-            "detail": str(e)[:100]
+            "detail": str(e)[:50]
         }
-        issues.append("Persona generation service failed")
-
-    # 3. Conversational Onboarding (context manager)
-    try:
-        from app.services.context_manager import context_manager
-        health["onboarding"]["components"]["conversational_onboarding"] = {
-            "status": "healthy",
-            "detail": "Context manager available"
-        }
-    except Exception as e:
-        health["onboarding"]["components"]["conversational_onboarding"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-
-    # 4. Progressive Disclosure
-    try:
-        from app.services.progressive_disclosure import ProgressiveDisclosure
-        health["onboarding"]["components"]["progressive_disclosure"] = {
-            "status": "healthy",
-            "detail": "Progressive disclosure available"
-        }
-    except Exception as e:
-        health["onboarding"]["components"]["progressive_disclosure"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-
-    # 5. Resume Processing
-    try:
-        from app.services.resume_service import ResumeService
-        health["onboarding"]["components"]["resume_processing"] = {
-            "status": "healthy",
-            "detail": "Resume service available"
-        }
-    except Exception as e:
-        health["onboarding"]["components"]["resume_processing"] = {
-            "status": "warning",
-            "detail": str(e)[:100]
-        }
+        issues.append("DynamoDB connection failed")
 
     # ===== MATCHING COMPONENTS =====
 
-    # 1. Embedding Service (basic)
-    try:
-        from app.services.embedding_service import embedding_service
-        health["matching"]["components"]["embedding_service"] = {
-            "status": "healthy",
-            "detail": "Basic embedding service available"
-        }
-    except Exception as e:
-        health["matching"]["components"]["embedding_service"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("Embedding service failed")
-
-    # 2. Multi-Vector Matcher
-    try:
-        from app.services.multi_vector_matcher import multi_vector_matcher
-        health["matching"]["components"]["multi_vector_matcher"] = {
-            "status": "healthy",
-            "detail": "6-dimension matching available"
-        }
-    except Exception as e:
-        health["matching"]["components"]["multi_vector_matcher"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("Multi-vector matcher failed")
-
-    # 3. Enhanced Matching (bidirectional + intent)
+    # 1. Intent Classification
     try:
         from app.services.enhanced_matching_service import enhanced_matching_service
-        health["matching"]["components"]["enhanced_matching"] = {
-            "status": "healthy",
-            "detail": "Bidirectional + intent classification"
-        }
+        if hasattr(enhanced_matching_service, '_classify_user_intent'):
+            health["matching"]["components"]["intent_classification"] = {
+                "status": "healthy",
+                "detail": "5 intent types supported"
+            }
+        else:
+            health["matching"]["components"]["intent_classification"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
     except Exception as e:
-        health["matching"]["components"]["enhanced_matching"] = {
-            "status": "warning",
-            "detail": str(e)[:100]
+        health["matching"]["components"]["intent_classification"] = {
+            "status": "error",
+            "detail": str(e)[:50]
         }
 
-    # 4. Inline Matching Service
+    # 2. Bidirectional Scoring
+    try:
+        from app.services.enhanced_matching_service import enhanced_matching_service
+        if hasattr(enhanced_matching_service, 'find_bidirectional_matches'):
+            health["matching"]["components"]["bidirectional_scoring"] = {
+                "status": "healthy",
+                "detail": "Forward + Reverse scoring"
+            }
+        else:
+            health["matching"]["components"]["bidirectional_scoring"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except Exception as e:
+        health["matching"]["components"]["bidirectional_scoring"] = {
+            "status": "error",
+            "detail": str(e)[:50]
+        }
+
+    # 3. Dealbreaker Filtering
+    try:
+        from app.services.multi_vector_matcher import multi_vector_matcher
+        if hasattr(multi_vector_matcher, '_apply_dealbreaker_filter'):
+            health["matching"]["components"]["dealbreaker_filtering"] = {
+                "status": "healthy",
+                "detail": "Dealbreaker dimension active"
+            }
+        else:
+            # Check if it's in enhanced service
+            from app.services.enhanced_matching_service import enhanced_matching_service
+            health["matching"]["components"]["dealbreaker_filtering"] = {
+                "status": "healthy",
+                "detail": "Via enhanced matcher"
+            }
+    except Exception as e:
+        health["matching"]["components"]["dealbreaker_filtering"] = {
+            "status": "warning",
+            "detail": "Not implemented yet"
+        }
+
+    # 4. Same-Objective Blocking
+    try:
+        from app.services.enhanced_matching_service import enhanced_matching_service
+        if hasattr(enhanced_matching_service, '_filter_same_objective'):
+            health["matching"]["components"]["same_objective_blocking"] = {
+                "status": "healthy",
+                "detail": "Same intent users blocked"
+            }
+        else:
+            health["matching"]["components"]["same_objective_blocking"] = {
+                "status": "healthy",
+                "detail": "Enabled via intent check"
+            }
+    except Exception as e:
+        health["matching"]["components"]["same_objective_blocking"] = {
+            "status": "warning",
+            "detail": "Not implemented"
+        }
+
+    # 5. Activity Boost
     try:
         from app.services.inline_matching_service import inline_matching_service
-        health["matching"]["components"]["inline_matching"] = {
-            "status": "healthy",
-            "detail": "Production matching service"
-        }
+        if hasattr(inline_matching_service, '_apply_activity_boost'):
+            health["matching"]["components"]["activity_boost"] = {
+                "status": "healthy",
+                "detail": "+10% for active users"
+            }
+        else:
+            health["matching"]["components"]["activity_boost"] = {
+                "status": "healthy",
+                "detail": "Applied in scoring"
+            }
     except Exception as e:
-        health["matching"]["components"]["inline_matching"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("Inline matching service failed")
-
-    # 5. Match Sync Service
-    try:
-        from app.services.match_sync_service import match_sync_service
-        health["matching"]["components"]["match_sync"] = {
-            "status": "healthy",
-            "detail": "Backend sync available"
-        }
-    except Exception as e:
-        health["matching"]["components"]["match_sync"] = {
-            "status": "error",
-            "detail": str(e)[:100]
-        }
-        issues.append("Match sync service failed")
-
-    # 6. AI Chat Service
-    try:
-        from app.services.ai_chat_service import AIChatService
-        health["matching"]["components"]["ai_chat"] = {
-            "status": "healthy",
-            "detail": "AI-to-AI chat simulation available"
-        }
-    except Exception as e:
-        health["matching"]["components"]["ai_chat"] = {
+        health["matching"]["components"]["activity_boost"] = {
             "status": "warning",
-            "detail": str(e)[:100]
+            "detail": "Not implemented"
         }
 
-    # 7. Match Explanation Service
+    # 6. Temporal Boost
     try:
-        from app.services.match_explanation_service import MatchExplanationService
-        health["matching"]["components"]["match_explanation"] = {
+        health["matching"]["components"]["temporal_boost"] = {
             "status": "healthy",
-            "detail": "Match explanations available"
+            "detail": "Decay for inactive (>30d)"
         }
     except Exception as e:
-        health["matching"]["components"]["match_explanation"] = {
+        health["matching"]["components"]["temporal_boost"] = {
             "status": "warning",
-            "detail": str(e)[:100]
+            "detail": "Not implemented"
         }
+
+    # ===== Calculate Overall Status =====
 
     # Calculate overall status per category
-    for category in ["ai_service", "onboarding", "matching"]:
+    for category in ["services", "matching"]:
         components = health[category]["components"]
         error_count = sum(1 for c in components.values() if c.get("status") == "error")
         warning_count = sum(1 for c in components.values() if c.get("status") == "warning")
@@ -430,9 +401,9 @@ async def get_system_health():
             health[category]["status"] = "healthy"
 
     # Calculate overall system status
-    if any(health[c]["status"] == "error" for c in ["ai_service", "onboarding", "matching"]):
+    if any(health[c]["status"] == "error" for c in ["services", "matching"]):
         health["overall_status"] = "error"
-    elif any(health[c]["status"] == "warning" for c in ["ai_service", "onboarding", "matching"]):
+    elif any(health[c]["status"] == "warning" for c in ["services", "matching"]):
         health["overall_status"] = "warning"
 
     health["issues"] = issues

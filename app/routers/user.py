@@ -664,14 +664,14 @@ async def get_user_diagnostics(email: str):
                 "status": "found" if match_count > 0 else "empty",
                 "count": match_count,
                 "details": {
-                    "stored_at": str(matches.created_at) if matches.created_at else None,
+                    "stored_at": str(matches.last_updated) if matches.last_updated else None,
                     "algorithm": matches.algorithm if hasattr(matches, 'algorithm') else None
                 }
             }
-            if matches.created_at:
+            if matches.last_updated:
                 diagnostics["timeline"].append({
                     "event": "matches_calculated",
-                    "timestamp": str(matches.created_at)
+                    "timestamp": str(matches.last_updated)
                 })
         except UserMatches.DoesNotExist:
             diagnostics["issues"].append("No matches stored yet")

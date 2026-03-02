@@ -300,12 +300,19 @@ class MultiVectorMatcher:
         return total_weighted_score, dimension_scores
 
     def score_to_tier(self, score: float) -> MatchTier:
-        """Convert weighted score to match tier."""
-        if score >= 0.85:
+        """Convert weighted score to match tier.
+
+        Thresholds aligned with user expectations:
+        - 80%+ = Perfect Match (exceptional alignment)
+        - 65-79% = Strong Match (high compatibility)
+        - 45-64% = Worth Exploring (good potential)
+        - <45% = Low (limited overlap, not shown by default)
+        """
+        if score >= 0.80:
             return MatchTier.PERFECT
-        elif score >= 0.70:
+        elif score >= 0.65:
             return MatchTier.STRONG
-        elif score >= 0.55:
+        elif score >= 0.45:
             return MatchTier.WORTH_EXPLORING
         else:
             return MatchTier.LOW

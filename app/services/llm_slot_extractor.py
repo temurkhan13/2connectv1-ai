@@ -543,6 +543,30 @@ Return ONLY the follow-up question, nothing else."""
                 result_text = result_text[:-3]
             result_text = result_text.strip()
 
+            # Handle conversational preambles like "Got it, here's what I extracted:"
+            # Find the first { and extract JSON from there
+            if not result_text.startswith("{"):
+                json_start = result_text.find("{")
+                if json_start == -1:
+                    logger.error(f"No JSON found in response: {result_text[:200]}")
+                    raise ValueError("No JSON object found in LLM response")
+                # Find matching closing brace
+                brace_count = 0
+                json_end = -1
+                for i, char in enumerate(result_text[json_start:], start=json_start):
+                    if char == "{":
+                        brace_count += 1
+                    elif char == "}":
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+                if json_end == -1:
+                    logger.error(f"Unbalanced braces in response: {result_text[:200]}")
+                    raise ValueError("Unbalanced braces in LLM response")
+                result_text = result_text[json_start:json_end]
+                logger.info(f"Extracted JSON from preamble (chars {json_start}-{json_end})")
+
             result_data = json.loads(result_text)
 
             result = self._parse_llm_response(result_data, already_filled)

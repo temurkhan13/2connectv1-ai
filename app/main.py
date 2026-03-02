@@ -22,7 +22,7 @@ if sentry_dsn:
         environment=os.getenv('ENVIRONMENT', 'development'),
         send_default_pii=False,
     )
-    logging.info("Sentry initialized for error monitoring")
+    # NOTE: Don't log here - must wait until after logging.basicConfig() is called
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,20 +45,27 @@ dotenv_override = os.getenv("DOTENV_OVERRIDE", "false").lower() == "true"
 load_dotenv(override=dotenv_override)
 
 # Configure logging based on LOG_LEVEL environment variable
+# Use force=True to override any handlers added during imports
 log_level = os.getenv('LOG_LEVEL')
 if log_level:
     log_level = log_level.upper()
-    
+
     logging.basicConfig(
         level=getattr(logging, log_level, logging.INFO),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True  # Override any existing handlers
     )
 else:
     # Default logging configuration if LOG_LEVEL not set
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        force=True  # Override any existing handlers
     )
+
+# Log Sentry initialization now that logging is configured
+if sentry_dsn:
+    logging.info("Sentry initialized for error monitoring")
 
 # Get configuration from environment variables
 app_name = os.getenv('APP_NAME')

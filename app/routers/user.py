@@ -693,9 +693,17 @@ async def get_user_diagnostics(email: str):
                 row = cursor.fetchone()
 
                 if row and row[0] > 0:
-                    diagnostics["matches"]["details"] = diagnostics["matches"].get("details", {})
+                    # Fix: Use 'or {}' because .get() returns None (not default) when key exists
+                    if diagnostics["matches"]["details"] is None:
+                        diagnostics["matches"]["details"] = {}
                     diagnostics["matches"]["details"]["backend_count"] = row[0]
                     diagnostics["matches"]["details"]["backend_last_sync"] = str(row[1]) if row[1] else None
+                    # If backend has matches but DynamoDB doesn't, update status to reflect backend
+                    if diagnostics["matches"]["status"] == "not_found" and row[0] > 0:
+                        diagnostics["matches"]["status"] = "found"
+                        diagnostics["matches"]["count"] = row[0]
+                        # Remove the misleading "No matches stored yet" issue
+                        diagnostics["issues"] = [i for i in diagnostics["issues"] if i != "No matches stored yet"]
                 else:
                     if diagnostics["matches"]["count"] > 0:
                         diagnostics["issues"].append("Matches in DynamoDB but not synced to backend")

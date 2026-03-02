@@ -564,6 +564,61 @@ async def get_system_health():
     return health
 
 
+def _generate_match_reason(current_persona: dict, matched_persona: dict) -> str:
+    """Generate a clear reason why two users are matched based on their personas."""
+    reasons = []
+
+    current_req = (current_persona.get("requirements") or "").lower()
+    current_off = (current_persona.get("offerings") or "").lower()
+    current_arch = (current_persona.get("archetype") or "").lower()
+
+    matched_req = (matched_persona.get("requirements") or "").lower()
+    matched_off = (matched_persona.get("offerings") or "").lower()
+    matched_arch = (matched_persona.get("archetype") or "").lower()
+
+    # Check complementary archetypes
+    if "investor" in current_arch and "founder" in matched_arch:
+        reasons.append("Investor seeking startups → Founder seeking funding")
+    elif "founder" in current_arch and "investor" in matched_arch:
+        reasons.append("Founder seeking funding → Investor seeking deals")
+    elif "mentor" in current_arch and ("founder" in matched_arch or "entrepreneur" in matched_arch):
+        reasons.append("Mentor seeking mentees → Founder seeking guidance")
+    elif ("founder" in current_arch or "entrepreneur" in current_arch) and "mentor" in matched_arch:
+        reasons.append("Seeking mentorship → Experienced mentor available")
+
+    # Check if offerings match requirements
+    offering_keywords = ["funding", "investment", "capital", "technical", "marketing",
+                        "sales", "operations", "strategy", "advice", "mentorship",
+                        "network", "connections", "expertise", "development"]
+
+    for keyword in offering_keywords:
+        if keyword in matched_off and keyword in current_req:
+            reasons.append(f"They offer {keyword} → You need {keyword}")
+            break
+        elif keyword in current_off and keyword in matched_req:
+            reasons.append(f"You offer {keyword} → They need {keyword}")
+            break
+
+    # Check industry/sector alignment
+    industries = ["saas", "fintech", "healthtech", "edtech", "ai", "crypto",
+                 "e-commerce", "b2b", "b2c", "enterprise", "consumer"]
+    for industry in industries:
+        if industry in current_req and industry in matched_off:
+            reasons.append(f"Industry match: {industry.upper()}")
+            break
+        elif industry in matched_req and industry in current_off:
+            reasons.append(f"Industry match: {industry.upper()}")
+            break
+
+    if not reasons:
+        if matched_arch:
+            reasons.append(f"Matched archetype: {matched_persona.get('archetype', 'Professional')}")
+        else:
+            reasons.append("Potential collaboration based on profile alignment")
+
+    return " | ".join(reasons[:2])  # Max 2 reasons to keep it concise
+
+
 def _generate_match_explanation(score: float, fwd: float, rev: float,
                                  user_requirements: str, user_offerings: str,
                                  matched_archetype: str) -> str:
@@ -698,6 +753,24 @@ async def get_matching_diagnostics():
             except Exception as e:
                 logger.error(f"Error fetching embeddings: {e}")
 
+        # Pre-fetch all personas for match reasoning
+        persona_lookup = {}
+        for row in rows:
+            uid = str(row[0])
+            try:
+                profile = UserProfile.get(uid)
+                if profile and profile.persona:
+                    p = profile.persona
+                    persona_lookup[uid] = {
+                        "archetype": getattr(p, 'archetype', None),
+                        "user_type": getattr(p, 'user_type', None),
+                        "requirements": getattr(p, 'requirements', None),
+                        "offerings": getattr(p, 'offerings', None),
+                        "focus": getattr(p, 'focus', None)
+                    }
+            except Exception:
+                pass
+
         # Get match counts and details from backend
         match_info = {}
         try:
@@ -720,9 +793,19 @@ async def get_matching_diagnostics():
                         match_info[uid] = {"count": 0, "matches": []}
                     match_info[uid]["count"] += 1
                     matched_user = user_lookup.get(other_uid, {})
+                    matched_persona = persona_lookup.get(other_uid, {})
+                    current_persona = persona_lookup.get(uid, {})
+
+                    # Generate match reasoning based on personas
+                    match_reason = _generate_match_reason(current_persona, matched_persona)
+
                     match_info[uid]["matches"].append({
                         "matched_with": other_uid,
                         "matched_user_name": matched_user.get("name", "Unknown"),
+                        "matched_archetype": matched_persona.get("archetype"),
+                        "matched_offerings": (matched_persona.get("offerings") or "")[:150],
+                        "matched_requirements": (matched_persona.get("requirements") or "")[:150],
+                        "match_reason": match_reason,
                         "decision": row[2] if uid == user_a else row[3],
                         "ai_remarks": row[4][:100] if row[4] else None,
                         "created_at": str(row[5]) if row[5] else None

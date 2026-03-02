@@ -1,14 +1,15 @@
 """
 AI Chat Service for simulating AI-to-AI conversations between users.
 Enhanced with goal-focused prompts, misalignment detection, and dynamic responses.
+Uses Claude Sonnet 4.5 for natural, engaging conversations.
 """
 import os
 import random
 import json
-import openai
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+from anthropic import Anthropic
 from app.adapters.dynamodb import UserProfile
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,15 @@ logger = logging.getLogger(__name__)
 
 class AIChatService:
     """Service for managing AI-to-AI chat conversations."""
-    
+
     def __init__(self):
-        """Initialize AI chat service."""
-        self.api_key = os.getenv("OPENAI_API_KEY")
+        """Initialize AI chat service with Anthropic Claude."""
+        self.api_key = os.getenv("ANTHROPIC_API_KEY")
         if not self.api_key:
-            logger.warning("OPENAI_API_KEY not found in environment variables")
-        self.client = openai.OpenAI(api_key=self.api_key) if self.api_key else None
+            logger.warning("ANTHROPIC_API_KEY not found in environment variables")
+        self.client = Anthropic(api_key=self.api_key) if self.api_key else None
+        # Use Claude Sonnet 4.5 for AI-to-AI conversations
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
     
     def get_persona(self, user_id: str) -> Dict[str, Any]:
         """
@@ -184,17 +187,15 @@ IMPORTANT: Same industry/sector is NOT enough! They must be able to HELP each ot
 Respond ONLY in JSON:
 {{"alignment_score": <15-85>, "alignment_type": "<fully_aligned|partially_aligned|misaligned>", "reason": "<Can A help B? Can B help A?>", "should_continue_chat": <false if misaligned>, "common_ground": "<specific match or 'none'>"}}"""
 
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are an alignment analyzer. Respond ONLY in valid JSON, no other text."},
-                    {"role": "user", "content": prompt}
-                ],
+            response = self.client.messages.create(
+                model=self.model,
                 max_tokens=250,
+                system="You are an alignment analyzer. Respond ONLY in valid JSON, no other text.",
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.3
             )
-            
-            result_text = response.choices[0].message.content.strip()
+
+            result_text = response.content[0].text.strip()
             # Clean up potential markdown formatting
             if result_text.startswith("```"):
                 result_text = result_text.split("```")[1]
@@ -313,25 +314,30 @@ Respond ONLY in JSON:
         max_tokens = self.get_dynamic_max_tokens(stage, len(conversation_history), alignment_type)
         
         try:
+            # Extract system prompt from messages list
+            system_content = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
+            user_messages = [m for m in messages if m.get("role") != "system"]
+
             # Try up to 3 times to get a non-repetitive response
             for attempt in range(3):
-                response = self.client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
+                response = self.client.messages.create(
+                    model=self.model,
                     max_tokens=max_tokens,
+                    system=system_content,
+                    messages=user_messages if user_messages else [{"role": "user", "content": "Continue the conversation."}],
                     temperature=0
                 )
-                response_text = response.choices[0].message.content.strip()
-                
+                response_text = response.content[0].text.strip()
+
                 # Check if response is too similar to previous messages
                 if not self.is_too_similar(response_text, conversation_history):
                     return response_text
-                
+
                 logger.warning(f"Response too similar on attempt {attempt + 1}, retrying...")
-            
+
             # If all attempts fail, return the last response anyway
             return response_text
-            
+
         except Exception as e:
             logger.error(f"Error generating AI response: {str(e)}")
             return f"I appreciate the conversation. Let me think about what you've shared."
@@ -629,17 +635,15 @@ Write a summary with CLEAR CONCLUSION:
 
 Keep it concise and professional. The verdict is already decided based on the score."""
 
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a match summary writer. The verdict is already decided based on the score. Your job is to explain WHY the match has this score and provide supporting analysis. Do not contradict the given verdict."},
-                    {"role": "user", "content": prompt}
-                ],
+            response = self.client.messages.create(
+                model=self.model,
                 max_tokens=250,
+                system="You are a match summary writer. The verdict is already decided based on the score. Your job is to explain WHY the match has this score and provide supporting analysis. Do not contradict the given verdict.",
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.2
             )
-            
-            return response.choices[0].message.content.strip()
+
+            return response.content[0].text.strip()
         except Exception as e:
             logger.error(f"Error generating conversation summary: {str(e)}")
             if alignment_type == 'misaligned' or score < 40:
@@ -709,17 +713,15 @@ Did they find real alignment? → Higher score
 Respond ONLY in JSON:
 {{"score": <15-85>, "confidence": "<high|medium|low>", "reason": "<Can they help each other? YES/NO>"}}"""
 
-            response = self.client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a compatibility analyzer. Two people seeking the same thing = NO MATCH (0-25). But when one OFFERS what the other SEEKS, that's a MATCH (76-100). Mentor seeking mentees + mentee seeking mentor = FULL MATCH because both achieve their goals. Investor seeking startups + startup seeking funding = FULL MATCH. Respond ONLY in valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
+            response = self.client.messages.create(
+                model=self.model,
                 max_tokens=150,
+                system="You are a compatibility analyzer. Two people seeking the same thing = NO MATCH (0-25). But when one OFFERS what the other SEEKS, that's a MATCH (76-100). Mentor seeking mentees + mentee seeking mentor = FULL MATCH because both achieve their goals. Investor seeking startups + startup seeking funding = FULL MATCH. Respond ONLY in valid JSON.",
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.2
             )
-            
-            result_text = response.choices[0].message.content.strip()
+
+            result_text = response.content[0].text.strip()
             # Clean up potential markdown
             if "```" in result_text:
                 result_text = result_text.split("```")[1]

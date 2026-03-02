@@ -1,11 +1,12 @@
 """
 Service for predicting and validating user answers with fuzzy matching.
+Uses Claude Sonnet 4.5 for LLM fallback.
 """
 import os
 import re
 import logging
 from typing import List, Optional
-from openai import OpenAI
+from anthropic import Anthropic
 from dotenv import load_dotenv
 from difflib import SequenceMatcher
 
@@ -16,16 +17,15 @@ logger = logging.getLogger(__name__)
 
 class PredictionService:
     """Service for predicting answers with fuzzy matching and LLM fallback."""
-    
+
     def __init__(self):
-        """Initialize prediction service."""
-        api_key = os.getenv('OPENAI_API_KEY')
+        """Initialize prediction service with Anthropic Claude."""
+        api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')
-        # Check if model requires max_completion_tokens
-        self.use_max_completion_tokens = self.model.startswith(('o1', 'o3')) or 'gpt-4.1-mini' in self.model
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+        self.client = Anthropic(api_key=api_key)
+        # Use Claude Sonnet 4.5 for fallback text generation
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
     
     def calculate_similarity(self, str1: str, str2: str) -> float:
         """Calculate similarity ratio between two strings (0.0 to 1.0)."""
@@ -153,53 +153,22 @@ Please generate a friendly, concise message (1-2 sentences) informing the user t
 Return only the message text, nothing else."""
         
         try:
-            # Prepare request parameters
-            request_params = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.7,
-            }
-            
-            # Use appropriate parameter based on model
-            if self.use_max_completion_tokens:
-                request_params["max_completion_tokens"] = 100
-            else:
-                request_params["max_tokens"] = 100
-            
-            response = self.client.chat.completions.create(**request_params)
-            
-            fallback_text = response.choices[0].message.content.strip()
+            # Anthropic API: system prompt is separate from messages
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=100,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.7
+            )
+
+            fallback_text = response.content[0].text.strip()
             # Remove any quotes if present
             fallback_text = fallback_text.strip('"').strip("'").strip()
             return fallback_text
         except Exception as e:
-            error_str = str(e)
-            # If we get the max_tokens error, retry with max_completion_tokens
-            if "max_tokens" in error_str and "max_completion_tokens" in error_str:
-                logger.warning(f"Model {self.model} requires max_completion_tokens, retrying...")
-                try:
-                    request_params = {
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": 0.7,
-                        "max_completion_tokens": 100
-                    }
-                    response = self.client.chat.completions.create(**request_params)
-                    fallback_text = response.choices[0].message.content.strip()
-                    fallback_text = fallback_text.strip('"').strip("'").strip()
-                    return fallback_text
-                except Exception as retry_error:
-                    logger.error(f"OpenAI API error on retry: {str(retry_error)}")
-                    return f"Your input '{user_response}' doesn't match any available options. Please select from: {options_text}"
-            else:
-                logger.error(f"Error generating fallback text: {error_str}")
-                return f"Your input '{user_response}' doesn't match any available options. Please select from: {options_text}"
+            logger.error(f"Error generating fallback text: {str(e)}")
+            return f"Your input '{user_response}' doesn't match any available options. Please select from: {options_text}"
     
     def predict_answer(self, user_response: str, options: List[dict]) -> dict:
         """

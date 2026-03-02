@@ -1,11 +1,12 @@
 """
-LLM service for handling OpenAI API interactions.
+LLM service for handling Claude API interactions via LangChain.
+Uses Claude Sonnet 4.5 for match explanations and ice breakers.
 """
 from typing import Optional, Dict, Any, List
 import os
 import logging
 import json
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
 from dotenv import load_dotenv
 
@@ -15,25 +16,24 @@ logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for LLM interactions using OpenAI."""
+    """Service for LLM interactions using Claude via LangChain."""
 
     def __init__(self):
-        """Initialize LLM service."""
-        self.api_key = os.getenv('OPENAI_API_KEY')
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')
+        """Initialize LLM service with Anthropic Claude."""
+        self.api_key = os.getenv('ANTHROPIC_API_KEY')
+        # Use Claude Sonnet 4.5 for match explanations and ice breakers
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
         self.temperature = float(os.getenv('LLM_TEMPERATURE', '0.7'))
 
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        if not self.model:
-            raise ValueError("OPENAI_MODEL environment variable is required")
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
 
-    def get_chat_model(self) -> ChatOpenAI:
-        """Get OpenAI chat model instance."""
-        return ChatOpenAI(
+    def get_chat_model(self) -> ChatAnthropic:
+        """Get Claude chat model instance via LangChain."""
+        return ChatAnthropic(
             model=self.model,
             temperature=self.temperature,
-            api_key=self.api_key
+            anthropic_api_key=self.api_key
         )
 
     def is_available(self) -> bool:

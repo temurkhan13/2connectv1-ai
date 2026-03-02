@@ -12,6 +12,7 @@ redis==5.0.1
 slowapi==0.1.9
 langchain-community==0.3.27
 langchain-openai==0.2.11
+langchain-anthropic>=0.3.0
 langchain-core==0.3.66
 docx2txt==0.9
 pypdf==6.1.0

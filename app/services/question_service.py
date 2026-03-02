@@ -1,11 +1,12 @@
 """
 Service for modifying questions with AI.
+Uses Claude Sonnet 4.5 for warm, engaging question modifications.
 """
 import os
 import re
 import logging
 from typing import List, Optional, Union, Any
-from openai import OpenAI
+from anthropic import Anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,18 +16,15 @@ logger = logging.getLogger(__name__)
 
 class QuestionService:
     """Service for modifying questions with friendly, engaging tone."""
-    
+
     def __init__(self):
-        """Initialize question service."""
-        api_key = os.getenv('OPENAI_API_KEY')
+        """Initialize question service with Anthropic Claude."""
+        api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        self.client = OpenAI(api_key=api_key)
-        # Use environment variable or default to gpt-4.1-mini (matching Modify Questions folder)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4.1-mini')
-        # Check if model requires max_completion_tokens (o1, o3 models, or gpt-4.1-mini)
-        # Some newer models require max_completion_tokens instead of max_tokens
-        self.use_max_completion_tokens = self.model.startswith(('o1', 'o3')) or 'gpt-4.1-mini' in self.model
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+        self.client = Anthropic(api_key=api_key)
+        # Use Claude Sonnet 4.5 for warm, engaging conversations
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
     
     def format_options_for_prompt(self, options: Optional[Union[str, List[Any]]]) -> str:
         """Format options for prompt."""
@@ -136,60 +134,25 @@ STYLE GUIDELINES:
 - Return ONLY the question text - no introductions, no explanations, just the friendly question itself"""
 
         try:
-            # Prepare request parameters
-            request_params = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.7,
-            }
-            
-            # Use max_completion_tokens for o1/o3 models, max_tokens for others
-            if self.use_max_completion_tokens:
-                request_params["max_completion_tokens"] = 500
-            else:
-                request_params["max_tokens"] = 500
-            
-            response = self.client.chat.completions.create(**request_params)
-            
-            result = response.choices[0].message.content.strip()
-            
+            # Anthropic API: system prompt is separate from messages
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.7
+            )
+
+            result = response.content[0].text.strip()
+
             # Clean up any unwanted introductory phrases (for first call only)
             if not user_message and not context:
                 result = self._clean_introductory_text(result)
-            
+
             return result
         except Exception as e:
-            error_str = str(e)
-            # If we get the max_tokens error, retry with max_completion_tokens
-            if "max_tokens" in error_str and "max_completion_tokens" in error_str:
-                logger.warning(f"Model {self.model} requires max_completion_tokens, retrying...")
-                try:
-                    request_params = {
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": 0.7,
-                        "max_completion_tokens": 500
-                    }
-                    response = self.client.chat.completions.create(**request_params)
-                    result = response.choices[0].message.content.strip()
-                    
-                    # Clean up any unwanted introductory phrases (for first call only)
-                    if not user_message and not context:
-                        result = self._clean_introductory_text(result)
-                    
-                    return result
-                except Exception as retry_error:
-                    logger.error(f"OpenAI API error on retry: {str(retry_error)}")
-                    raise
-            else:
-                logger.error(f"OpenAI API error: {error_str}")
-                raise
+            logger.error(f"Claude API error: {str(e)}")
+            raise
     
     def _clean_introductory_text(self, text: str) -> str:
         """Remove common introductory phrases and meta-commentary that LLM might add."""
@@ -276,53 +239,22 @@ Create a concise, friendly follow-up question with a soft, frank tone that:
 Return only the question text, nothing else."""
 
         try:
-            # Prepare request parameters
-            request_params = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.7,
-            }
-            
-            # Use max_completion_tokens for o1/o3 models, max_tokens for others
-            if self.use_max_completion_tokens:
-                request_params["max_completion_tokens"] = 500
-            else:
-                request_params["max_tokens"] = 500
-            
-            response = self.client.chat.completions.create(**request_params)
-            
-            followup = response.choices[0].message.content.strip()
+            # Anthropic API: system prompt is separate from messages
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                temperature=0.7
+            )
+
+            followup = response.content[0].text.strip()
             # Remove any quotes if present
             followup = followup.strip('"').strip("'").strip()
             return followup
         except Exception as e:
-            error_str = str(e)
-            # If we get the max_tokens error, retry with max_completion_tokens
-            if "max_tokens" in error_str and "max_completion_tokens" in error_str:
-                logger.warning(f"Model {self.model} requires max_completion_tokens, retrying...")
-                try:
-                    request_params = {
-                        "model": self.model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        "temperature": 0.7,
-                        "max_completion_tokens": 500
-                    }
-                    response = self.client.chat.completions.create(**request_params)
-                    followup = response.choices[0].message.content.strip()
-                    followup = followup.strip('"').strip("'").strip()
-                    return followup
-                except Exception as retry_error:
-                    logger.error(f"Error generating follow-up question on retry: {str(retry_error)}")
-                    raise
-            else:
-                logger.error(f"Error generating follow-up question: {error_str}")
-                raise
+            logger.error(f"Error generating follow-up question: {str(e)}")
+            raise
     
     def build_conversation_context(self, previous_responses: List[Any]) -> Optional[str]:
         """Build conversation context from previous responses."""

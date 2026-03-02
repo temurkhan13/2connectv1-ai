@@ -452,6 +452,16 @@ class LLMSlotExtractor:
                 logger.error(f"Anthropic returned empty response. Stop reason: {response.stop_reason}")
                 raise ValueError("Empty response from Anthropic API")
 
+            # Strip markdown code blocks if present (Claude often wraps JSON in ```json ... ```)
+            result_text = result_text.strip()
+            if result_text.startswith("```"):
+                # Remove opening fence (```json or ```)
+                result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+            if result_text.endswith("```"):
+                # Remove closing fence
+                result_text = result_text[:-3]
+            result_text = result_text.strip()
+
             result_data = json.loads(result_text)
 
             result = self._parse_llm_response(result_data, already_filled)

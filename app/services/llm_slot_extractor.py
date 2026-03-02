@@ -241,7 +241,10 @@ class LLMSlotExtractor:
     """
 
     def __init__(self):
-        self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+        self.client = Anthropic(api_key=api_key)
         # Use Claude Sonnet 4.5 for warm, engaging conversations
         # Excellent at following detailed instruction prompts for personalized questions
         # Override with ANTHROPIC_EXTRACTION_MODEL env var.

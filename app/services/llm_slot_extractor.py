@@ -683,7 +683,7 @@ If user says ANY of these:
 - [Repeats previous answer]
 
 Then you MUST:
-1. Set extracted_slots to {} (nothing new to extract from repeat)
+1. Set extracted_slots to {{}} (nothing new to extract from repeat)
 2. Ask about a COMPLETELY DIFFERENT topic (switch from goals→geography, or skills→stage preference)
 3. Acknowledge briefly if natural ("Got it!" then new topic)
 

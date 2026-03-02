@@ -374,7 +374,7 @@ async def upload_resume(
 class CompleteOnboardingRequest(BaseModel):
     """Request to complete onboarding and create user profile."""
     session_id: str = Field(..., description="Session ID to complete")
-    user_id: str = Field(..., description="User ID for the profile")
+    user_id: Optional[str] = Field(None, description="User ID for the profile (optional - derived from session if not provided)")
 
 
 class OnboardingDiagnostics(BaseModel):
@@ -418,15 +418,28 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
     from app.workers.resume_processing import process_resume_task
 
     session_id = request.session_id
-    user_id = request.user_id
 
-    logger.info(f"Completing onboarding for user {user_id}, session {session_id}")
+    logger.info(f"Completing onboarding for session {session_id}")
 
     try:
         # Get session data
         slot_summary = context_manager.get_slot_summary(session_id)
         if not slot_summary:
             raise HTTPException(status_code=404, detail="Session not found")
+
+        # Get user_id from request or derive from session
+        # Frontend may not send user_id, so we derive it from the session
+        user_id = request.user_id
+        if not user_id:
+            # Get user_id from the session context
+            context = context_manager.get_session(session_id)
+            if context and context.user_id:
+                user_id = context.user_id
+                logger.info(f"Derived user_id {user_id} from session {session_id}")
+            else:
+                raise HTTPException(status_code=400, detail="user_id not provided and could not be derived from session")
+
+        logger.info(f"Completing onboarding for user {user_id}, session {session_id}")
 
         # Convert slots to question/answer format for DynamoDB
         questions = []

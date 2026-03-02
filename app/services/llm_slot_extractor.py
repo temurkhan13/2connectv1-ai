@@ -395,6 +395,7 @@ class LLMSlotExtractor:
         })
 
         try:
+            logger.info(f"Calling Anthropic API with model: {self.model}")
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1500,
@@ -404,6 +405,12 @@ class LLMSlotExtractor:
             )
 
             result_text = response.content[0].text
+            logger.debug(f"Anthropic response (first 500 chars): {result_text[:500] if result_text else 'EMPTY'}")
+
+            if not result_text or not result_text.strip():
+                logger.error(f"Anthropic returned empty response. Stop reason: {response.stop_reason}")
+                raise ValueError("Empty response from Anthropic API")
+
             result_data = json.loads(result_text)
 
             result = self._parse_llm_response(result_data, already_filled)

@@ -245,9 +245,9 @@ class LLMSlotExtractor:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
         self.client = Anthropic(api_key=api_key)
-        # Use Claude 3 Haiku for fast extraction (3-5x faster than Sonnet)
-        # Still excellent at structured extraction and following instructions
-        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-haiku-20240307")
+        # Use Claude 3.5 Haiku for fast extraction (3-5x faster than Sonnet)
+        # Using 'latest' alias to avoid model ID versioning issues
+        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-5-haiku-latest")
         # Use Claude Sonnet 4.5 for personalized follow-up questions (higher quality)
         self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", "claude-sonnet-4-5-20250929")
         # For backwards compatibility

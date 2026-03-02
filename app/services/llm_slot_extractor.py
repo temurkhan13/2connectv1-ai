@@ -247,8 +247,11 @@ class LLMSlotExtractor:
         self.client = Anthropic(api_key=api_key)
         # Use Claude 3.5 Haiku for fast extraction (3-5x faster than Sonnet)
         # Still excellent at structured extraction and following instructions
-        # Override with ANTHROPIC_EXTRACTION_MODEL env var for quality testing
-        self.model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-5-haiku-20241022")
+        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-5-haiku-20241022")
+        # Use Claude Sonnet 4.5 for personalized follow-up questions (higher quality)
+        self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", "claude-sonnet-4-5-20250929")
+        # For backwards compatibility
+        self.model = self.extraction_model
 
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
@@ -333,6 +336,74 @@ class LLMSlotExtractor:
 
         # All topics covered - signal completion
         return "I think I have a good picture now. Is there anything else you'd like to add?"
+
+    def _generate_personalized_followup(
+        self,
+        user_message: str,
+        extracted_slots: Dict[str, Any],
+        missing_slots: List[str],
+        user_type: str
+    ) -> Optional[str]:
+        """
+        Generate a highly personalized follow-up question using Sonnet.
+        This is the 'quality' step - Haiku extracted the data, Sonnet crafts the response.
+
+        Args:
+            user_message: What the user just said
+            extracted_slots: What we learned from their message
+            missing_slots: What we still need to know
+            user_type: Inferred user type (founder, investor, etc.)
+
+        Returns:
+            Personalized follow-up question, or None on error
+        """
+        try:
+            # Build a focused prompt for personalization only
+            extracted_summary = ", ".join([
+                f"{k}={v.get('value', v) if isinstance(v, dict) else v}"
+                for k, v in extracted_slots.items()
+            ])
+
+            missing_focus = missing_slots[:3]  # Focus on top 3 missing
+
+            prompt = f"""Based on what this {user_type} just shared, generate ONE warm, personalized follow-up question.
+
+USER SAID: "{user_message}"
+
+WHAT WE LEARNED: {extracted_summary}
+
+WHAT WE STILL NEED: {', '.join(missing_focus)}
+
+RULES:
+1. Start with a warm acknowledgment that references SPECIFIC details from their message
+2. Show genuine curiosity ("That's fascinating", "I love that", "What a journey")
+3. Ask ONE open-ended question that naturally leads to the missing information
+4. NEVER be robotic ("Thanks for sharing!", "Got it", "I see")
+5. Make them feel like the most interesting person you've talked to today
+
+Return ONLY the follow-up question, nothing else."""
+
+            logger.info(f"Generating personalized follow-up with {self.personalization_model}")
+
+            response = self.client.messages.create(
+                model=self.personalization_model,
+                max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7  # Higher temp for creativity
+            )
+
+            followup = response.content[0].text.strip()
+
+            # Clean up any quotes
+            if followup.startswith('"') and followup.endswith('"'):
+                followup = followup[1:-1]
+
+            logger.info(f"Sonnet personalized follow-up: {followup[:100]}...")
+            return followup
+
+        except Exception as e:
+            logger.warning(f"Sonnet personalization failed, using Haiku result: {e}")
+            return None  # Fall back to Haiku's follow-up
 
     def extract_slots(
         self,
@@ -489,6 +560,25 @@ class LLMSlotExtractor:
                     understanding_summary=result.understanding_summary,
                     is_off_topic=result.is_off_topic
                 )
+
+            # Step 2: Enhance follow-up with Sonnet for higher quality personalization
+            # Only if we have slots extracted and not off-topic
+            if result.extracted_slots and not result.is_off_topic and result.missing_slots:
+                enhanced_followup = self._generate_personalized_followup(
+                    user_message=user_message,
+                    extracted_slots=result.extracted_slots,
+                    missing_slots=result.missing_slots,
+                    user_type=result.user_type_inference
+                )
+                if enhanced_followup:
+                    result = LLMExtractionResult(
+                        extracted_slots=result.extracted_slots,
+                        user_type_inference=result.user_type_inference,
+                        follow_up_question=enhanced_followup,
+                        missing_slots=result.missing_slots,
+                        understanding_summary=result.understanding_summary,
+                        is_off_topic=result.is_off_topic
+                    )
 
             return result
 

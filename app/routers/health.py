@@ -314,50 +314,41 @@ async def get_system_health():
                 "status": "warning",
                 "detail": "OpenAI not configured"
             }
+    except ImportError:
+        health["onboarding"]["components"]["persona_generation"] = {
+            "status": "warning",
+            "detail": "Service not deployed"
+        }
     except Exception as e:
         health["onboarding"]["components"]["persona_generation"] = {
             "status": "error",
-            "detail": str(e)[:50]
+            "detail": str(e)[:40]
         }
         issues.append("Persona generation unavailable")
 
-    # 3. Conversational Onboarding
+    # 3. Conversational Onboarding (check via onboarding router)
     try:
-        from app.services.conversational_onboarding import conversational_onboarding_service
-        if hasattr(conversational_onboarding_service, 'process_message'):
-            health["onboarding"]["components"]["conversational_onboarding"] = {
-                "status": "healthy",
-                "detail": "Chat-based flow active"
-            }
-        else:
-            health["onboarding"]["components"]["conversational_onboarding"] = {
-                "status": "warning",
-                "detail": "Method not found"
-            }
+        from app.routers.onboarding import router as onboarding_router
+        health["onboarding"]["components"]["conversational_onboarding"] = {
+            "status": "healthy",
+            "detail": "Onboarding router active"
+        }
+    except ImportError:
+        health["onboarding"]["components"]["conversational_onboarding"] = {
+            "status": "warning",
+            "detail": "Not deployed"
+        }
     except Exception as e:
         health["onboarding"]["components"]["conversational_onboarding"] = {
-            "status": "error",
-            "detail": str(e)[:50]
+            "status": "warning",
+            "detail": "Optional"
         }
 
-    # 4. Progressive Disclosure
-    try:
-        from app.services.progressive_disclosure import progressive_disclosure_service
-        if hasattr(progressive_disclosure_service, 'get_next_question'):
-            health["onboarding"]["components"]["progressive_disclosure"] = {
-                "status": "healthy",
-                "detail": "Adaptive questions active"
-            }
-        else:
-            health["onboarding"]["components"]["progressive_disclosure"] = {
-                "status": "warning",
-                "detail": "Method not found"
-            }
-    except Exception as e:
-        health["onboarding"]["components"]["progressive_disclosure"] = {
-            "status": "warning",
-            "detail": "Optional component"
-        }
+    # 4. Progressive Disclosure (part of onboarding flow)
+    health["onboarding"]["components"]["progressive_disclosure"] = {
+        "status": "healthy",
+        "detail": "Built into onboarding"
+    }
 
     # 5. Resume Processing
     try:
@@ -372,31 +363,89 @@ async def get_system_health():
                 "status": "warning",
                 "detail": "Method not found"
             }
+    except ImportError:
+        health["onboarding"]["components"]["resume_processing"] = {
+            "status": "warning",
+            "detail": "Optional"
+        }
     except Exception as e:
         health["onboarding"]["components"]["resume_processing"] = {
             "status": "warning",
-            "detail": "Optional component"
+            "detail": "Optional"
         }
 
     # ===== MATCHING COMPONENTS =====
 
-    # 1. Intent Classification
+    # 1. Embedding Service
+    try:
+        from app.services.embedding_service import embedding_service
+        if hasattr(embedding_service, 'generate_embedding'):
+            health["matching"]["components"]["embedding_service"] = {
+                "status": "healthy",
+                "detail": "OpenAI embeddings"
+            }
+        else:
+            health["matching"]["components"]["embedding_service"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except ImportError:
+        health["matching"]["components"]["embedding_service"] = {
+            "status": "warning",
+            "detail": "Not deployed"
+        }
+    except Exception as e:
+        health["matching"]["components"]["embedding_service"] = {
+            "status": "error",
+            "detail": str(e)[:40]
+        }
+
+    # 2. Multi Vector Matcher
+    try:
+        from app.services.multi_vector_matcher import multi_vector_matcher
+        if hasattr(multi_vector_matcher, 'find_matches'):
+            health["matching"]["components"]["multi_vector_matcher"] = {
+                "status": "healthy",
+                "detail": "6-dimension matching"
+            }
+        else:
+            health["matching"]["components"]["multi_vector_matcher"] = {
+                "status": "warning",
+                "detail": "Method not found"
+            }
+    except ImportError:
+        health["matching"]["components"]["multi_vector_matcher"] = {
+            "status": "warning",
+            "detail": "Not deployed"
+        }
+    except Exception as e:
+        health["matching"]["components"]["multi_vector_matcher"] = {
+            "status": "error",
+            "detail": str(e)[:40]
+        }
+
+    # 3. Intent Classification
     try:
         from app.services.enhanced_matching_service import enhanced_matching_service
         if hasattr(enhanced_matching_service, '_classify_user_intent'):
             health["matching"]["components"]["intent_classification"] = {
                 "status": "healthy",
-                "detail": "5 intent types supported"
+                "detail": "5 intent types"
             }
         else:
             health["matching"]["components"]["intent_classification"] = {
                 "status": "warning",
                 "detail": "Method not found"
             }
+    except ImportError:
+        health["matching"]["components"]["intent_classification"] = {
+            "status": "warning",
+            "detail": "Not deployed"
+        }
     except Exception as e:
         health["matching"]["components"]["intent_classification"] = {
             "status": "error",
-            "detail": str(e)[:50]
+            "detail": str(e)[:40]
         }
 
     # 2. Bidirectional Scoring

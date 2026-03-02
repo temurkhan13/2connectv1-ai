@@ -403,7 +403,7 @@ async def get_system_health():
     # 2. Multi Vector Matcher
     try:
         from app.services.multi_vector_matcher import multi_vector_matcher
-        if hasattr(multi_vector_matcher, 'find_matches'):
+        if hasattr(multi_vector_matcher, 'find_multi_vector_matches'):
             health["matching"]["components"]["multi_vector_matcher"] = {
                 "status": "healthy",
                 "detail": "6-dimension matching"

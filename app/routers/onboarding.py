@@ -64,6 +64,7 @@ class ChatMessageResponse(BaseModel):
     next_questions: List[str]
     phase: str
     is_complete: bool
+    is_off_topic: bool = False  # True if user asked off-topic/general knowledge question
 
 
 class SessionProgressResponse(BaseModel):
@@ -186,6 +187,10 @@ async def chat(request: ChatMessageRequest):
         # This prevents the AI from asking follow-up questions when user says "I'm done"
         is_complete = context_manager.is_complete(session_id)
 
+        # Get LLM result early so we can access is_off_topic for the response
+        llm_result = context_manager.get_llm_response(session_id)
+        is_off_topic = llm_result.is_off_topic if llm_result else False
+
         if is_complete:
             # User signaled completion OR all required slots filled
             # Skip follow-up question generation entirely
@@ -194,7 +199,6 @@ async def chat(request: ChatMessageRequest):
         else:
             # Generate AI response using LLM result if available
             # NOTE: Only show follow_up_question to user - understanding_summary is internal
-            llm_result = context_manager.get_llm_response(session_id)
             if llm_result and llm_result.follow_up_question:
                 # Use only the follow-up question - don't repeat back what user said
                 ai_response = llm_result.follow_up_question
@@ -226,7 +230,8 @@ async def chat(request: ChatMessageRequest):
             completion_percent=completion,
             next_questions=next_questions,
             phase=context.phase.value,
-            is_complete=is_complete
+            is_complete=is_complete,
+            is_off_topic=is_off_topic
         )
     except Exception as e:
         logger.error(f"Chat error: {e}", exc_info=True)

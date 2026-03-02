@@ -302,16 +302,17 @@ async def get_system_health():
 
     # 2. Persona Generation
     try:
-        from app.services.persona_generator import persona_generator
-        if hasattr(persona_generator, 'generate_persona'):
+        from app.services.persona_service import PersonaService
+        persona_service = PersonaService()
+        if persona_service.is_available():
             health["onboarding"]["components"]["persona_generation"] = {
                 "status": "healthy",
-                "detail": "Persona generator ready"
+                "detail": "OpenAI-powered generation"
             }
         else:
             health["onboarding"]["components"]["persona_generation"] = {
                 "status": "warning",
-                "detail": "Method not found"
+                "detail": "OpenAI not configured"
             }
     except Exception as e:
         health["onboarding"]["components"]["persona_generation"] = {

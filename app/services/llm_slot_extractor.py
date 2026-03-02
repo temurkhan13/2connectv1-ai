@@ -1,7 +1,7 @@
 """
 LLM-based Slot Extraction Service.
 
-Uses OpenAI/Claude to extract structured slot data from freeform user text.
+Uses Claude Sonnet 4.5 to extract structured slot data from freeform user text.
 This replaces regex-based extraction with true language understanding.
 
 Key advantages over regex:
@@ -16,7 +16,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass
-from openai import OpenAI
+from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
@@ -241,11 +241,11 @@ class LLMSlotExtractor:
     """
 
     def __init__(self):
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        # Use gpt-4o-mini for faster responses (3-5x faster than gpt-4o)
-        # Still excellent for slot extraction. Override with OPENAI_EXTRACTION_MODEL env var.
-        # Note: gpt-4o-mini has 128K context, sufficient for our prompts.
-        self.model = os.getenv("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")
+        self.client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        # Use Claude Sonnet 4.5 for warm, engaging conversations
+        # Excellent at following detailed instruction prompts for personalized questions
+        # Override with ANTHROPIC_EXTRACTION_MODEL env var.
+        self.model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-sonnet-4-5-20250929")
 
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
@@ -375,8 +375,8 @@ class LLMSlotExtractor:
         # Build the extraction prompt with covered topics
         system_prompt = self._build_system_prompt(already_filled, target_slots, covered_topics)
 
-        # Build conversation context
-        messages = [{"role": "system", "content": system_prompt}]
+        # Build conversation context (Anthropic API: system is separate, messages are user/assistant only)
+        messages = []
 
         # Add conversation history for context
         for turn in history[-6:]:  # Last 6 turns for context
@@ -392,15 +392,15 @@ class LLMSlotExtractor:
         })
 
         try:
-            response = self.client.chat.completions.create(
+            response = self.client.messages.create(
                 model=self.model,
+                max_tokens=1500,
+                system=system_prompt,
                 messages=messages,
-                response_format={"type": "json_object"},
-                temperature=0.1,  # Low temperature for consistent extraction
-                max_tokens=1500
+                temperature=0.1  # Low temperature for consistent extraction
             )
 
-            result_text = response.choices[0].message.content
+            result_text = response.content[0].text
             result_data = json.loads(result_text)
 
             result = self._parse_llm_response(result_data, already_filled)

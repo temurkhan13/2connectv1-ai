@@ -867,6 +867,7 @@ async def get_matching_diagnostics():
                     for m in req_matches[:10]:  # Limit to top 10
                         matched_uid = m.get("user_id")
                         matched_user = user_lookup.get(matched_uid, {})
+                        matched_persona = persona_lookup.get(matched_uid, {})
                         score = m.get("similarity_score", 0)
                         fwd = m.get("forward_score", score)
                         rev = m.get("reverse_score", score)
@@ -879,9 +880,16 @@ async def get_matching_diagnostics():
                             matched_user.get("archetype")
                         )
 
+                        # Generate match reason based on personas
+                        match_reason = _generate_match_reason(persona_data, matched_persona)
+
                         dynamo_matches.append({
                             "user_id": matched_uid,
                             "matched_user_name": matched_user.get("name", "Unknown"),
+                            "matched_archetype": matched_persona.get("archetype"),
+                            "matched_offerings": (matched_persona.get("offerings") or "")[:150],
+                            "matched_requirements": (matched_persona.get("requirements") or "")[:150],
+                            "match_reason": match_reason,
                             "similarity_score": score,
                             "match_type": m.get("match_type", "requirements"),
                             "forward_score": fwd,

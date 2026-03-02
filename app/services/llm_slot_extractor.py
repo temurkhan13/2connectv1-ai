@@ -201,6 +201,34 @@ SLOT_DEFINITIONS = {
 }
 
 
+# Semantic topic clusters - questions in same cluster are semantically equivalent
+# If ANY keyword from a cluster was asked, ALL keywords in that cluster are "covered"
+SEMANTIC_TOPIC_CLUSTERS = {
+    "goals": ["goal", "goals", "objective", "objectives", "priority", "priorities",
+              "aspiration", "aspirations", "ambition", "ambitions", "vision", "aim",
+              "aims", "target", "targets", "hope", "hopes", "dream", "dreams",
+              "what you want", "what do you want", "looking to achieve", "trying to achieve"],
+    "challenges": ["challenge", "challenges", "obstacle", "obstacles", "blocker", "blockers",
+                   "struggle", "struggles", "difficulty", "difficulties", "problem", "problems",
+                   "pain point", "pain points", "issue", "issues", "barrier", "barriers",
+                   "what's hard", "what's difficult", "keeps you up"],
+    "skills": ["skill", "skills", "expertise", "experience", "strength", "strengths",
+               "capability", "capabilities", "superpower", "superpowers", "good at",
+               "excel at", "specialize", "specialty", "specialization", "background"],
+    "needs": ["need", "needs", "requirement", "requirements", "support", "help",
+              "gap", "gaps", "looking for", "seeking", "searching for", "want from",
+              "need from", "require", "missing", "lack"],
+    "offers": ["offer", "offers", "offering", "offerings", "provide", "bring",
+               "contribute", "give", "share", "can do", "able to"],
+    "geography": ["geography", "location", "region", "country", "where", "based",
+                  "operate", "market", "markets", "uk", "us", "europe", "asia"],
+    "stage": ["stage", "stages", "phase", "level", "round", "seed", "series",
+              "pre-seed", "growth", "early-stage", "late-stage"],
+    "industry": ["industry", "industries", "sector", "sectors", "space", "field",
+                 "domain", "vertical", "market", "niche", "focus area"]
+}
+
+
 class LLMSlotExtractor:
     """
     Extracts slot values from user text using LLM comprehension.
@@ -218,6 +246,90 @@ class LLMSlotExtractor:
         # Still excellent for slot extraction. Override with OPENAI_EXTRACTION_MODEL env var.
         # Note: gpt-4o-mini has 128K context, sufficient for our prompts.
         self.model = os.getenv("OPENAI_EXTRACTION_MODEL", "gpt-4o-mini")
+
+    def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
+        """
+        Analyze conversation history to find which semantic topics have been asked.
+
+        Returns list of topic cluster names that have been covered.
+        """
+        covered = set()
+
+        # Only look at assistant messages (questions that were asked)
+        for turn in conversation_history or []:
+            if turn.get("role") == "assistant":
+                content = turn.get("content", "").lower()
+
+                # Check each topic cluster
+                for topic_name, keywords in SEMANTIC_TOPIC_CLUSTERS.items():
+                    if any(kw in content for kw in keywords):
+                        covered.add(topic_name)
+
+        return list(covered)
+
+    def _is_question_repetitive(self, question: str, covered_topics: List[str]) -> bool:
+        """
+        Check if a generated question covers an already-asked topic.
+
+        Returns True if the question is semantically repetitive.
+        """
+        if not question or not covered_topics:
+            return False
+
+        question_lower = question.lower()
+
+        for topic_name in covered_topics:
+            keywords = SEMANTIC_TOPIC_CLUSTERS.get(topic_name, [])
+            if any(kw in question_lower for kw in keywords):
+                logger.warning(f"Question repeats covered topic '{topic_name}': {question[:50]}...")
+                return True
+
+        return False
+
+    def _get_diversified_question(self, covered_topics: List[str], missing_slots: List[str]) -> str:
+        """
+        Generate a question about a topic that HASN'T been covered yet.
+
+        Uses missing_slots to pick relevant uncovered topics.
+        """
+        # Map slots to topics
+        slot_to_topic = {
+            "primary_goal": "goals",
+            "requirements": "needs",
+            "offerings": "offers",
+            "geography": "geography",
+            "stage_preference": "stage",
+            "industry_focus": "industry"
+        }
+
+        # Questions for each topic (fallback if LLM keeps repeating)
+        topic_questions = {
+            "goals": "What does success look like for you in the next 12 months?",
+            "needs": "What kind of support or resources would help you most right now?",
+            "offers": "What unique value do you bring to partnerships or collaborations?",
+            "geography": "Which regions or markets are you focused on?",
+            "stage": "What stage companies do you typically work with?",
+            "industry": "Which industries or sectors are you most active in?",
+            "challenges": "What's the biggest obstacle you're working to overcome?",
+            "skills": "What's your background and area of expertise?"
+        }
+
+        # Find a topic that's NOT covered and IS relevant to missing slots
+        for slot in missing_slots:
+            topic = slot_to_topic.get(slot)
+            if topic and topic not in covered_topics:
+                return topic_questions.get(topic, "")
+
+        # Fallback: any uncovered topic
+        all_topics = set(SEMANTIC_TOPIC_CLUSTERS.keys())
+        uncovered = all_topics - set(covered_topics)
+
+        if uncovered:
+            topic = list(uncovered)[0]
+            return topic_questions.get(topic, "Tell me more about yourself and what you're looking for.")
+
+        # All topics covered - signal completion
+        return "I think I have a good picture now. Is there anything else you'd like to add?"
 
     def extract_slots(
         self,
@@ -254,8 +366,14 @@ class LLMSlotExtractor:
                 is_off_topic=False
             )
 
-        # Build the extraction prompt
-        system_prompt = self._build_system_prompt(already_filled, target_slots)
+        # BUG-002 FIX: Detect which semantic topics have already been asked
+        # This prevents GPT-4o-mini from asking "goals" vs "objectives" vs "priorities"
+        covered_topics = self._detect_covered_topics(history)
+        if covered_topics:
+            logger.info(f"Topics already covered in conversation: {covered_topics}")
+
+        # Build the extraction prompt with covered topics
+        system_prompt = self._build_system_prompt(already_filled, target_slots, covered_topics)
 
         # Build conversation context
         messages = [{"role": "system", "content": system_prompt}]
@@ -285,7 +403,23 @@ class LLMSlotExtractor:
             result_text = response.choices[0].message.content
             result_data = json.loads(result_text)
 
-            return self._parse_llm_response(result_data, already_filled)
+            result = self._parse_llm_response(result_data, already_filled)
+
+            # BUG-002 FIX: Check if LLM still generated a repetitive question
+            # If so, auto-replace with a diversified question
+            if result.follow_up_question and self._is_question_repetitive(result.follow_up_question, covered_topics):
+                logger.warning(f"LLM generated repetitive question, auto-diversifying...")
+                diversified = self._get_diversified_question(covered_topics, result.missing_slots)
+                result = LLMExtractionResult(
+                    extracted_slots=result.extracted_slots,
+                    user_type_inference=result.user_type_inference,
+                    follow_up_question=diversified,  # Replace with non-repetitive question
+                    missing_slots=result.missing_slots,
+                    understanding_summary=result.understanding_summary,
+                    is_off_topic=result.is_off_topic
+                )
+
+            return result
 
         except Exception as e:
             logger.error(f"LLM extraction failed: {e}")
@@ -302,7 +436,8 @@ class LLMSlotExtractor:
     def _build_system_prompt(
         self,
         already_filled: Dict[str, Any],
-        target_slots: Optional[List[str]]
+        target_slots: Optional[List[str]],
+        covered_topics: Optional[List[str]] = None
     ) -> str:
         """Build the system prompt for extraction."""
 
@@ -334,6 +469,27 @@ The following information has ALREADY been collected. Do NOT ask for these again
 CRITICAL: Your follow_up_question must NEVER ask for information listed above. Only ask about what's MISSING.
 """
 
+        # BUG-002 FIX: Explicit topic blocking based on conversation analysis
+        covered_topics_text = ""
+        if covered_topics:
+            # Build explicit forbidden keywords list from covered topics
+            forbidden_keywords = []
+            for topic in covered_topics:
+                keywords = SEMANTIC_TOPIC_CLUSTERS.get(topic, [])
+                forbidden_keywords.extend(keywords[:5])  # Top 5 keywords per topic
+
+            covered_topics_text = f"""
+## 🚨 ABSOLUTELY FORBIDDEN TOPICS - ALREADY ASKED
+The following topics have ALREADY been discussed. Your follow_up_question MUST NOT contain ANY of these words or concepts:
+
+FORBIDDEN WORDS: {', '.join(forbidden_keywords[:20])}
+
+COVERED TOPICS: {', '.join(covered_topics)}
+
+If you ask about ANY of these topics, you will be penalized. Ask about something COMPLETELY DIFFERENT.
+Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()) - set(covered_topics))}
+"""
+
         # Determine which REQUIRED slots are still missing
         required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "stage_preference", "geography"]
         missing_required = [s for s in required_slots if s not in already_filled]
@@ -363,7 +519,8 @@ You extract profile information through INDIRECT ELICITATION - asking open-ended
 2. Ask thoughtful, open-ended questions that yield rich responses
 3. Guide conversation toward MISSING REQUIRED SLOTS naturally
 4. Detect and redirect off-topic/general knowledge questions
-{missing_required_text}
+5. NEVER repeat questions about topics already covered
+{covered_topics_text}{missing_required_text}
 ## 🚫 OFF-TOPIC DETECTION (CRITICAL)
 
 If the user asks general knowledge questions, trivia, or anything unrelated to their professional profile:
@@ -472,13 +629,42 @@ Your follow-up should be:
 - Open-ended (invites detailed response, not yes/no)
 - Strategically designed to fill 2-3 missing slots at once
 - Natural and conversational, not form-like
-- Variable in pattern (don't repeat same question style)
+- DIFFERENT TOPIC from any previous questions - never semantic repetition
+
+## 🚫 FORBIDDEN SEMANTIC PATTERNS (CRITICAL)
+
+These question topics are ALL THE SAME - if you asked ANY one, do NOT ask another:
+- goals / objectives / priorities / aspirations / ambitions / vision
+- achievements / accomplishments / success / hopes / dreams
+- challenges / obstacles / blockers / struggles / difficulties
+- skills / expertise / experience / strengths / capabilities / superpowers
+- needs / requirements / support / help / gaps / looking for
+
+If user already answered about "goals", do NOT ask about "priorities" or "aspirations" - they're the same thing!
+
+## 🔄 "I ALREADY ANSWERED" HANDLING (CRITICAL)
+
+If user says ANY of these:
+- "I already answered"
+- "I told you"
+- "As I mentioned"
+- "I said before"
+- "Same as above"
+- [Repeats previous answer]
+
+Then you MUST:
+1. Set extracted_slots to {} (nothing new to extract from repeat)
+2. Ask about a COMPLETELY DIFFERENT topic (switch from goals→geography, or skills→stage preference)
+3. Acknowledge briefly if natural ("Got it!" then new topic)
+
+NEVER ask a variation of the same question after user signals repetition.
 
 MUST NOT contain:
 - "The user is..." or "They are..." (third person)
 - "Nice to meet you!" or "Thanks for sharing!" or "Great!" (filler)
 - "What is your X?" (sounds like a form)
 - Direct repetition of what they said
+- Questions semantically similar to previously asked ones
 
 ## Strategic Question Examples
 

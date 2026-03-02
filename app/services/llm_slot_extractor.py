@@ -382,11 +382,32 @@ class LLMSlotExtractor:
         messages = []
 
         # Add conversation history for context
+        # CRITICAL: Anthropic requires:
+        # 1. Only "user" and "assistant" roles (no "system")
+        # 2. First message must be "user"
+        # 3. Messages must alternate (no consecutive same-role messages)
         for turn in history[-6:]:  # Last 6 turns for context
-            messages.append({
-                "role": turn.get("role", "user"),
-                "content": turn.get("content", "")
-            })
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+
+            # Skip system messages - Anthropic doesn't accept them in messages array
+            if role == "system":
+                continue
+
+            # Only accept user/assistant roles
+            if role not in ("user", "assistant"):
+                role = "user"
+
+            # Skip empty content
+            if not content or not content.strip():
+                continue
+
+            messages.append({"role": role, "content": content})
+
+        # Ensure first message is "user" (Anthropic requirement)
+        if messages and messages[0]["role"] != "user":
+            # Insert a placeholder user message at the start
+            messages.insert(0, {"role": "user", "content": "[Conversation continues from earlier context]"})
 
         # Add current message
         messages.append({
@@ -394,8 +415,21 @@ class LLMSlotExtractor:
             "content": f"Extract information from this message:\n\n\"{user_message}\""
         })
 
+        # Consolidate consecutive user messages (Anthropic doesn't allow them)
+        consolidated = []
+        for msg in messages:
+            if consolidated and consolidated[-1]["role"] == msg["role"]:
+                # Merge with previous message
+                consolidated[-1]["content"] += "\n\n" + msg["content"]
+            else:
+                consolidated.append(msg)
+        messages = consolidated
+
         try:
             logger.info(f"Calling Anthropic API with model: {self.model}")
+            logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
+            logger.debug(f"System prompt length: {len(system_prompt)} chars")
+
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1500,
@@ -404,8 +438,15 @@ class LLMSlotExtractor:
                 temperature=0.1  # Low temperature for consistent extraction
             )
 
+            # Log full response metadata for debugging
+            logger.info(f"Anthropic response: stop_reason={response.stop_reason}, content_count={len(response.content)}")
+
+            if not response.content:
+                logger.error("Anthropic returned response with empty content array")
+                raise ValueError("Anthropic returned empty content array")
+
             result_text = response.content[0].text
-            logger.debug(f"Anthropic response (first 500 chars): {result_text[:500] if result_text else 'EMPTY'}")
+            logger.info(f"Anthropic response (first 300 chars): {result_text[:300] if result_text else 'EMPTY'}")
 
             if not result_text or not result_text.strip():
                 logger.error(f"Anthropic returned empty response. Stop reason: {response.stop_reason}")

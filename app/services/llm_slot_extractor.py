@@ -245,10 +245,10 @@ class LLMSlotExtractor:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
         self.client = Anthropic(api_key=api_key)
-        # Use Claude Sonnet 4.5 for warm, engaging conversations
-        # Excellent at following detailed instruction prompts for personalized questions
-        # Override with ANTHROPIC_EXTRACTION_MODEL env var.
-        self.model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-sonnet-4-5-20250929")
+        # Use Claude 3.5 Haiku for fast extraction (3-5x faster than Sonnet)
+        # Still excellent at structured extraction and following instructions
+        # Override with ANTHROPIC_EXTRACTION_MODEL env var for quality testing
+        self.model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-5-haiku-20241022")
 
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
@@ -430,16 +430,26 @@ class LLMSlotExtractor:
             logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
             logger.debug(f"System prompt length: {len(system_prompt)} chars")
 
+            # Use prompt caching for the large system prompt (reduces latency by ~80% on cache hit)
+            # Cache persists for 5 minutes of inactivity
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=1500,
-                system=system_prompt,
+                system=[
+                    {
+                        "type": "text",
+                        "text": system_prompt,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ],
                 messages=messages,
                 temperature=0.1  # Low temperature for consistent extraction
             )
 
-            # Log full response metadata for debugging
-            logger.info(f"Anthropic response: stop_reason={response.stop_reason}, content_count={len(response.content)}")
+            # Log full response metadata for debugging (including cache stats)
+            cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
+            cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
+            logger.info(f"Anthropic response: stop_reason={response.stop_reason}, cache_hit={cache_read > 0}, cache_tokens={cache_read or cache_creation}")
 
             if not response.content:
                 logger.error("Anthropic returned response with empty content array")

@@ -12,8 +12,12 @@ broker_ssl = None
 backend_ssl = None
 if redis_url.startswith('rediss://'):
     import ssl
+    # Use ssl.CERT_NONE for Celery's broker_use_ssl config
     broker_ssl = {
-        'ssl_cert_reqs': ssl.CERT_NONE
+        'ssl_cert_reqs': ssl.CERT_NONE,
+        'ssl_ca_certs': None,
+        'ssl_certfile': None,
+        'ssl_keyfile': None,
     }
     backend_ssl = broker_ssl
 

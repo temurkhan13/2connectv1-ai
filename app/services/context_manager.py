@@ -150,10 +150,15 @@ class ContextManager:
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
         try:
             # Support rediss:// URLs (Upstash, etc.)
-            redis_kwargs = {}
+            # For Upstash and other managed Redis services using TLS
             if self.redis_url.startswith("rediss://"):
-                redis_kwargs["ssl_cert_reqs"] = ssl.CERT_NONE
-            self.redis = redis.from_url(self.redis_url, **redis_kwargs)
+                # Use ssl_cert_reqs as string "none" for newer redis-py versions
+                self.redis = redis.from_url(
+                    self.redis_url,
+                    ssl_cert_reqs="none"  # Disable certificate verification for managed Redis
+                )
+            else:
+                self.redis = redis.from_url(self.redis_url)
             self.redis.ping()  # Test connection
             self._use_redis = True
             logger.info("Redis connected for session persistence")

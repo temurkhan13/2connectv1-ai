@@ -253,6 +253,59 @@ class LLMSlotExtractor:
         # For backwards compatibility
         self.model = self.extraction_model
 
+    def _repair_truncated_json(self, json_str: str) -> str:
+        """
+        Repair truncated JSON by closing open braces and brackets.
+        Handles cases where LLM response was cut off mid-JSON.
+        """
+        import re
+
+        # Count open braces/brackets
+        open_braces = json_str.count("{") - json_str.count("}")
+        open_brackets = json_str.count("[") - json_str.count("]")
+
+        # If we're in a string, try to close it
+        # Simple heuristic: odd number of unescaped quotes means unclosed string
+        quotes = re.findall(r'(?<!\\)"', json_str)
+        if len(quotes) % 2 == 1:
+            json_str += '"'
+
+        # Close any open brackets first, then braces
+        json_str += "]" * max(0, open_brackets)
+        json_str += "}" * max(0, open_braces)
+
+        return json_str
+
+    def _repair_json(self, json_str: str) -> str:
+        """
+        Attempt to repair common JSON errors:
+        - Missing commas between properties
+        - Trailing commas
+        - Single quotes instead of double quotes
+        - Unquoted keys
+        """
+        import re
+
+        # Replace single quotes with double quotes (outside of already double-quoted strings)
+        # This is a simple heuristic, not perfect
+        json_str = re.sub(r"'([^']*)':", r'"\1":', json_str)
+        json_str = re.sub(r":\s*'([^']*)'", r': "\1"', json_str)
+
+        # Remove trailing commas before } or ]
+        json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
+
+        # Try to fix missing commas: }" followed by "key" (common pattern)
+        json_str = re.sub(r'}\s*"', r'}, "', json_str)
+        json_str = re.sub(r'"\s*"([^"]+)":', r'", "\1":', json_str)
+
+        # Fix missing comma after number followed by quote
+        json_str = re.sub(r'(\d)\s+"', r'\1, "', json_str)
+
+        # Fix missing comma after true/false/null followed by quote
+        json_str = re.sub(r'(true|false|null)\s+"', r'\1, "', json_str)
+
+        return json_str
+
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
         Analyze conversation history to find which semantic topics have been asked.
@@ -376,7 +429,7 @@ WHAT WE STILL NEED: {', '.join(missing_focus)}
 
 RULES:
 1. Start with a warm acknowledgment that references SPECIFIC details from their message
-2. Show genuine curiosity ("That's fascinating", "I love that", "What a journey")
+2. Use VARIED openers — rotate between: "That's fascinating", "What a smart move", "That stands out", "That's impressive", "Interesting" — NEVER repeat the same opener
 3. Ask ONE open-ended question that naturally leads to the missing information
 4. NEVER be robotic ("Thanks for sharing!", "Got it", "I see")
 5. Make them feel like the most interesting person you've talked to today
@@ -496,78 +549,108 @@ Return ONLY the follow-up question, nothing else."""
                 consolidated.append(msg)
         messages = consolidated
 
-        try:
-            logger.info(f"Calling Anthropic API with model: {self.model}")
-            logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
-            logger.debug(f"System prompt length: {len(system_prompt)} chars")
+        # Retry loop for JSON parsing failures
+        max_retries = 2
+        last_error = None
 
-            # Use prompt caching for the large system prompt (reduces latency by ~80% on cache hit)
-            # Cache persists for 5 minutes of inactivity
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1500,
-                system=[
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"}
-                    }
-                ],
-                messages=messages,
-                temperature=0.1  # Low temperature for consistent extraction
-            )
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"Calling Anthropic API with model: {self.model} (attempt {attempt + 1}/{max_retries + 1})")
+                logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
+                logger.debug(f"System prompt length: {len(system_prompt)} chars")
 
-            # Log full response metadata for debugging (including cache stats)
-            cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
-            cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
-            logger.info(f"Anthropic response: stop_reason={response.stop_reason}, cache_hit={cache_read > 0}, cache_tokens={cache_read or cache_creation}")
+                # On retry, add explicit JSON-only instruction
+                retry_system = system_prompt
+                if attempt > 0:
+                    retry_system = "CRITICAL: Return ONLY valid JSON. No preamble, no explanation, just the JSON object starting with { and ending with }.\n\n" + system_prompt
 
-            if not response.content:
-                logger.error("Anthropic returned response with empty content array")
-                raise ValueError("Anthropic returned empty content array")
+                # Use prompt caching for the large system prompt (reduces latency by ~80% on cache hit)
+                # Cache persists for 5 minutes of inactivity
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1500,
+                    system=[
+                        {
+                            "type": "text",
+                            "text": retry_system,
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ],
+                    messages=messages,
+                    temperature=0.1  # Low temperature for consistent extraction
+                )
 
-            result_text = response.content[0].text
-            logger.info(f"Anthropic response (first 300 chars): {result_text[:300] if result_text else 'EMPTY'}")
+                # Log full response metadata for debugging (including cache stats)
+                cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
+                cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
+                logger.info(f"Anthropic response: stop_reason={response.stop_reason}, cache_hit={cache_read > 0}, cache_tokens={cache_read or cache_creation}")
 
-            if not result_text or not result_text.strip():
-                logger.error(f"Anthropic returned empty response. Stop reason: {response.stop_reason}")
-                raise ValueError("Empty response from Anthropic API")
+                if not response.content:
+                    logger.error("Anthropic returned response with empty content array")
+                    raise ValueError("Anthropic returned empty content array")
 
-            # Strip markdown code blocks if present (Claude often wraps JSON in ```json ... ```)
-            result_text = result_text.strip()
-            if result_text.startswith("```"):
-                # Remove opening fence (```json or ```)
-                result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
-            if result_text.endswith("```"):
-                # Remove closing fence
-                result_text = result_text[:-3]
-            result_text = result_text.strip()
+                result_text = response.content[0].text
+                logger.info(f"Anthropic response (first 300 chars): {result_text[:300] if result_text else 'EMPTY'}")
 
-            # Handle conversational preambles like "Got it, here's what I extracted:"
-            # Find the first { and extract JSON from there
-            if not result_text.startswith("{"):
-                json_start = result_text.find("{")
-                if json_start == -1:
-                    logger.error(f"No JSON found in response: {result_text[:200]}")
-                    raise ValueError("No JSON object found in LLM response")
-                # Find matching closing brace
-                brace_count = 0
-                json_end = -1
-                for i, char in enumerate(result_text[json_start:], start=json_start):
-                    if char == "{":
-                        brace_count += 1
-                    elif char == "}":
-                        brace_count -= 1
-                        if brace_count == 0:
-                            json_end = i + 1
-                            break
-                if json_end == -1:
-                    logger.error(f"Unbalanced braces in response: {result_text[:200]}")
-                    raise ValueError("Unbalanced braces in LLM response")
-                result_text = result_text[json_start:json_end]
-                logger.info(f"Extracted JSON from preamble (chars {json_start}-{json_end})")
+                if not result_text or not result_text.strip():
+                    logger.error(f"Anthropic returned empty response. Stop reason: {response.stop_reason}")
+                    raise ValueError("Empty response from Anthropic API")
 
-            result_data = json.loads(result_text)
+                # Strip markdown code blocks if present (Claude often wraps JSON in ```json ... ```)
+                result_text = result_text.strip()
+                if result_text.startswith("```"):
+                    # Remove opening fence (```json or ```)
+                    result_text = result_text.split("\n", 1)[1] if "\n" in result_text else result_text[3:]
+                if result_text.endswith("```"):
+                    # Remove closing fence
+                    result_text = result_text[:-3]
+                result_text = result_text.strip()
+
+                # Handle conversational preambles like "Got it, here's what I extracted:"
+                # Find the first { and extract JSON from there
+                if not result_text.startswith("{"):
+                    json_start = result_text.find("{")
+                    if json_start == -1:
+                        logger.error(f"No JSON found in response: {result_text[:200]}")
+                        raise ValueError("No JSON object found in LLM response")
+                    # Find matching closing brace
+                    brace_count = 0
+                    json_end = -1
+                    for i, char in enumerate(result_text[json_start:], start=json_start):
+                        if char == "{":
+                            brace_count += 1
+                        elif char == "}":
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_end = i + 1
+                                break
+                    if json_end == -1:
+                        # Try to repair truncated JSON by closing open braces
+                        result_text = self._repair_truncated_json(result_text[json_start:])
+                        logger.info(f"Attempted JSON repair for truncated response")
+                    else:
+                        result_text = result_text[json_start:json_end]
+                        logger.info(f"Extracted JSON from preamble (chars {json_start}-{json_end})")
+
+                # Try to parse, with repair on failure
+                try:
+                    result_data = json.loads(result_text)
+                except json.JSONDecodeError as je:
+                    logger.warning(f"JSON parse error: {je}, attempting repair...")
+                    repaired = self._repair_json(result_text)
+                    result_data = json.loads(repaired)
+                    logger.info("JSON repair successful")
+
+                # If we get here, parsing succeeded - break out of retry loop
+                break
+
+            except (json.JSONDecodeError, ValueError) as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
+                    continue
+                else:
+                    raise
 
             result = self._parse_llm_response(result_data, already_filled)
 
@@ -701,7 +784,7 @@ You make every person feel HEARD and VALUED. You're not filling out a form — y
 
 ## Primary Objectives
 1. Make the user feel genuinely understood by MIRRORING BACK specific details they mentioned
-2. Show authentic curiosity about their unique journey ("That's fascinating...", "I love that approach...")
+2. Show authentic curiosity with VARIED phrases (never repeat the same opener twice in a conversation)
 3. Build rapport through warm, personalized acknowledgments before asking the next question
 4. Extract information naturally through engaged conversation, not form-filling
 5. NEVER repeat questions about topics already covered
@@ -713,16 +796,17 @@ You make every person feel HEARD and VALUED. You're not filling out a form — y
 - "Got it. What industry are you in?"
 - "I see. What's your timeline?"
 
-**ENGAGING (ALWAYS DO THIS):**
+**ENGAGING (ALWAYS DO THIS) - USE VARIETY:**
 - "That's a fascinating journey — pivoting from sales into tech takes real vision. What sparked that shift for you?"
-- "I love the consultative approach; it sounds like you're positioning as a strategic partner, not just another vendor. What's been the response so far?"
+- "What a smart approach — positioning as a strategic partner, not just another vendor. How has that been landing?"
 - "Building an AI tool for hospitals — that's such a complex space to crack. What's been the most surprising thing you've learned?"
+- "Staying lean and keeping control is a powerful position — that discipline really shows. What's the biggest lever you're pulling right now?"
 
 ## 🔑 PERSONALIZATION RULES
 
 1. **Reference their specific details**: If they said "AI for hospitals", say "AI for hospitals" back to them, not "your company"
 2. **Acknowledge their unique angle**: What makes THEIR story different? Highlight it.
-3. **Show genuine interest**: Use phrases like "That's fascinating", "I love that", "That's a bold move"
+3. **VARY your openers**: Rotate between "That's fascinating", "What a smart approach", "That stands out", "That's impressive", "I can see why" — NEVER start 2 responses the same way
 4. **Build on their narrative**: Connect their past to their present to their future
 5. **Ask story-driven follow-ups**: "What led you to that decision?" not "What's your goal?"
 {covered_topics_text}{missing_required_text}
@@ -833,7 +917,7 @@ Return valid JSON:
 
 Your follow-up MUST:
 1. **Start with warm acknowledgment** that references SPECIFIC details they shared (not generic "Thanks for sharing!")
-2. **Show genuine curiosity** with phrases like "That's fascinating", "I love that approach", "What a journey"
+2. **Use VARIED openers** — rotate between: "That's fascinating", "What a smart move", "That stands out", "That's impressive", "Interesting approach" — NEVER repeat the same opener twice
 3. **Connect to their unique story** — don't ask generic questions, ask questions that flow from THEIR narrative
 4. **Be open-ended** to invite rich responses
 5. **Never be form-like** — no "What is your X?" or "Tell me about your Y"
@@ -882,25 +966,25 @@ MUST NOT contain:
 
 MUST contain:
 - Specific reference to something unique from their message (names, companies, decisions, experiences)
-- Genuine curiosity phrase ("fascinating", "love that", "bold move", "interesting")
+- VARIED curiosity phrases (rotate: "fascinating", "smart move", "stands out", "impressive", "interesting") — NEVER use the same phrase twice in a row
 - Natural conversational flow (not interrogation)
 
-## Strategic Question Examples (Engaging Style)
+## Strategic Question Examples (Engaging Style) — NOTE THE VARIETY
 
 **If user mentioned leaving a job to start something:**
 "That's a brave move — walking away from stability to chase something you believe in. What was the moment you knew you had to make that leap?"
 
 **If user mentioned a specific industry (e.g., healthtech):**
-"Healthcare is such a fascinating space — complex but so much potential for impact. What drew you to that world specifically?"
+"Healthcare is such a complex space — but the potential for impact is massive. What drew you to that world specifically?"
 
 **If user mentioned raising funding:**
-"Fundraising can be such a rollercoaster. What's been the most surprising thing about that process so far?"
+"Fundraising can be quite a rollercoaster. What's been the most surprising thing about that process so far?"
 
 **If user mentioned a co-founder search:**
 "Finding the right co-founder is like dating but with higher stakes! What qualities matter most to you in that partnership?"
 
 **If user is an investor:**
-"I love hearing what makes investors tick. What's your thesis — what gets you genuinely excited to write a check?"
+"The investor mindset is always interesting to understand. What's your thesis — what gets you genuinely excited to write a check?"
 
 **Generic engaging openers (personalize based on context):**
 - "What's the big vision you're working toward? I'm curious what success looks like to you."

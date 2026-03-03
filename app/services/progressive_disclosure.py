@@ -349,8 +349,10 @@ class ProgressiveDisclosure:
         self.schema = SlotSchema()
 
         # Configuration
-        self.base_batch_size = int(os.getenv("DISCLOSURE_BATCH_SIZE", "2"))
-        self.max_batch_size = int(os.getenv("DISCLOSURE_MAX_BATCH", "4"))
+        # UX-004 FIX: Increased from 2/4 to 5/7 to extract more questions per turn
+        # Users were experiencing only 2 questions per onboarding session (too few)
+        self.base_batch_size = int(os.getenv("DISCLOSURE_BATCH_SIZE", "5"))
+        self.max_batch_size = int(os.getenv("DISCLOSURE_MAX_BATCH", "7"))
         self.min_batch_size = 1
 
         # Engagement tracking per session

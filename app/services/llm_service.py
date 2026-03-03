@@ -1,6 +1,6 @@
 """
 LLM service for handling Claude API interactions via LangChain.
-Uses Claude Sonnet 4.5 for match explanations and ice breakers.
+Uses Claude Haiku 3.0 for match explanations and ice breakers (fast, cost-effective).
 """
 from typing import Optional, Dict, Any, List
 import os
@@ -21,8 +21,8 @@ class LLMService:
     def __init__(self):
         """Initialize LLM service with Anthropic Claude."""
         self.api_key = os.getenv('ANTHROPIC_API_KEY')
-        # Use Claude Sonnet 4.5 for match explanations and ice breakers
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
+        # Use Claude Haiku 3.0 for fast, cost-effective match explanations and ice breakers
+        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')
         self.temperature = float(os.getenv('LLM_TEMPERATURE', '0.7'))
 
         if not self.api_key:

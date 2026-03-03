@@ -126,11 +126,16 @@ class SupabaseOnboardingAdapter:
                 for slot in slots
             ]
 
+            # BUG-021 FIX: Use upsert to handle duplicate slots (avoid 409 Conflict)
+            # Supabase REST API requires Prefer header for upsert behavior
+            headers = self._get_headers()
+            headers["Prefer"] = "resolution=merge-duplicates"
+
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
                     url,
                     json=payload,
-                    headers=self._get_headers()
+                    headers=headers
                 )
 
                 if response.status_code in [200, 201]:

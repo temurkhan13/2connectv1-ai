@@ -641,8 +641,43 @@ Return ONLY the follow-up question, nothing else."""
                     result_data = json.loads(repaired)
                     logger.info("JSON repair successful")
 
-                # If we get here, parsing succeeded - break out of retry loop
-                break
+                # If we get here, parsing succeeded - process the result
+                result = self._parse_llm_response(result_data, already_filled)
+
+                # BUG-002 FIX: Check if LLM still generated a repetitive question
+                # If so, auto-replace with a diversified question
+                if result.follow_up_question and self._is_question_repetitive(result.follow_up_question, covered_topics):
+                    logger.warning(f"LLM generated repetitive question, auto-diversifying...")
+                    diversified = self._get_diversified_question(covered_topics, result.missing_slots)
+                    result = LLMExtractionResult(
+                        extracted_slots=result.extracted_slots,
+                        user_type_inference=result.user_type_inference,
+                        follow_up_question=diversified,  # Replace with non-repetitive question
+                        missing_slots=result.missing_slots,
+                        understanding_summary=result.understanding_summary,
+                        is_off_topic=result.is_off_topic
+                    )
+
+                # Step 2: Enhance follow-up with Sonnet for higher quality personalization
+                # Only if we have slots extracted and not off-topic
+                if result.extracted_slots and not result.is_off_topic and result.missing_slots:
+                    enhanced_followup = self._generate_personalized_followup(
+                        user_message=user_message,
+                        extracted_slots=result.extracted_slots,
+                        missing_slots=result.missing_slots,
+                        user_type=result.user_type_inference
+                    )
+                    if enhanced_followup:
+                        result = LLMExtractionResult(
+                            extracted_slots=result.extracted_slots,
+                            user_type_inference=result.user_type_inference,
+                            follow_up_question=enhanced_followup,
+                            missing_slots=result.missing_slots,
+                            understanding_summary=result.understanding_summary,
+                            is_off_topic=result.is_off_topic
+                        )
+
+                return result
 
             except (json.JSONDecodeError, ValueError) as e:
                 last_error = e
@@ -650,56 +685,19 @@ Return ONLY the follow-up question, nothing else."""
                     logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
                     continue
                 else:
+                    # All retries exhausted, fall through to outer exception handler
                     raise
 
-            result = self._parse_llm_response(result_data, already_filled)
-
-            # BUG-002 FIX: Check if LLM still generated a repetitive question
-            # If so, auto-replace with a diversified question
-            if result.follow_up_question and self._is_question_repetitive(result.follow_up_question, covered_topics):
-                logger.warning(f"LLM generated repetitive question, auto-diversifying...")
-                diversified = self._get_diversified_question(covered_topics, result.missing_slots)
-                result = LLMExtractionResult(
-                    extracted_slots=result.extracted_slots,
-                    user_type_inference=result.user_type_inference,
-                    follow_up_question=diversified,  # Replace with non-repetitive question
-                    missing_slots=result.missing_slots,
-                    understanding_summary=result.understanding_summary,
-                    is_off_topic=result.is_off_topic
-                )
-
-            # Step 2: Enhance follow-up with Sonnet for higher quality personalization
-            # Only if we have slots extracted and not off-topic
-            if result.extracted_slots and not result.is_off_topic and result.missing_slots:
-                enhanced_followup = self._generate_personalized_followup(
-                    user_message=user_message,
-                    extracted_slots=result.extracted_slots,
-                    missing_slots=result.missing_slots,
-                    user_type=result.user_type_inference
-                )
-                if enhanced_followup:
-                    result = LLMExtractionResult(
-                        extracted_slots=result.extracted_slots,
-                        user_type_inference=result.user_type_inference,
-                        follow_up_question=enhanced_followup,
-                        missing_slots=result.missing_slots,
-                        understanding_summary=result.understanding_summary,
-                        is_off_topic=result.is_off_topic
-                    )
-
-            return result
-
-        except Exception as e:
-            logger.error(f"LLM extraction failed: {e}")
-            # Return empty result on failure (still engaging)
-            return LLMExtractionResult(
-                extracted_slots={},
-                user_type_inference="unknown",
-                follow_up_question="I'd love to hear more about your journey — what brought you here today, and what are you hoping to find?",
-                missing_slots=list(SLOT_DEFINITIONS.keys()),
-                understanding_summary="I had trouble understanding your message. Could you rephrase?",
-                is_off_topic=False
-            )
+        # If we exit the loop without returning (all retries exhausted), return fallback
+        logger.error(f"All {max_retries + 1} extraction attempts failed")
+        return LLMExtractionResult(
+            extracted_slots={},
+            user_type_inference="unknown",
+            follow_up_question="I'd love to hear more about your journey — what brought you here today, and what are you hoping to find?",
+            missing_slots=list(SLOT_DEFINITIONS.keys()),
+            understanding_summary="I had trouble understanding your message. Could you rephrase?",
+            is_off_topic=False
+        )
 
     def _build_system_prompt(
         self,

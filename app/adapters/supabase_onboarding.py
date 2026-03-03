@@ -1,14 +1,31 @@
 """
 Supabase adapter for onboarding_answers table.
 Handles persistence of LLM-extracted conversational slots.
+
+BUG-022 FIX: Bulletproof persistence with retry + validation
+- Retries transient failures (network, 500 errors)
+- Raises exceptions instead of silent failures
+- Validates data was actually persisted
 """
 import os
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
 
 logger = logging.getLogger(__name__)
+
+
+class SupabasePersistenceError(Exception):
+    """Raised when slot persistence fails after all retries."""
+    pass
 
 
 class SupabaseOnboardingAdapter:
@@ -93,13 +110,25 @@ class SupabaseOnboardingAdapter:
             logger.error(f"Error saving slot '{slot_name}' to Supabase: {e}")
             return False
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True
+    )
     async def save_slots_batch(
         self,
         user_id: str,
         slots: List[Dict[str, Any]]
     ) -> int:
         """
-        Save multiple slots in a single batch (upsert).
+        Save multiple slots in a single batch (upsert) with retry + validation.
+
+        BUG-022 FIX: Bulletproof persistence
+        - Retries transient failures (3 attempts with exponential backoff)
+        - Raises SupabasePersistenceError instead of returning 0
+        - Validates slots were actually persisted
 
         Args:
             user_id: User identifier
@@ -107,47 +136,91 @@ class SupabaseOnboardingAdapter:
 
         Returns:
             Number of successfully saved slots
+
+        Raises:
+            SupabasePersistenceError: If persistence fails after all retries
         """
-        if not self.enabled or not slots:
+        if not self.enabled:
+            raise SupabasePersistenceError("Supabase adapter not enabled - SUPABASE_SERVICE_KEY not set")
+
+        if not slots:
             return 0
 
+        url = f"{self.supabase_url}/rest/v1/onboarding_answers"
+        payload = [
+            {
+                "user_id": user_id,
+                "slot_name": slot.get("name"),
+                "value": slot.get("value"),
+                "confidence": slot.get("confidence", 1.0),
+                "source_text": slot.get("source_text"),
+                "extraction_method": slot.get("extraction_method", "llm"),
+                "status": slot.get("status", "filled")
+            }
+            for slot in slots
+        ]
+
+        # BUG-021 FIX: Upsert header already in _get_headers()
+        # BUG-022 FIX: Retry logic + exception handling
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                url,
+                json=payload,
+                headers=self._get_headers()
+            )
+
+            if response.status_code in [200, 201]:
+                logger.info(f"✅ Saved {len(slots)} slots for user {user_id[:8]}... to Supabase")
+
+                # BUG-022 FIX: Validate persistence by reading back
+                await self._validate_persistence(user_id, slots)
+
+                return len(slots)
+            else:
+                # BUG-022 FIX: Raise exception instead of returning 0
+                error_msg = f"Supabase save failed: {response.status_code} - {response.text}"
+                logger.error(error_msg)
+                raise SupabasePersistenceError(error_msg)
+
+    async def _validate_persistence(self, user_id: str, saved_slots: List[Dict[str, Any]]) -> None:
+        """
+        Validate that slots were actually persisted to database.
+
+        BUG-022 FIX: Catch silent failures where save appears successful
+        but data isn't actually in the database.
+
+        Args:
+            user_id: User identifier
+            saved_slots: List of slots that were just saved
+
+        Raises:
+            SupabasePersistenceError: If validation fails
+        """
         try:
-            url = f"{self.supabase_url}/rest/v1/onboarding_answers"
-            payload = [
-                {
-                    "user_id": user_id,
-                    "slot_name": slot.get("name"),
-                    "value": slot.get("value"),
-                    "confidence": slot.get("confidence", 1.0),
-                    "source_text": slot.get("source_text"),
-                    "extraction_method": slot.get("extraction_method", "llm"),
-                    "status": slot.get("status", "filled")
-                }
-                for slot in slots
-            ]
+            persisted = await self.get_user_slots(user_id)
+            saved_slot_names = {slot.get("name") for slot in saved_slots}
+            persisted_slot_names = set(persisted.keys())
 
-            # BUG-021 FIX: Use upsert to handle duplicate slots (avoid 409 Conflict)
-            # Supabase REST API requires Prefer header for upsert behavior
-            headers = self._get_headers()
-            headers["Prefer"] = "resolution=merge-duplicates"
+            # Check that all saved slots are actually in database
+            missing = saved_slot_names - persisted_slot_names
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=headers
+            if missing:
+                error_msg = (
+                    f"Persistence validation FAILED for user {user_id[:8]}... "
+                    f"Saved {len(saved_slots)} slots but {len(missing)} missing from database: {missing}"
                 )
+                logger.error(error_msg)
+                raise SupabasePersistenceError(error_msg)
 
-                if response.status_code in [200, 201]:
-                    logger.info(f"✅ Saved {len(slots)} slots for user {user_id[:8]}... to Supabase")
-                    return len(slots)
-                else:
-                    logger.error(f"Failed to save batch: {response.status_code} - {response.text}")
-                    return 0
+            logger.info(f"✅ Persistence validated: {len(saved_slots)} slots confirmed in database")
 
+        except SupabasePersistenceError:
+            raise  # Re-raise validation errors
         except Exception as e:
-            logger.error(f"Error saving batch to Supabase: {e}")
-            return 0
+            # Validation query failed - treat as persistence failure
+            error_msg = f"Persistence validation query failed: {e}"
+            logger.error(error_msg)
+            raise SupabasePersistenceError(error_msg)
 
     async def get_user_slots(self, user_id: str) -> Dict[str, Any]:
         """

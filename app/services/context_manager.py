@@ -474,31 +474,38 @@ class ContextManager:
 
         BUG-008 FIX: Made async to avoid event loop conflict when called
         from async FastAPI endpoints.
+
+        BUG-022 FIX: Fail fast on persistence errors instead of silent failures.
+        If slots can't be persisted, the error propagates to the API endpoint,
+        user sees error message, and can retry (vs thinking onboarding succeeded
+        when data was actually lost).
+
+        Raises:
+            SupabasePersistenceError: If slot persistence fails after retries
         """
-        try:
-            slots_to_save = [
-                {
-                    "name": slot_name,
-                    "value": str(llm_slot.value),
-                    "confidence": llm_slot.confidence,
-                    "source_text": content[:500],  # Truncate to 500 chars
-                    "extraction_method": "llm",
-                    "status": "filled"
-                }
-                for slot_name, llm_slot in llm_result.extracted_slots.items()
-            ]
+        from app.adapters.supabase_onboarding import SupabasePersistenceError
 
-            if slots_to_save:
-                # BUG-008 FIX: Properly await async function (no event loop creation)
-                saved_count = await supabase_onboarding_adapter.save_slots_batch(
-                    user_id=context.user_id,
-                    slots=slots_to_save
-                )
-                logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
+        slots_to_save = [
+            {
+                "name": slot_name,
+                "value": str(llm_slot.value),
+                "confidence": llm_slot.confidence,
+                "source_text": content[:500],  # Truncate to 500 chars
+                "extraction_method": "llm",
+                "status": "filled"
+            }
+            for slot_name, llm_slot in llm_result.extracted_slots.items()
+        ]
 
-        except Exception as e:
-            logger.error(f"Failed to persist slots to Supabase: {e}")
-            # Non-blocking - don't fail the extraction if persistence fails
+        if slots_to_save:
+            # BUG-022 FIX: Let SupabasePersistenceError propagate (fail fast)
+            # save_slots_batch now retries 3x and validates persistence
+            saved_count = await supabase_onboarding_adapter.save_slots_batch(
+                user_id=context.user_id,
+                slots=slots_to_save
+            )
+            logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
+            # Note: If this succeeds, persistence was validated (slots in database)
 
     def _extract_slots_regex_fallback(
         self,

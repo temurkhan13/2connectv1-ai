@@ -153,7 +153,8 @@ async def chat(request: ChatMessageRequest):
         session_id = context.session_id
 
         # Add user turn and extract slots
-        turn = context_manager.add_turn(
+        # BUG-008 FIX: Await async add_turn
+        turn = await context_manager.add_turn(
             session_id=session_id,
             turn_type=TurnType.USER,
             content=request.message
@@ -207,7 +208,8 @@ async def chat(request: ChatMessageRequest):
                 ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
 
         # Add assistant turn
-        context_manager.add_turn(
+        # BUG-008 FIX: Await async add_turn
+        await context_manager.add_turn(
             session_id=session_id,
             turn_type=TurnType.ASSISTANT,
             content=ai_response

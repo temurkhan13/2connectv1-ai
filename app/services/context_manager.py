@@ -284,7 +284,7 @@ class ContextManager:
 
         return context
 
-    def add_turn(
+    async def add_turn(
         self,
         session_id: str,
         turn_type: TurnType,
@@ -293,6 +293,8 @@ class ContextManager:
     ) -> Optional[ConversationTurn]:
         """
         Add a turn to the conversation and extract any slots.
+
+        BUG-008 FIX: Made async to support async slot extraction and persistence.
 
         Args:
             session_id: Session identifier
@@ -312,9 +314,10 @@ class ContextManager:
         now = datetime.utcnow()
 
         # Extract slots from user turns
+        # BUG-008 FIX: Await async slot extraction
         extracted_slot_names = []
         if turn_type == TurnType.USER:
-            extracted_slot_names = self._extract_slots_from_turn(context, content)
+            extracted_slot_names = await self._extract_slots_from_turn(context, content)
 
         turn = ConversationTurn(
             turn_id=turn_id,
@@ -340,7 +343,7 @@ class ContextManager:
         logger.debug(f"Added turn {turn_id} to session {session_id}")
         return turn
 
-    def _extract_slots_from_turn(
+    async def _extract_slots_from_turn(
         self,
         context: ConversationContext,
         content: str
@@ -404,8 +407,9 @@ class ContextManager:
 
             # P0 FIX: ALWAYS persist slots to Supabase (even on cache hit)
             # This ensures dashboard shows correct slot count and enables regeneration
+            # BUG-008 FIX: Await async persistence function
             if llm_result.extracted_slots:
-                self._persist_slots_to_supabase(context, llm_result, content)
+                await self._persist_slots_to_supabase(context, llm_result, content)
 
             # If cache hit, use cached slot names to avoid redundant storage IN MEMORY
             # But we still persisted to Supabase above for dashboard visibility
@@ -456,7 +460,7 @@ class ContextManager:
 
         return extracted_names
 
-    def _persist_slots_to_supabase(
+    async def _persist_slots_to_supabase(
         self,
         context: ConversationContext,
         llm_result: LLMExtractionResult,
@@ -467,10 +471,11 @@ class ContextManager:
 
         This ensures slots are visible in the admin dashboard and available
         for regeneration if needed.
+
+        BUG-008 FIX: Made async to avoid event loop conflict when called
+        from async FastAPI endpoints.
         """
         try:
-            import asyncio
-
             slots_to_save = [
                 {
                     "name": slot_name,
@@ -484,19 +489,12 @@ class ContextManager:
             ]
 
             if slots_to_save:
-                # Run async function synchronously
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    saved_count = loop.run_until_complete(
-                        supabase_onboarding_adapter.save_slots_batch(
-                            user_id=context.user_id,
-                            slots=slots_to_save
-                        )
-                    )
-                    logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
-                finally:
-                    loop.close()
+                # BUG-008 FIX: Properly await async function (no event loop creation)
+                saved_count = await supabase_onboarding_adapter.save_slots_batch(
+                    user_id=context.user_id,
+                    slots=slots_to_save
+                )
+                logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
 
         except Exception as e:
             logger.error(f"Failed to persist slots to Supabase: {e}")

@@ -95,11 +95,18 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             persona = persona_data.get('persona', {})
             requirements = persona_data.get('requirements', '')
             offerings = persona_data.get('offerings', '')
-            
+
+            # BUG-009 FIX: Ensure requirements/offerings are strings for DynamoDB
+            # DynamoDB SerializationException occurs if these are complex objects
+            if not isinstance(requirements, str):
+                requirements = str(requirements) if requirements else ''
+            if not isinstance(offerings, str):
+                offerings = str(offerings) if offerings else ''
+
             # Debug logging
             logger.info(f"Generated persona: {persona.get('name', 'N/A')}")
-            logger.info(f"Requirements length: {len(requirements)} characters")
-            logger.info(f"Offerings length: {len(offerings)} characters")
+            logger.info(f"Requirements type: {type(requirements)}, length: {len(requirements)} characters")
+            logger.info(f"Offerings type: {type(offerings)}, length: {len(offerings)} characters")
             
             # Store persona data with requirements and offerings using update method
             # Note: "strategy" is the role-agnostic field that maps to investment_philosophy in DB

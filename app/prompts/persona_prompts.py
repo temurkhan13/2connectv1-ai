@@ -1,9 +1,15 @@
 """
 Prompt templates for persona generation.
 """
+import re
+import json
+import logging
 from typing import Dict, Any
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.exceptions import OutputParserException
+
+logger = logging.getLogger(__name__)
 
 # JSON schema for persona output with requirements and offerings
 # NOTE: "strategy" replaces "investment_philosophy" to be role-agnostic
@@ -129,14 +135,70 @@ Combined Input Data:
 """
 
 
+class RobustJsonOutputParser(JsonOutputParser):
+    """
+    Enhanced JSON parser that handles LLM responses wrapped in markdown text.
+
+    BUG-015 FIX: Claude sometimes wraps JSON in explanatory text like:
+    "Based on the provided input data, here are the outputs:
+    {
+      "persona": {...}
+    }"
+
+    This parser extracts JSON from such responses before parsing.
+    """
+
+    def parse(self, text: str) -> Dict[str, Any]:
+        """
+        Parse JSON from LLM response, handling markdown-wrapped JSON.
+
+        Args:
+            text: LLM response that may contain JSON wrapped in markdown
+
+        Returns:
+            Parsed JSON dict
+
+        Raises:
+            OutputParserException: If no valid JSON found
+        """
+        # Try direct parse first (fast path for well-behaved responses)
+        try:
+            return super().parse(text)
+        except Exception as direct_error:
+            logger.debug(f"Direct JSON parse failed, trying extraction: {direct_error}")
+
+        # BUG-015 FIX: Extract JSON from markdown text
+        # Match the outermost {...} structure (handles nested objects)
+        json_match = re.search(r'\{[\s\S]*\}', text)
+
+        if json_match:
+            try:
+                json_str = json_match.group(0)
+                parsed = json.loads(json_str)
+                logger.info("BUG-015 FIX: Successfully extracted JSON from markdown-wrapped response")
+                return parsed
+            except json.JSONDecodeError as e:
+                logger.warning(f"BUG-015 FIX: Found JSON-like text but parse failed: {e}")
+                # Fall through to error
+
+        # No valid JSON found
+        logger.error(f"BUG-015 ERROR: No valid JSON found in response. First 200 chars: {text[:200]}")
+        raise OutputParserException(
+            f"Invalid json output: {text}",
+            llm_output=text
+        )
+
+
 def build_persona_chain(llm):
-    """Build the persona generation chain."""
-    parser = JsonOutputParser()
+    """Build the persona generation chain with robust JSON parsing."""
+    # BUG-015 FIX: Use RobustJsonOutputParser instead of standard JsonOutputParser
+    # This handles LLM responses that wrap JSON in explanatory markdown text
+    parser = RobustJsonOutputParser()
     prompt = PromptTemplate(
         template=PERSONA_TEMPLATE,
         input_variables=["combined_data", "json_schema"],
     )
-    # Chain: Prompt -> LLM -> JSON parser
+    # Chain: Prompt -> LLM -> Robust JSON parser
     chain = prompt | llm | parser
     return chain
 

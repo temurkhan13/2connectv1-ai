@@ -95,6 +95,13 @@ class EmbeddingService:
             List of floats representing the embedding vector
         """
         try:
+            # BUG-013 FIX: Handle lists gracefully (convert to string)
+            # This prevents AttributeError: 'list' object has no attribute 'strip'
+            if isinstance(text, list):
+                logger.warning(f"Received list instead of string for embedding: {text}")
+                text = "; ".join(str(item).strip() for item in text if item)
+                logger.info(f"Converted list to string: {text[:100]}...")
+
             if not text or not text.strip():
                 logger.warning("Empty text provided for embedding generation")
                 return None

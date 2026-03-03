@@ -1275,6 +1275,16 @@ Extract ALL inferable information. Ask questions that reveal what's STILL MISSIN
                 confidence = 0.8
                 reasoning = ""
 
+            # BUG-013 FIX: Convert lists to strings for offerings/requirements
+            # LLM sometimes returns lists like ["item1", "item2"] instead of strings
+            # This causes crashes in embedding_service (.strip() on list) and DynamoDB serialization
+            if slot_name in ["offerings", "requirements"] and isinstance(value, list):
+                # Join list items with semicolons (as per extraction hint in prompt)
+                value = "; ".join(str(item).strip() for item in value if item)
+                logger.info(f"BUG-013 FIX: Converted {slot_name} from list to string: {value[:100]}...")
+                # Reduce confidence slightly since we had to convert format
+                confidence = max(0.7, confidence - 0.1)
+
             # CRITICAL VALIDATION: Sanity check for team_size to prevent "7 years" → 7000000 bug
             if slot_name == "team_size" and value is not None:
                 try:

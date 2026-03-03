@@ -560,6 +560,13 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 "requirements": slots.get("requirements", {}).get("value", ""),
             }
 
+            # BUG-013 FIX: Ensure offerings/requirements are strings, not lists
+            # This prevents DynamoDB serialization errors and embedding generation crashes
+            for key in ["offerings", "requirements"]:
+                if isinstance(summary_data[key], list):
+                    summary_data[key] = "; ".join(str(item).strip() for item in summary_data[key] if item)
+                    logger.info(f"BUG-013 FIX: Converted {key} from list to string in summary_data")
+
             # Generate markdown summary for frontend display (AI Summary page)
             profile_type = summary_data["profile_type"] or "User"
             industry = summary_data["industry"] or "Not specified"

@@ -96,11 +96,19 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             requirements = persona_data.get('requirements', '')
             offerings = persona_data.get('offerings', '')
 
-            # BUG-009 FIX: Ensure requirements/offerings are strings for DynamoDB
-            # DynamoDB SerializationException occurs if these are complex objects
-            if not isinstance(requirements, str):
+            # BUG-009 + BUG-013 FIX: Ensure requirements/offerings are strings for DynamoDB
+            # DynamoDB SerializationException occurs if these are complex objects (lists, dicts)
+            # Convert lists properly (join with semicolons) instead of str() which gives "['item1', 'item2']"
+            if isinstance(requirements, list):
+                requirements = "; ".join(str(item).strip() for item in requirements if item)
+                logger.info(f"BUG-013 FIX: Converted requirements from list to string in persona_processing")
+            elif not isinstance(requirements, str):
                 requirements = str(requirements) if requirements else ''
-            if not isinstance(offerings, str):
+
+            if isinstance(offerings, list):
+                offerings = "; ".join(str(item).strip() for item in offerings if item)
+                logger.info(f"BUG-013 FIX: Converted offerings from list to string in persona_processing")
+            elif not isinstance(offerings, str):
                 offerings = str(offerings) if offerings else ''
 
             # Debug logging

@@ -375,7 +375,8 @@ class ContextManager:
             llm_result = self.llm_extractor.extract_slots(
                 user_message=content,
                 conversation_history=conversation_history,
-                already_filled_slots=already_filled
+                already_filled_slots=already_filled,
+                session_id=context.session_id
             )
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")

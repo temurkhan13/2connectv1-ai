@@ -252,6 +252,70 @@ class LLMSlotExtractor:
         self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", "claude-sonnet-4-5-20250929")
         # For backwards compatibility
         self.model = self.extraction_model
+        # Session-specific pattern memory (keyed by session_id to avoid cross-user pollution)
+        # CRITICAL: Service is singleton, so patterns must be session-specific
+        self._session_patterns = {}  # {session_id: {'openers': [], 'structures': [], 'punctuation': []}}
+
+    def _detect_opener(self, question: str) -> str:
+        """Detect the opening phrase pattern of a question."""
+        question = question.strip()
+        # Extract first 3-5 words as the opener pattern
+        words = question.split()[:5]
+        opener = ' '.join(words)
+
+        # Normalize common patterns
+        if opener.startswith("That's"):
+            return f"That's {words[1]}" if len(words) > 1 else "That's"
+        elif opener.startswith("What a"):
+            return f"What a {words[2]}" if len(words) > 2 else "What a"
+        elif opener.startswith("What"):
+            return "What [question]"
+        elif opener.startswith("How"):
+            return "How [question]"
+        else:
+            return ' '.join(words[:3])
+
+    def _detect_structure(self, question: str) -> str:
+        """Detect the structural pattern of a question."""
+        question = question.strip()
+
+        # Detect common structural patterns
+        if "—" in question or " — " in question:
+            # Has em dash
+            parts = question.split("—") if "—" in question else question.split(" — ")
+            if len(parts) >= 2:
+                # Check if it's acknowledgment-bridge-question pattern
+                if any(bridge in parts[1] for bridge in ["As you", "Since you", "When you", "Given that"]):
+                    return "ack_em_dash_bridge_q"
+                else:
+                    return "ack_em_dash_direct_q"
+
+        # Check for bridge phrases without em dash
+        if any(bridge in question for bridge in ["As you're", "Since you're", "When you think", "Given that you"]):
+            return "ack_bridge_q"
+
+        # Direct question with parenthetical
+        if "(" in question and ")" in question:
+            return "direct_q_parenthetical"
+
+        # Two-part question
+        if "?" in question[:-1]:  # Question mark not at the end
+            return "two_part_q"
+
+        return "direct_q"
+
+    def _detect_punctuation_pattern(self, question: str) -> str:
+        """Detect primary punctuation pattern used."""
+        if "—" in question or " — " in question:
+            return "em_dash"
+        elif ":" in question:
+            return "colon"
+        elif "(" in question:
+            return "parenthetical"
+        elif "," in question and question.count(",") >= 2:
+            return "multi_comma"
+        else:
+            return "simple"
 
     def _repair_truncated_json(self, json_str: str) -> str:
         """
@@ -395,7 +459,8 @@ class LLMSlotExtractor:
         user_message: str,
         extracted_slots: Dict[str, Any],
         missing_slots: List[str],
-        user_type: str
+        user_type: str,
+        session_id: Optional[str] = None
     ) -> Optional[str]:
         """
         Generate a highly personalized follow-up question using Sonnet.
@@ -419,6 +484,34 @@ class LLMSlotExtractor:
 
             missing_focus = missing_slots[:3]  # Focus on top 3 missing
 
+            # Get session-specific patterns to avoid repetition
+            # Initialize session patterns if not exists
+            if session_id and session_id not in self._session_patterns:
+                self._session_patterns[session_id] = {
+                    'openers': [],
+                    'structures': [],
+                    'punctuation': []
+                }
+
+            # Get recent patterns for this session
+            if session_id and session_id in self._session_patterns:
+                patterns = self._session_patterns[session_id]
+                recent_openers = patterns['openers'][-2:] if patterns['openers'] else []
+                recent_structures = patterns['structures'][-2:] if patterns['structures'] else []
+                recent_punctuation = patterns['punctuation'][-2:] if patterns['punctuation'] else []
+            else:
+                # Fallback to empty patterns if no session_id
+                recent_openers = []
+                recent_structures = []
+                recent_punctuation = []
+
+            # Build pattern avoidance instructions
+            pattern_avoidance = ""
+            if recent_openers:
+                pattern_avoidance += f"\n🚫 ALREADY USED OPENERS (NEVER REPEAT): {', '.join(recent_openers)}"
+            if recent_structures:
+                pattern_avoidance += f"\n🚫 ALREADY USED STRUCTURES (MUST USE DIFFERENT): {', '.join(recent_structures)}"
+
             prompt = f"""Based on what this {user_type} just shared, generate ONE warm, personalized follow-up question.
 
 USER SAID: "{user_message}"
@@ -427,16 +520,40 @@ WHAT WE LEARNED: {extracted_summary}
 
 WHAT WE STILL NEED: {', '.join(missing_focus)}
 
-RULES:
-1. Start with a warm acknowledgment that references SPECIFIC details from their message
-2. Use VARIED openers — rotate between: "That's fascinating", "What a smart move", "That stands out", "That's impressive", "Interesting" — NEVER repeat the same opener
-3. Ask ONE open-ended question that naturally leads to the missing information
-4. NEVER be robotic ("Thanks for sharing!", "Got it", "I see")
-5. Make them feel like the most interesting person you've talked to today
+CRITICAL PATTERN AVOIDANCE:{pattern_avoidance}
+
+STRUCTURAL DIVERSITY RULES (CRITICAL):
+1. NEVER follow the same sentence structure twice in a row
+2. BANNED: Starting consecutive questions with "That's [adjective]"
+3. BANNED: Using em dash (—) in the same position twice
+4. BANNED: Repeating bridge phrases ("As you're...", "Since you're...", "When you think...")
+
+REQUIRED VARIETY - Rotate between these structures:
+
+Structure 1 - Acknowledgment + Direct Question:
+"That's impressive. What stage are most founders at when you connect with them?"
+
+Structure 2 - Context Setup + Question with Embedded Acknowledgment:
+"You mentioned customer validation - that's rare for engineers. How do you approach it?"
+
+Structure 3 - Direct Question + Parenthetical Acknowledgment:
+"What excites you most about the Austin startup scene (given you're building remote-first)?"
+
+Structure 4 - Two-Part Question (No Acknowledgment):
+"When you think about ideal collaborators, what traits matter most? Technical depth, or something else?"
+
+Structure 5 - Embedded Acknowledgment in Question:
+"How do you balance product development and customer discovery - especially impressive at your stage?"
+
+ENGAGEMENT RULES:
+1. Reference SPECIFIC details from their message (not generic "that's interesting")
+2. NEVER be robotic ("Thanks for sharing!", "Got it", "I see")
+3. Make them feel heard and valued
 
 Return ONLY the follow-up question, nothing else."""
 
             logger.info(f"Generating personalized follow-up with {self.personalization_model}")
+            logger.info(f"Pattern avoidance: openers={recent_openers}, structures={recent_structures}")
 
             response = self.client.messages.create(
                 model=self.personalization_model,
@@ -446,6 +563,20 @@ Return ONLY the follow-up question, nothing else."""
             )
 
             followup = response.content[0].text.strip()
+
+            # Record patterns from this question to avoid in next one (session-specific)
+            if session_id and session_id in self._session_patterns:
+                opener = self._detect_opener(followup)
+                structure = self._detect_structure(followup)
+                punctuation = self._detect_punctuation_pattern(followup)
+
+                self._session_patterns[session_id]['openers'].append(opener)
+                self._session_patterns[session_id]['structures'].append(structure)
+                self._session_patterns[session_id]['punctuation'].append(punctuation)
+
+                logger.info(f"[{session_id}] Recorded patterns - opener: {opener}, structure: {structure}, punctuation: {punctuation}")
+            else:
+                logger.warning(f"No session_id provided, patterns not recorded")
 
             # Clean up any quotes
             if followup.startswith('"') and followup.endswith('"'):
@@ -463,7 +594,8 @@ Return ONLY the follow-up question, nothing else."""
         user_message: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         already_filled_slots: Optional[Dict[str, Any]] = None,
-        target_slots: Optional[List[str]] = None
+        target_slots: Optional[List[str]] = None,
+        session_id: Optional[str] = None
     ) -> LLMExtractionResult:
         """
         Extract slot values from user message using LLM comprehension.
@@ -665,7 +797,8 @@ Return ONLY the follow-up question, nothing else."""
                         user_message=user_message,
                         extracted_slots=result.extracted_slots,
                         missing_slots=result.missing_slots,
-                        user_type=result.user_type_inference
+                        user_type=result.user_type_inference,
+                        session_id=session_id
                     )
                     if enhanced_followup:
                         result = LLMExtractionResult(
@@ -758,6 +891,23 @@ Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()
 
         # Determine which REQUIRED slots are still missing
         required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "stage_preference", "geography"]
+
+        # Add role-specific required slots based on user_type
+        user_type_value = already_filled.get("user_type", "").lower() if already_filled.get("user_type") else ""
+
+        if any(keyword in user_type_value for keyword in ["founder", "entrepreneur", "building", "startup"]):
+            # Founders need funding and team size for proper matching
+            required_slots.extend(["funding_range", "team_size"])
+        elif any(keyword in user_type_value for keyword in ["investor", "vc", "angel"]):
+            # Investors need investment range and focus
+            required_slots.extend(["investment_range", "investment_focus"])
+        elif any(keyword in user_type_value for keyword in ["advisor", "mentor", "consultant"]):
+            # Advisors need specialization and experience level
+            required_slots.extend(["specialization", "years_experience"])
+        elif any(keyword in user_type_value for keyword in ["service provider", "agency", "freelancer"]):
+            # Service providers need specialization and client types
+            required_slots.extend(["specialization", "target_clients"])
+
         missing_required = [s for s in required_slots if s not in already_filled]
 
         missing_required_text = ""
@@ -794,19 +944,40 @@ You make every person feel HEARD and VALUED. You're not filling out a form — y
 - "Got it. What industry are you in?"
 - "I see. What's your timeline?"
 
-**ENGAGING (ALWAYS DO THIS) - USE VARIETY:**
-- "That's a fascinating journey — pivoting from sales into tech takes real vision. What sparked that shift for you?"
-- "What a smart approach — positioning as a strategic partner, not just another vendor. How has that been landing?"
-- "Building an AI tool for hospitals — that's such a complex space to crack. What's been the most surprising thing you've learned?"
-- "Staying lean and keeping control is a powerful position — that discipline really shows. What's the biggest lever you're pulling right now?"
+## 🎯 DIVERSE QUESTION STRUCTURES (ROTATE - NEVER USE SAME TWICE)
+
+**Structure 1 - Acknowledgment First + Direct Question:**
+Example: "That's impressive - building in productivity with 5 years of engineering expertise. What stage are most founders at when you work with them?"
+When to use: After user shares significant achievement
+
+**Structure 2 - Context Setup + Question with Embedded Acknowledgment:**
+Example: "You mentioned customer validation - that's rare for engineers at your stage. How do you approach balancing product development with user research?"
+When to use: When building on specific detail they mentioned
+
+**Structure 3 - Direct Question + Parenthetical Acknowledgment:**
+Example: "What excites you most about the Austin startup scene (given you're building remote-first tools)?"
+When to use: When acknowledgment can be naturally embedded
+
+**Structure 4 - Two-Part Question (No Acknowledgment Needed):**
+Example: "When you think about ideal collaborators, what matters most? Deep technical expertise, or shared vision for the product?"
+When to use: When exploring preferences or priorities
+
+**Structure 5 - Embedded Acknowledgment in Question Flow:**
+Example: "How do you balance technical architecture decisions with customer needs - especially impressive given you're doing both?"
+When to use: When highlighting a skill while asking about process
+
+**Structure 6 - Insight-Based Opening:**
+Example: "Building remote team tools while working remotely yourself - there's great product-market fit there. How has that influenced your approach?"
+When to use: When you notice an interesting connection or insight
 
 ## 🔑 PERSONALIZATION RULES
 
 1. **Reference their specific details**: If they said "AI for hospitals", say "AI for hospitals" back to them, not "your company"
 2. **Acknowledge their unique angle**: What makes THEIR story different? Highlight it.
-3. **VARY your openers**: Rotate between "That's fascinating", "What a smart approach", "That stands out", "That's impressive", "I can see why" — NEVER start 2 responses the same way
-4. **Build on their narrative**: Connect their past to their present to their future
-5. **Ask story-driven follow-ups**: "What led you to that decision?" not "What's your goal?"
+3. **NEVER repeat sentence structures**: Each question should feel fresh and unpredictable
+4. **AVOID pattern markers**: Don't start 2+ questions with "That's...", don't use "—" in same position twice
+5. **Build on their narrative**: Connect their past to their present to their future
+6. **Ask story-driven follow-ups**: "What led you to that decision?" not "What's your goal?"
 {covered_topics_text}{missing_required_text}
 ## 🚫 OFF-TOPIC DETECTION (CRITICAL)
 

@@ -51,6 +51,11 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         Returns:
             Response from next handler or 401/403 error
         """
+        # CRITICAL: Allow OPTIONS requests (CORS preflight) without auth
+        # Browsers send OPTIONS before actual request to check CORS headers
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Skip validation for excluded paths
         if any(request.url.path.startswith(path) for path in self.exclude_paths):
             return await call_next(request)

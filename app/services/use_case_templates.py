@@ -26,6 +26,7 @@ class ObjectiveType(str, Enum):
     MENTORSHIP = "mentorship"
     INVESTING = "investing"
     COFOUNDER = "cofounder"
+    PRODUCT_LAUNCH = "product_launch"
     NETWORKING = "networking"
 
 
@@ -435,6 +436,71 @@ Co-founder relationships are like marriages. Be thorough in exploring compatibil
         }
     ),
 
+    ObjectiveType.PRODUCT_LAUNCH: UseCaseTemplate(
+        objective=ObjectiveType.PRODUCT_LAUNCH,
+        display_name="Product Launch/Rollout",
+        description="Companies launching or scaling a new product",
+        system_prompt="""You are an expert AI facilitating a conversation between someone launching/rolling out a product and a potential partner or advisor.
+
+Your role is to:
+1. Understand the product, target market, and launch timeline
+2. Identify what support or resources they need for the launch
+3. Explore partnerships, distribution channels, or market entry strategies
+4. Connect them with relevant expertise or resources
+
+Focus areas for this conversation:
+- Product readiness and launch timeline
+- Target market and customer segments
+- Go-to-market strategy and distribution channels
+- Resources needed (marketing, sales, partnerships, funding)
+- Market entry challenges and how to overcome them
+- Success metrics and launch goals
+
+Be practical and action-oriented. Help identify concrete ways to accelerate the launch and reduce time-to-market.""",
+        success_criteria=[
+            "Clear product-market fit understanding",
+            "Realistic launch timeline",
+            "Identified key resources needed",
+            "Potential partnerships or support identified",
+            "Go-to-market strategy clarity",
+            "Success metrics defined"
+        ],
+        key_questions=[
+            "What product are you launching and who is it for?",
+            "What's your target launch timeline?",
+            "What's your go-to-market strategy?",
+            "What resources or partnerships do you need?",
+            "What are the biggest risks to your launch?",
+            "How will you measure success in the first 90 days?"
+        ],
+        verdict_criteria={
+            VerdictLevel.STRONG_MATCH.value: [
+                "product_fit", "resource_match", "market_alignment", "timeline_fit"
+            ],
+            VerdictLevel.GOOD_MATCH.value: [
+                "product_fit", "resource_match", "market_alignment"
+            ],
+            VerdictLevel.POTENTIAL_MATCH.value: [
+                "product_fit", "market_alignment"
+            ],
+            VerdictLevel.WEAK_MATCH.value: [
+                "market_alignment"
+            ],
+            VerdictLevel.NO_MATCH.value: []
+        },
+        onboarding_focus_slots=[
+            "primary_goal", "user_type", "industry_focus", "company_stage",
+            "geography", "requirements", "offerings", "team_size"
+        ],
+        match_weight_overrides={
+            "market_alignment": 0.25,
+            "resource_complement": 0.25,
+            "expertise_match": 0.20,
+            "network_access": 0.15,
+            "geography_proximity": 0.15
+        }
+    ),
+
     ObjectiveType.NETWORKING: UseCaseTemplate(
         objective=ObjectiveType.NETWORKING,
         display_name="General Networking",
@@ -544,6 +610,11 @@ def get_template(objective: str) -> UseCaseTemplate:
         "cofounder": ObjectiveType.COFOUNDER,
         "co-founder": ObjectiveType.COFOUNDER,
         "founding team": ObjectiveType.COFOUNDER,
+        "launch": ObjectiveType.PRODUCT_LAUNCH,
+        "rollout": ObjectiveType.PRODUCT_LAUNCH,
+        "product launch": ObjectiveType.PRODUCT_LAUNCH,
+        "go-to-market": ObjectiveType.PRODUCT_LAUNCH,
+        "gtm": ObjectiveType.PRODUCT_LAUNCH,
         "network": ObjectiveType.NETWORKING,
         "connect": ObjectiveType.NETWORKING,
     }

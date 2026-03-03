@@ -22,6 +22,7 @@ from app.services.slot_extraction import SlotDefinition, SlotType, SlotSchema
 from app.services.context_manager import (
     ContextManager, ConversationContext, ConversationPhase
 )
+from app.services.llm_slot_extractor import SEMANTIC_TOPIC_CLUSTERS
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +359,46 @@ class ProgressiveDisclosure:
         # Engagement tracking per session
         self._engagement_metrics: Dict[str, EngagementMetrics] = {}
 
+        # P3 FIX: Slot to topic mapping for semantic coverage tracking
+        self._slot_to_topic = {
+            "primary_goal": "goals",
+            "requirements": "needs",
+            "offerings": "offers",
+            "geography": "geography",
+            "stage_preference": "stage",
+            "industry_focus": "industry",
+            "company_stage": "stage",
+            "funding_range": "needs",
+            "investment_range": "offers",
+            "skills": "skills",
+            "challenges": "challenges"
+        }
+
+    def _map_slot_to_topic(self, slot_name: str) -> Optional[str]:
+        """P3 FIX: Map a slot name to its semantic topic."""
+        return self._slot_to_topic.get(slot_name)
+
+    def _detect_covered_topics(self, context: ConversationContext) -> List[str]:
+        """
+        P3 FIX: Detect which semantic topics have been covered in conversation.
+
+        This prevents asking "Which regions?" after asking "Where are you based?"
+        since both map to the "geography" topic cluster.
+        """
+        covered = set()
+
+        # Check all assistant questions (what we asked)
+        for turn in context.turns:
+            if turn.turn_type.value == "assistant":
+                content = turn.content.lower()
+
+                # Check each topic cluster
+                for topic_name, keywords in SEMANTIC_TOPIC_CLUSTERS.items():
+                    if any(kw in content for kw in keywords):
+                        covered.add(topic_name)
+
+        return list(covered)
+
     def get_next_batch(
         self,
         session_id: str,
@@ -444,8 +485,15 @@ class ProgressiveDisclosure:
 
         Uses DYNAMIC slot selection based on primary_goal (objective),
         falling back to user_type if objective not yet known.
+
+        P3 FIX: Also filters out questions whose TOPIC has already been
+        covered, even if the exact slot isn't filled.
         """
         pending = []
+
+        # P3 FIX: Detect covered topics to prevent semantic repetition
+        covered_topics = self._detect_covered_topics(context)
+        logger.info(f"Covered topics: {covered_topics}")
 
         # Determine which slots to consider based on phase
         if context.phase == ConversationPhase.GREETING:
@@ -499,6 +547,12 @@ class ProgressiveDisclosure:
             # Skip if already filled
             existing = context.slots.get(slot_name)
             if existing and existing.status.value in ["filled", "confirmed", "skipped"]:
+                continue
+
+            # P3 FIX: Skip if topic already covered (semantic duplicate prevention)
+            slot_topic = self._map_slot_to_topic(slot_name)
+            if slot_topic and slot_topic in covered_topics:
+                logger.info(f"Skipping slot '{slot_name}' - topic '{slot_topic}' already covered")
                 continue
 
             # Get question template

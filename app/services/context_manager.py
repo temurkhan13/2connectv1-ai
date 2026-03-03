@@ -27,6 +27,7 @@ from app.services.slot_extraction import (
     SlotSchema, ExtractedSlot
 )
 from app.services.llm_slot_extractor import LLMSlotExtractor, LLMExtractionResult
+from app.adapters.supabase_onboarding import supabase_onboarding_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,10 @@ class ContextManager:
 
         # Store LLM responses for contextual follow-ups
         self._llm_responses: Dict[str, LLMExtractionResult] = {}
+
+        # Extraction cache to prevent redundant API calls (P2 fix)
+        # Key: hash(content), Value: extracted_names list
+        self._extraction_cache: Dict[str, List[str]] = {}
 
         # Configuration
         self.max_history_turns = int(os.getenv("MAX_CONVERSATION_TURNS", "50"))
@@ -353,6 +358,16 @@ class ContextManager:
         Returns:
             List of slot names that were extracted
         """
+        # P2 FIX: Check extraction cache first to avoid redundant API calls
+        import hashlib
+        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        cache_key = f"{context.session_id}:{content_hash}"
+
+        if cache_key in self._extraction_cache:
+            cached_slots = self._extraction_cache[cache_key]
+            logger.info(f"Cache hit for extraction: {len(cached_slots)} slots returned from cache")
+            return cached_slots
+
         extracted_names = []
 
         # Build already-filled slots dict
@@ -414,9 +429,66 @@ class ContextManager:
         except Exception as e:
             logger.warning(f"LLM extraction failed, falling back to regex: {e}")
             # Fallback to regex-based extraction
-            return self._extract_slots_regex_fallback(context, content)
+            fallback_result = self._extract_slots_regex_fallback(context, content)
+            # Cache fallback result too
+            self._extraction_cache[cache_key] = fallback_result
+            return fallback_result
+
+        # P2 FIX: Store in cache for future requests with same content
+        self._extraction_cache[cache_key] = extracted_names
+        logger.info(f"Cached extraction result: {len(extracted_names)} slots for content hash {content_hash[:8]}...")
+
+        # P0 FIX: Persist extracted slots to Supabase for dashboard visibility
+        if extracted_names and llm_result:
+            self._persist_slots_to_supabase(context, llm_result, content)
 
         return extracted_names
+
+    def _persist_slots_to_supabase(
+        self,
+        context: ConversationContext,
+        llm_result: LLMExtractionResult,
+        content: str
+    ) -> None:
+        """
+        P0 FIX: Persist extracted slots to Supabase.
+
+        This ensures slots are visible in the admin dashboard and available
+        for regeneration if needed.
+        """
+        try:
+            import asyncio
+
+            slots_to_save = [
+                {
+                    "name": slot_name,
+                    "value": str(llm_slot.value),
+                    "confidence": llm_slot.confidence,
+                    "source_text": content[:500],  # Truncate to 500 chars
+                    "extraction_method": "llm",
+                    "status": "filled"
+                }
+                for slot_name, llm_slot in llm_result.extracted_slots.items()
+            ]
+
+            if slots_to_save:
+                # Run async function synchronously
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    saved_count = loop.run_until_complete(
+                        supabase_onboarding_adapter.save_slots_batch(
+                            user_id=context.user_id,
+                            slots=slots_to_save
+                        )
+                    )
+                    logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
+                finally:
+                    loop.close()
+
+        except Exception as e:
+            logger.error(f"Failed to persist slots to Supabase: {e}")
+            # Non-blocking - don't fail the extraction if persistence fails
 
     def _extract_slots_regex_fallback(
         self,

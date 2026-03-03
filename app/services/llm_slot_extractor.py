@@ -241,10 +241,8 @@ class LLMSlotExtractor:
     """
 
     def __init__(self):
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        self.client = Anthropic(api_key=api_key)
+        # P0 FIX: Don't initialize client at startup - lazy load to ensure runtime access to API key
+        self._client = None
         # Use Claude 3 Haiku for fast extraction (3-5x faster than Sonnet)
         # Note: Claude 3.5 Haiku returns 404 - may not be available yet
         self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-haiku-20240307")
@@ -255,6 +253,22 @@ class LLMSlotExtractor:
         # Session-specific pattern memory (keyed by session_id to avoid cross-user pollution)
         # CRITICAL: Service is singleton, so patterns must be session-specific
         self._session_patterns = {}  # {session_id: {'openers': [], 'structures': [], 'punctuation': []}}
+
+    @property
+    def client(self) -> Anthropic:
+        """
+        P0 FIX: Lazy-load Anthropic client to ensure API key is read at runtime.
+
+        This prevents 403 errors when the API key is accessible at runtime
+        but not during service initialization.
+        """
+        if self._client is None:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+            logger.info(f"Initializing Anthropic client with API key (first {len(api_key[:4])}... chars)")
+            self._client = Anthropic(api_key=api_key)
+        return self._client
 
     def _detect_opener(self, question: str) -> str:
         """Detect the opening phrase pattern of a question."""

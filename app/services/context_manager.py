@@ -145,6 +145,7 @@ class ContextManager:
         # Configuration
         self.max_history_turns = int(os.getenv("MAX_CONVERSATION_TURNS", "50"))
         self.session_timeout_hours = int(os.getenv("SESSION_TIMEOUT_HOURS", "24"))
+        self.max_questions = int(os.getenv("MAX_ONBOARDING_QUESTIONS", "5"))  # Prevent over-questioning
 
         # Redis persistence
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -748,7 +749,8 @@ class ContextManager:
         Returns True if:
         1. Phase is explicitly set to COMPLETE, OR
         2. All required slots are filled (progress >= 80%), OR
-        3. User explicitly signals completion ("done", "that's all", etc.)
+        3. User explicitly signals completion ("done", "that's all", etc.), OR
+        4. Max question limit reached AND minimum viable profile exists (3+ slots)
         """
         context = self.get_session(session_id)
         if not context:
@@ -761,6 +763,12 @@ class ContextManager:
         # Check for explicit user completion signals in recent messages
         if self._user_signals_completion(context):
             logger.info(f"Session {session_id}: User explicitly signaled completion")
+            context.phase = ConversationPhase.COMPLETE
+            return True
+
+        # Check if max questions reached (prevent over-questioning like Alex's 7 questions)
+        if self._max_questions_reached(context):
+            logger.info(f"Session {session_id}: Max questions ({self.max_questions}) reached, auto-completing")
             context.phase = ConversationPhase.COMPLETE
             return True
 
@@ -801,6 +809,43 @@ class ContextManager:
                         return True
 
         return False
+
+    def _max_questions_reached(self, context: 'ConversationContext') -> bool:
+        """
+        Check if we've asked too many questions.
+
+        Prevents over-questioning scenarios like Alex (7 questions).
+        Only auto-complete if we have minimum viable profile (3+ required slots).
+        """
+        # Count AI questions (assistant turns with question marks)
+        ai_questions = [
+            t for t in context.turns
+            if t.turn_type == TurnType.ASSISTANT and "?" in t.content
+        ]
+
+        questions_asked = len(ai_questions)
+
+        if questions_asked < self.max_questions:
+            return False
+
+        # Max questions reached - check if we have minimum viable profile
+        filled_required_slots = [
+            name for name, slot in context.slots.items()
+            if slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]
+            and name in ["user_type", "primary_goal", "requirements", "offerings", "industry_focus"]
+        ]
+
+        # Allow completion if we have at least 3 critical slots filled
+        has_minimum_profile = len(filled_required_slots) >= 3
+
+        if has_minimum_profile:
+            logger.info(f"Max questions reached ({questions_asked}/{self.max_questions}), "
+                       f"minimum profile exists ({len(filled_required_slots)} critical slots)")
+            return True
+        else:
+            logger.warning(f"Max questions reached ({questions_asked}/{self.max_questions}), "
+                          f"but only {len(filled_required_slots)} critical slots filled - continuing")
+            return False
 
     def _all_required_slots_filled(self, context: 'ConversationContext') -> bool:
         """Check if all required slots are filled based on user type."""

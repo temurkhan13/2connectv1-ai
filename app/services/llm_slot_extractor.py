@@ -98,12 +98,12 @@ SLOT_DEFINITIONS = {
     "offerings": {
         "description": "What the user can offer to connections",
         "type": "text",
-        "extraction_hint": "Extract what they say they can provide: capital, mentorship, introductions, expertise, etc."
+        "extraction_hint": "Extract BOTH explicit offers ('I offer X', 'I provide Y', 'I can help with Z') AND implicit capabilities that translate to offerings: 'I have connections to X' → offering: introductions to X; 'I built Y with Z results' → offering: proven expertise in Y; '20 years experience in X' → offering: domain expertise/mentorship in X; 'I achieved X% improvement' → offering: case studies/proof points; 'portfolio of X companies' → offering: network/introductions; 'warm intros to X' → offering: direct introductions. Think: what VALUE can this person bring to others based on their background, network, achievements, and experience?"
     },
     "requirements": {
         "description": "What the user needs from connections",
         "type": "text",
-        "extraction_hint": "Extract what they're looking for: funding, advisors, talent, partnerships, etc."
+        "extraction_hint": "Extract BOTH explicit needs ('I need X', 'looking for Y', 'seeking Z') AND implicit needs from their challenges or goals: 'trying to navigate X' → needs: guidance on X; 'struggling with Y' → needs: help with Y; 'want to raise funding' → needs: investors; 'building a team' → needs: talent/recruiters; 'expanding to X market' → needs: market expertise/introductions; 'working on customer acquisition' → needs: growth advice/connections. Think: what SUPPORT would help them achieve their goals or overcome their stated challenges?"
     },
     "timeline": {
         "description": "Timeline for their goals",

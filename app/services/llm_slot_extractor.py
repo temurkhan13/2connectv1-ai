@@ -98,12 +98,12 @@ SLOT_DEFINITIONS = {
     "offerings": {
         "description": "What the user can offer to connections",
         "type": "text",
-        "extraction_hint": "Extract BOTH explicit offers ('I offer X', 'I provide Y', 'I can help with Z') AND implicit capabilities that translate to offerings: 'I have connections to X' → offering: introductions to X; 'I built Y with Z results' → offering: proven expertise in Y; '20 years experience in X' → offering: domain expertise/mentorship in X; 'I achieved X% improvement' → offering: case studies/proof points; 'portfolio of X companies' → offering: network/introductions; 'warm intros to X' → offering: direct introductions. Think: what VALUE can this person bring to others based on their background, network, achievements, and experience?"
+        "extraction_hint": "Extract BOTH explicit offers ('I offer X', 'I provide Y', 'I can help with Z') AND implicit capabilities that translate to offerings: 'I have connections to X' → offering: introductions to X; 'I built Y with Z results' → offering: proven expertise in Y; '20 years experience in X' → offering: domain expertise/mentorship in X; 'I achieved X% improvement' → offering: case studies/proof points; 'portfolio of X companies' → offering: network/introductions; 'warm intros to X' → offering: direct introductions. Think: what VALUE can this person bring to others based on their background, network, achievements, and experience? CRITICAL: Extract CONCISE VALUE PROPOSITION (3-8 words max per offering, separate multiple offerings with semicolons). Examples: 'introductions to UCSF network; healthcare domain expertise' NOT full sentences or paragraphs."
     },
     "requirements": {
         "description": "What the user needs from connections",
         "type": "text",
-        "extraction_hint": "Extract BOTH explicit needs ('I need X', 'looking for Y', 'seeking Z') AND implicit needs from their challenges or goals: 'trying to navigate X' → needs: guidance on X; 'struggling with Y' → needs: help with Y; 'want to raise funding' → needs: investors; 'building a team' → needs: talent/recruiters; 'expanding to X market' → needs: market expertise/introductions; 'working on customer acquisition' → needs: growth advice/connections. Think: what SUPPORT would help them achieve their goals or overcome their stated challenges?"
+        "extraction_hint": "Extract BOTH explicit needs ('I need X', 'looking for Y', 'seeking Z') AND implicit needs from their challenges or goals: 'trying to navigate X' → needs: guidance on X; 'struggling with Y' → needs: help with Y; 'want to raise funding' → needs: investors; 'building a team' → needs: talent/recruiters; 'expanding to X market' → needs: market expertise/introductions; 'working on customer acquisition' → needs: growth advice/connections. Think: what SUPPORT would help them achieve their goals or overcome their stated challenges? CRITICAL: Extract CONCISE NEEDS (3-8 words max per need, separate multiple needs with semicolons). Examples: 'Series A investors; European market guidance' NOT full sentences or paragraphs."
     },
     "timeline": {
         "description": "Timeline for their goals",
@@ -1288,6 +1288,25 @@ Extract ALL inferable information. Ask questions that reveal what's STILL MISSIN
                     # Not a valid number, skip
                     logger.warning(f"team_size value '{value}' is not a valid number, skipping slot")
                     continue
+
+            # BUG-005 FIX: Validate offerings/requirements are concise, not full message text
+            # If LLM returns full sentences/paragraphs, truncate or flag for re-extraction
+            if slot_name in ["offerings", "requirements"] and value is not None and isinstance(value, str):
+                # Check if value is suspiciously long (> 150 chars suggests full message text)
+                if len(value) > 150:
+                    logger.warning(
+                        f"Extracted {slot_name} is too long ({len(value)} chars), likely full message text. "
+                        f"Truncating to first 150 chars. Original: '{value[:100]}...'"
+                    )
+                    # Truncate at sentence boundary if possible
+                    sentences = value.split('.')
+                    if len(sentences) > 1 and len(sentences[0]) < 150:
+                        value = sentences[0].strip()
+                    else:
+                        # Hard truncate at 150 chars
+                        value = value[:150].strip()
+                    # Reduce confidence since we had to intervene
+                    confidence = max(0.5, confidence - 0.2)
 
             extracted_slots[slot_name] = LLMExtractedSlot(
                 name=slot_name,

@@ -543,8 +543,8 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             # Log but don't fail - DynamoDB profile was created successfully
             logger.warning(f"Failed to update PostgreSQL onboarding_status: {e}")
 
-        # Create user_summary for Discover page
-        # Without this, users won't appear in search results
+        # Create user_summary for Discover page + AI Summary display
+        # BUG-007 FIX: Generate markdown summary for frontend display instead of JSON
         try:
             import json
             # Build summary from collected slots
@@ -557,10 +557,44 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 "offerings": slots.get("offerings", {}).get("value", ""),
                 "requirements": slots.get("requirements", {}).get("value", ""),
             }
-            summary_json = json.dumps(summary_data)
+
+            # Generate markdown summary for frontend display (AI Summary page)
+            profile_type = summary_data["profile_type"] or "User"
+            industry = summary_data["industry"] or "Not specified"
+            goal = summary_data["goal"] or "Not specified"
+            stage = summary_data["stage"] or "Not specified"
+            geography = summary_data["geography"] or "Not specified"
+            offerings = summary_data["offerings"] or "Not specified"
+            requirements = summary_data["requirements"] or "Not specified"
+
+            summary_markdown = f"""# {profile_type} Profile
+
+## Primary Goal
+{goal}
+
+## Industry Focus
+{industry}
+
+## Stage/Experience
+{stage}
+
+## Geography
+{geography}
+
+## What I Can Offer
+{offerings}
+
+## What I'm Looking For
+{requirements}
+
+---
+
+*This summary was generated based on your onboarding responses. You can update it anytime from your profile settings.*
+"""
+
             summary_id = postgresql_adapter.create_user_summary(
                 user_id=user_id,
-                summary=summary_json,
+                summary=summary_markdown,  # Store markdown instead of JSON
                 status='draft',
                 urgency='ongoing'
             )

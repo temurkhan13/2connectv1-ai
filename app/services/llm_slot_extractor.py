@@ -743,10 +743,56 @@ Return ONLY the follow-up question, nothing else."""
                 logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
                 logger.debug(f"System prompt length: {len(system_prompt)} chars")
 
-                # On retry, add explicit JSON-only instruction
+                # BUG-016 FIX: On retry, use drastically simplified JSON-only prompt
+                # Strip away overwhelming conversational instructions that confuse the LLM
                 retry_system = system_prompt
                 if attempt > 0:
-                    retry_system = "CRITICAL: Return ONLY valid JSON. No preamble, no explanation, just the JSON object starting with { and ending with }.\n\n" + system_prompt
+                    # Build minimal slots list for retry (all slots minus already filled)
+                    all_slots = SLOT_DEFINITIONS.keys()
+                    if target_slots:
+                        all_slots = target_slots
+                    remaining_slots_list = [s for s in all_slots if s not in already_filled]
+
+                    retry_system = f"""🚨 CRITICAL: Your previous response was INVALID. You returned conversational text instead of JSON.
+
+YOU MUST RETURN VALID JSON. NO EXCEPTIONS. NO CONVERSATIONAL TEXT.
+
+## Task
+Extract structured data from the user's message and return it as JSON.
+
+## Slots to Extract
+{', '.join(remaining_slots_list)}
+
+## Already Collected (DO NOT ask again)
+{', '.join(already_filled.keys()) if already_filled else 'None'}
+
+## Required JSON Format
+YOU MUST return EXACTLY this structure. NO other text allowed:
+
+{{
+    "is_off_topic": false,
+    "extracted_slots": {{
+        "slot_name": {{"value": "extracted value", "confidence": 0.0-1.0, "reasoning": "why"}}
+    }},
+    "user_type_inference": "founder|investor|advisor|unknown",
+    "understanding_summary": "Brief analysis",
+    "missing_important_slots": ["list", "of", "missing"],
+    "follow_up_question": "Next question to ask the user"
+}}
+
+CRITICAL RULES:
+1. Your response MUST start with {{ and end with }}
+2. NO text before the JSON object
+3. NO text after the JSON object
+4. NO conversational preambles like "Based on the details..." or "Okay, let me try..."
+5. If you return anything other than pure JSON, the system will FAIL
+
+WRONG: "Based on the details you shared, here is what I extracted: {{"
+WRONG: "Okay, let me try this again from the beginning. Based on..."
+WRONG: "I'm afraid I don't have enough information..."
+RIGHT: {{"is_off_topic": false, "extracted_slots": ...}}
+
+Your response MUST be parseable JSON. Begin with {{ now."""
 
                 # Use prompt caching for the large system prompt (reduces latency by ~80% on cache hit)
                 # Cache persists for 5 minutes of inactivity
@@ -1252,7 +1298,25 @@ Response:
 
 ✅ GOOD: "That's a bold pivot — sales to tech is quite the journey. I imagine your sales background gives you a unique edge on the product side. How has that experience shaped what you're building?"
 
-Extract ALL inferable information. Ask questions that reveal what's STILL MISSING."""
+Extract ALL inferable information. Ask questions that reveal what's STILL MISSING.
+
+## 🚨 CRITICAL OUTPUT REQUIREMENT (NON-NEGOTIABLE)
+
+YOU MUST RETURN VALID JSON. NO EXCEPTIONS.
+
+**ABSOLUTELY FORBIDDEN:**
+- Conversational responses without JSON
+- Preambles before the JSON object
+- Explanations after the JSON object
+- Any text that is not valid JSON
+
+**REQUIRED:**
+- Your response MUST start with {{
+- Your response MUST end with }}
+- Your response MUST be parseable as JSON
+- NO text before or after the JSON object
+
+**BUG-016 FIX:** If you return ANY text that is not valid JSON (like "Okay, let me try this again..." or "Based on the details you shared..."), the system will FAIL. Your ONLY valid response is the JSON object defined above. Nothing else."""
 
     def _parse_llm_response(
         self,

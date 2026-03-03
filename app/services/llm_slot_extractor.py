@@ -483,7 +483,8 @@ class LLMSlotExtractor:
         extracted_slots: Dict[str, Any],
         missing_slots: List[str],
         user_type: str,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> Optional[str]:
         """
         Generate a highly personalized follow-up question using Sonnet.
@@ -494,6 +495,8 @@ class LLMSlotExtractor:
             extracted_slots: What we learned from their message
             missing_slots: What we still need to know
             user_type: Inferred user type (founder, investor, etc.)
+            session_id: Session ID for pattern tracking
+            conversation_history: Full conversation history to avoid repeating questions
 
         Returns:
             Personalized follow-up question, or None on error
@@ -506,6 +509,26 @@ class LLMSlotExtractor:
             ])
 
             missing_focus = missing_slots[:3]  # Focus on top 3 missing
+
+            # CRITICAL: Extract previous AI questions to prevent exact duplicates
+            previous_questions = []
+            if conversation_history:
+                for turn in conversation_history:
+                    if turn.get("role") == "assistant":
+                        question = turn.get("content", "").strip()
+                        if question and "?" in question:  # Only track questions
+                            previous_questions.append(question)
+
+            # Build forbidden questions list
+            forbidden_questions_text = ""
+            if previous_questions:
+                recent_questions = previous_questions[-3:]  # Last 3 questions
+                forbidden_questions_text = f"""
+🚫 CRITICAL: QUESTIONS YOU ALREADY ASKED (NEVER REPEAT THESE):
+{chr(10).join([f'  - "{q}"' for q in recent_questions])}
+
+You MUST generate a COMPLETELY DIFFERENT question. Even similar phrasing is forbidden.
+"""
 
             # Get session-specific patterns to avoid repetition
             # Initialize session patterns if not exists
@@ -548,7 +571,7 @@ USER SAID: "{user_message}"
 WHAT WE LEARNED: {extracted_summary}
 
 WHAT WE STILL NEED: {', '.join(missing_focus)}
-
+{forbidden_questions_text}
 CRITICAL PATTERN AVOIDANCE:{pattern_avoidance}
 
 STRUCTURAL DIVERSITY RULES (CRITICAL):
@@ -827,7 +850,8 @@ Return ONLY the follow-up question, nothing else."""
                         extracted_slots=result.extracted_slots,
                         missing_slots=result.missing_slots,
                         user_type=result.user_type_inference,
-                        session_id=session_id
+                        session_id=session_id,
+                        conversation_history=conversation_history  # CRITICAL: Pass history to prevent duplicates
                     )
                     if enhanced_followup:
                         result = LLMExtractionResult(

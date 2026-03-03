@@ -5,11 +5,12 @@ Generates human-readable explanations for why two people were matched.
 Breaks down the matching logic into understandable insights.
 
 Key features:
-1. Dimension-by-dimension explanation
-2. Highlight key alignment factors
-3. Mutual benefit articulation
-4. Transparency about limitations
-5. Adaptive detail level (summary vs detailed)
+1. LLM-powered specific explanations (primary)
+2. Template-based fallback (when LLM unavailable)
+3. Dimension-by-dimension breakdown
+4. Highlight key alignment factors
+5. Mutual benefit articulation
+6. Adaptive detail level (summary vs detailed)
 """
 import os
 import logging
@@ -17,8 +18,10 @@ from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+import asyncio
 
 from app.services.multi_vector_matcher import MatchTier, MultiVectorMatchResult as MultiVectorMatch
+from app.services.llm_service import get_llm_service
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +163,13 @@ class MatchExplainer:
         self.default_level = ExplanationLevel(
             os.getenv("DEFAULT_EXPLANATION_LEVEL", "standard")
         )
+        self.use_llm = os.getenv("USE_LLM_EXPLANATIONS", "true").lower() == "true"
+        try:
+            self.llm_service = get_llm_service() if self.use_llm else None
+        except Exception as e:
+            logger.warning(f"LLM service unavailable, falling back to templates: {e}")
+            self.llm_service = None
+            self.use_llm = False
 
     def explain_match(
         self,
@@ -183,29 +193,62 @@ class MatchExplainer:
         level = level or self.default_level
         explanation_id = f"exp_{match.user_id}_{datetime.utcnow().timestamp()}"
 
-        # Generate dimension explanations
+        # Generate dimension explanations (always - provides structure)
         dim_explanations = self._explain_dimensions(
             match.dimension_scores, viewer_persona, match_persona
         )
 
-        # Identify mutual benefits
-        mutual_benefits = self._identify_mutual_benefits(
-            viewer_persona, match_persona, match.dimension_scores
-        )
+        # Try LLM-powered explanation first (specific and natural)
+        llm_explanation = None
+        if self.use_llm and self.llm_service:
+            try:
+                llm_explanation = self._generate_llm_explanation_sync(
+                    viewer_persona, match_persona, match
+                )
+                logger.info(f"Generated LLM explanation for match {match.user_id}")
+            except Exception as e:
+                logger.warning(f"LLM explanation failed, using templates: {e}")
 
-        # Extract top reasons
-        top_reasons = self._extract_top_reasons(dim_explanations, mutual_benefits)
+        # If LLM succeeded, use its output
+        if llm_explanation:
+            summary = llm_explanation.get("summary", "")
+            detailed = llm_explanation.get("detailed_explanation", "")
 
-        # Identify potential concerns
-        concerns = self._identify_concerns(dim_explanations)
+            # Parse LLM-generated reasons into top_reasons list
+            synergy_areas = llm_explanation.get("synergy_areas", [])
+            top_reasons = synergy_areas[:4] if synergy_areas else []
 
-        # Generate summary
-        summary = self._generate_summary(match.tier, dim_explanations)
+            # Parse friction points into concerns
+            friction_points = llm_explanation.get("friction_points", [])
+            concerns = friction_points[:2] if friction_points else []
 
-        # Generate detailed explanation
-        detailed = self._generate_detailed_explanation(
-            dim_explanations, mutual_benefits, top_reasons, concerns
-        )
+            # Keep talking_points for potential future use
+            talking_points = llm_explanation.get("talking_points", [])
+
+            # Enhance mutual benefits with LLM insights
+            mutual_benefits = self._create_benefits_from_llm(synergy_areas)
+        else:
+            # Fallback to template-based generation
+            logger.info(f"Using template-based explanation for match {match.user_id}")
+
+            # Identify mutual benefits
+            mutual_benefits = self._identify_mutual_benefits(
+                viewer_persona, match_persona, match.dimension_scores
+            )
+
+            # Extract top reasons
+            top_reasons = self._extract_top_reasons(dim_explanations, mutual_benefits)
+
+            # Identify potential concerns
+            concerns = self._identify_concerns(dim_explanations)
+
+            # Generate summary
+            summary = self._generate_summary(match.tier, dim_explanations)
+
+            # Generate detailed explanation
+            detailed = self._generate_detailed_explanation(
+                dim_explanations, mutual_benefits, top_reasons, concerns
+            )
 
         return MatchExplanation(
             explanation_id=explanation_id,
@@ -221,6 +264,95 @@ class MatchExplainer:
             generated_at=datetime.utcnow(),
             explanation_level=level
         )
+
+    def _generate_llm_explanation_sync(
+        self,
+        viewer_persona: Dict[str, Any],
+        match_persona: Dict[str, Any],
+        match: MultiVectorMatch
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Generate LLM-powered explanation synchronously.
+
+        Uses asyncio.run() to call the async LLM service.
+        Returns specific, natural language explanations.
+        """
+        # Prepare user data for LLM
+        viewer_data = {
+            "name": viewer_persona.get("name", "User"),
+            "user_type": viewer_persona.get("archetype", "Professional"),
+            "industry": viewer_persona.get("focus", "General"),
+            "requirements": viewer_persona.get("requirements", ""),
+            "offerings": viewer_persona.get("offerings", ""),
+            # Add more context
+            "designation": viewer_persona.get("designation", ""),
+            "experience": viewer_persona.get("experience", ""),
+            "what_theyre_looking_for": viewer_persona.get("what_theyre_looking_for", ""),
+            "engagement_style": viewer_persona.get("engagement_style", "")
+        }
+
+        match_data = {
+            "name": match_persona.get("name", "User"),
+            "user_type": match_persona.get("archetype", "Professional"),
+            "industry": match_persona.get("focus", "General"),
+            "requirements": match_persona.get("requirements", ""),
+            "offerings": match_persona.get("offerings", ""),
+            # Add more context
+            "designation": match_persona.get("designation", ""),
+            "experience": match_persona.get("experience", ""),
+            "what_theyre_looking_for": match_persona.get("what_theyre_looking_for", ""),
+            "engagement_style": match_persona.get("engagement_style", "")
+        }
+
+        # Prepare scores for LLM context
+        scores = {
+            "req_to_off": match.forward_score,
+            "off_to_req": match.reverse_score,
+            "industry_match": match.dimension_scores.get("industry_focus", 0.5),
+            "stage_match": match.dimension_scores.get("stage_preference", 0.5),
+            "geography_match": match.dimension_scores.get("geography", 0.5),
+            "overall_score": match.total_score
+        }
+
+        # Call async LLM service
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(
+                self.llm_service.generate_match_explanation(
+                    viewer_data, match_data, scores
+                )
+            )
+
+            # Add detailed_explanation by combining summary with synergy areas
+            if result and result.get("summary"):
+                synergy_text = " ".join(result.get("synergy_areas", [])[:2])
+                result["detailed_explanation"] = f"{result['summary']} {synergy_text}"
+
+            return result
+        finally:
+            loop.close()
+
+    def _create_benefits_from_llm(
+        self,
+        synergy_areas: List[str]
+    ) -> List[MutualBenefit]:
+        """Convert LLM synergy areas into MutualBenefit objects."""
+        benefits = []
+
+        for i, synergy in enumerate(synergy_areas[:3]):
+            # Parse synergy area into mutual benefits
+            # Simple heuristic: first part is for viewer, second for match
+            parts = synergy.split(" - ") if " - " in synergy else [synergy, synergy]
+
+            benefits.append(MutualBenefit(
+                benefit_type=f"synergy_{i+1}",
+                for_viewer=parts[0] if len(parts) > 0 else synergy,
+                for_match=parts[1] if len(parts) > 1 else synergy,
+                confidence=0.85  # High confidence from LLM
+            ))
+
+        return benefits
 
     def _explain_dimensions(
         self,

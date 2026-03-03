@@ -103,20 +103,21 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             
             # Store persona data with requirements and offerings using update method
             # Note: "strategy" is the role-agnostic field that maps to investment_philosophy in DB
+            # IMPORTANT: All .get() calls must provide default empty strings to prevent DynamoDB SerializationException
             user_profile.update(
                 actions=[
-                    UserProfile.persona.name.set(persona.get('name')),
-                    UserProfile.persona.archetype.set(persona.get('archetype')),
-                    UserProfile.persona.experience.set(persona.get('experience')),
-                    UserProfile.persona.focus.set(persona.get('focus')),
-                    UserProfile.persona.profile_essence.set(persona.get('profile_essence')),
+                    UserProfile.persona.name.set(persona.get('name', '')),
+                    UserProfile.persona.archetype.set(persona.get('archetype', '')),
+                    UserProfile.persona.experience.set(persona.get('experience', '')),
+                    UserProfile.persona.focus.set(persona.get('focus', '')),
+                    UserProfile.persona.profile_essence.set(persona.get('profile_essence', '')),
                     # Strategy field replaces investment_philosophy (role-agnostic)
-                    UserProfile.persona.investment_philosophy.set(persona.get('strategy', persona.get('investment_philosophy'))),
-                    UserProfile.persona.what_theyre_looking_for.set(persona.get('what_theyre_looking_for')),
-                    UserProfile.persona.engagement_style.set(persona.get('engagement_style')),
-                    UserProfile.persona.designation.set(persona.get('designation')),
-                    UserProfile.persona.requirements.set(requirements),
-                    UserProfile.persona.offerings.set(offerings),
+                    UserProfile.persona.investment_philosophy.set(persona.get('strategy') or persona.get('investment_philosophy') or ''),
+                    UserProfile.persona.what_theyre_looking_for.set(persona.get('what_theyre_looking_for', '')),
+                    UserProfile.persona.engagement_style.set(persona.get('engagement_style', '')),
+                    UserProfile.persona.designation.set(persona.get('designation', '')),
+                    UserProfile.persona.requirements.set(requirements or ''),
+                    UserProfile.persona.offerings.set(offerings or ''),
                     UserProfile.persona.generated_at.set(datetime.utcnow()),
                     UserProfile.persona_status.set('completed')
                 ]

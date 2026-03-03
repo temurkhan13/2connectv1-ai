@@ -492,6 +492,7 @@ class LLMSlotExtractor:
                     'structures': [],
                     'punctuation': []
                 }
+                logger.info(f"[{session_id}] Initialized session pattern tracking")
 
             # Get recent patterns for this session
             if session_id and session_id in self._session_patterns:
@@ -499,11 +500,16 @@ class LLMSlotExtractor:
                 recent_openers = patterns['openers'][-2:] if patterns['openers'] else []
                 recent_structures = patterns['structures'][-2:] if patterns['structures'] else []
                 recent_punctuation = patterns['punctuation'][-2:] if patterns['punctuation'] else []
+                logger.info(f"[{session_id}] Retrieved patterns: {len(patterns['openers'])} openers, {len(patterns['structures'])} structures")
             else:
                 # Fallback to empty patterns if no session_id
                 recent_openers = []
                 recent_structures = []
                 recent_punctuation = []
+                if session_id:
+                    logger.warning(f"[{session_id}] Session not found in pattern tracker")
+                else:
+                    logger.warning("No session_id provided for pattern tracking")
 
             # Build pattern avoidance instructions
             pattern_avoidance = ""
@@ -559,7 +565,7 @@ Return ONLY the follow-up question, nothing else."""
                 model=self.personalization_model,
                 max_tokens=150,  # Reduced from 200 for faster generation
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3  # Lowered from 0.7 for faster, more consistent responses
+                temperature=0.6  # Balance: fast enough (not 0.7) but diverse enough (not 0.3)
             )
 
             followup = response.content[0].text.strip()

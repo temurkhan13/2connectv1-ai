@@ -156,9 +156,9 @@ SLOT_DEFINITIONS = {
         "extraction_hint": "Map stages: 'just an idea' → Idea, 'working prototype' → MVP, 'customers paying' → Product-Market Fit"
     },
     "team_size": {
-        "description": "Current team size",
+        "description": "Current team size (NUMBER OF PEOPLE on the team, NOT years of experience)",
         "type": "number",
-        "extraction_hint": "Extract numbers: 'team of 5', 'solo founder', '12 employees'"
+        "extraction_hint": "Extract TEAM MEMBER COUNT ONLY: 'team of 5' → 5, 'solo founder' → 1, '12 employees' → 12. CRITICAL: NEVER extract years (experience_years) as team_size. Valid range: 1-1000. If user says '7 years', that's experience_years NOT team_size."
     },
     # HIRING-specific slots - MUST match SlotSchema for progress tracking
     "role_type": {
@@ -1266,20 +1266,35 @@ Extract ALL inferable information. Ask questions that reveal what's STILL MISSIN
 
         for slot_name, slot_data in raw_slots.items():
             if isinstance(slot_data, dict):
-                extracted_slots[slot_name] = LLMExtractedSlot(
-                    name=slot_name,
-                    value=slot_data.get("value"),
-                    confidence=float(slot_data.get("confidence", 0.8)),
-                    reasoning=slot_data.get("reasoning", "")
-                )
+                value = slot_data.get("value")
+                confidence = float(slot_data.get("confidence", 0.8))
+                reasoning = slot_data.get("reasoning", "")
             else:
                 # Handle simple value format
-                extracted_slots[slot_name] = LLMExtractedSlot(
-                    name=slot_name,
-                    value=slot_data,
-                    confidence=0.8,
-                    reasoning=""
-                )
+                value = slot_data
+                confidence = 0.8
+                reasoning = ""
+
+            # CRITICAL VALIDATION: Sanity check for team_size to prevent "7 years" → 7000000 bug
+            if slot_name == "team_size" and value is not None:
+                try:
+                    # Try to parse as number
+                    team_num = int(str(value).replace(",", "").strip())
+                    # Valid team size: 1-1000 (reasonable bounds)
+                    if team_num < 1 or team_num > 1000:
+                        logger.warning(f"Invalid team_size {team_num} (likely confused with years), skipping slot")
+                        continue  # Skip this slot entirely - don't extract invalid data
+                except (ValueError, AttributeError):
+                    # Not a valid number, skip
+                    logger.warning(f"team_size value '{value}' is not a valid number, skipping slot")
+                    continue
+
+            extracted_slots[slot_name] = LLMExtractedSlot(
+                name=slot_name,
+                value=value,
+                confidence=confidence,
+                reasoning=reasoning
+            )
 
         # Clean follow-up question - remove third-person summaries
         raw_follow_up = response_data.get("follow_up_question", "")

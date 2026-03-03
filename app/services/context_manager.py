@@ -359,14 +359,15 @@ class ContextManager:
             List of slot names that were extracted
         """
         # P2 FIX: Check extraction cache first to avoid redundant API calls
+        # CRITICAL: Cache only prevents redundant slot STORAGE, not question generation
+        # We must ALWAYS generate fresh follow-up questions for conversation context
         import hashlib
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         cache_key = f"{context.session_id}:{content_hash}"
 
-        if cache_key in self._extraction_cache:
-            cached_slots = self._extraction_cache[cache_key]
-            logger.info(f"Cache hit for extraction: {len(cached_slots)} slots returned from cache")
-            return cached_slots
+        use_cached_slots = cache_key in self._extraction_cache
+        if use_cached_slots:
+            logger.info(f"Cache hit for slot extraction (will still generate fresh question)")
 
         extracted_names = []
 
@@ -388,6 +389,7 @@ class ContextManager:
             logger.info(f"LLM extraction starting. Already filled: {list(already_filled.keys())}")
 
             # Use LLM to extract slots with full comprehension
+            # CRITICAL: Always call LLM even on cache hit to generate fresh personalized question
             llm_result = self.llm_extractor.extract_slots(
                 user_message=content,
                 conversation_history=conversation_history,
@@ -397,8 +399,15 @@ class ContextManager:
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")
 
-            # Store LLM result for response generation
+            # Store LLM result for response generation (CRITICAL for question generation)
             self._llm_responses[context.session_id] = llm_result
+
+            # If cache hit, use cached slot names to avoid redundant storage
+            # But we still needed the LLM call above for the follow-up question
+            if use_cached_slots:
+                cached_slots = self._extraction_cache[cache_key]
+                logger.info(f"Using {len(cached_slots)} cached slots (question generated fresh)")
+                return cached_slots
 
             # Convert LLM extractions to our slot format
             for slot_name, llm_slot in llm_result.extracted_slots.items():

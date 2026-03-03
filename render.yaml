@@ -48,18 +48,19 @@ services:
         sync: false
       - key: AWS_DEFAULT_REGION
         value: eu-west-2
-      # OpenAI
+      # Anthropic Claude (main LLM service for persona generation, match explanations, ice breakers)
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ANTHROPIC_MODEL
+        value: claude-3-haiku-20240307
+      - key: LLM_TEMPERATURE
+        value: "0.7"
+      # OpenAI (embeddings ONLY - not used for LLM)
       - key: OPENAI_API_KEY
         sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o-mini
-      - key: LLM_TEMPERATURE
-        value: "1"
       # Embeddings - Using OpenAI API (not local SentenceTransformers)
       - key: USE_OPENAI_EMBEDDINGS
         value: "true"
-      - key: EMBEDDING_MODEL
-        value: text-embedding-3-small
       - key: OPENAI_EMBEDDING_MODEL
         value: text-embedding-3-small
       - key: EMBEDDING_DIMENSION

@@ -557,9 +557,9 @@ Return ONLY the follow-up question, nothing else."""
 
             response = self.client.messages.create(
                 model=self.personalization_model,
-                max_tokens=200,
+                max_tokens=150,  # Reduced from 200 for faster generation
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7  # Higher temp for creativity
+                temperature=0.3  # Lowered from 0.7 for faster, more consistent responses
             )
 
             followup = response.content[0].text.strip()

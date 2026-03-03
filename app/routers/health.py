@@ -1005,3 +1005,40 @@ async def get_matching_diagnostics():
     except Exception as e:
         logger.error(f"Error in matching diagnostics: {e}")
         return {"code": 500, "message": str(e), "result": []}
+
+
+@router.post("/admin/verify-test-users")
+async def verify_test_users():
+    """
+    Verify test users created with timestamp 1772535113.
+    This is a one-time admin endpoint for testing purposes.
+    """
+    try:
+        conn = postgresql_adapter.get_backend_connection()
+        cur = conn.cursor()
+
+        # Update all test users with this timestamp
+        cur.execute("""
+            UPDATE users
+            SET is_email_verified = true
+            WHERE email LIKE '%1772535113%'
+            RETURNING id, email, first_name, last_name
+        """)
+
+        updated_users = cur.fetchall()
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            "success": True,
+            "message": f"Verified {len(updated_users)} test users",
+            "users": [
+                {"id": u[0], "email": u[1], "name": f"{u[2]} {u[3]}"}
+                for u in updated_users
+            ]
+        }
+
+    except Exception as e:
+        logger.error(f"Error verifying test users: {e}")
+        return {"success": False, "message": str(e)}

@@ -402,11 +402,16 @@ class ContextManager:
             # Store LLM result for response generation (CRITICAL for question generation)
             self._llm_responses[context.session_id] = llm_result
 
-            # If cache hit, use cached slot names to avoid redundant storage
-            # But we still needed the LLM call above for the follow-up question
+            # P0 FIX: ALWAYS persist slots to Supabase (even on cache hit)
+            # This ensures dashboard shows correct slot count and enables regeneration
+            if llm_result.extracted_slots:
+                self._persist_slots_to_supabase(context, llm_result, content)
+
+            # If cache hit, use cached slot names to avoid redundant storage IN MEMORY
+            # But we still persisted to Supabase above for dashboard visibility
             if use_cached_slots:
                 cached_slots = self._extraction_cache[cache_key]
-                logger.info(f"Using {len(cached_slots)} cached slots (question generated fresh)")
+                logger.info(f"Using {len(cached_slots)} cached slots (question generated fresh, persisted to DB)")
                 return cached_slots
 
             # Convert LLM extractions to our slot format
@@ -447,9 +452,7 @@ class ContextManager:
         self._extraction_cache[cache_key] = extracted_names
         logger.info(f"Cached extraction result: {len(extracted_names)} slots for content hash {content_hash[:8]}...")
 
-        # P0 FIX: Persist extracted slots to Supabase for dashboard visibility
-        if extracted_names and llm_result:
-            self._persist_slots_to_supabase(context, llm_result, content)
+        # NOTE: Persistence already handled above (after LLM call) for both cache hit and miss
 
         return extracted_names
 

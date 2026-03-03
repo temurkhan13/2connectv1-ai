@@ -121,10 +121,11 @@ class EmbeddingService:
             # Generate new embedding
             try:
                 if self.use_openai:
-                    # OpenAI API embeddings
+                    # OpenAI API embeddings with configurable dimension
                     response = self.openai_client.embeddings.create(
                         model=self.model_name,
-                        input=cleaned_text
+                        input=cleaned_text,
+                        dimensions=self.embedding_dimension  # Support dimension reduction
                     )
                     embedding_vector = response.data[0].embedding
                 else:

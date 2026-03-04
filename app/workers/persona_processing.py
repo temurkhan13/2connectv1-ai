@@ -111,26 +111,50 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             elif not isinstance(offerings, str):
                 offerings = str(offerings) if offerings else ''
 
+            # BUG-024 FIX: Ensure ALL persona fields are strings before DynamoDB write
+            # Convert any non-string values to strings to prevent SerializationException
+            def ensure_string(value):
+                """Convert any value to string safely."""
+                if value is None:
+                    return ''
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, list):
+                    # Join list items with semicolons
+                    return "; ".join(str(item).strip() for item in value if item)
+                if isinstance(value, dict):
+                    # Convert dict to readable string
+                    return "; ".join(f"{k}: {v}" for k, v in value.items())
+                # For numbers, booleans, etc.
+                return str(value)
+
+            # Sanitize all persona fields
+            persona_sanitized = {
+                key: ensure_string(value)
+                for key, value in persona.items()
+            }
+
             # Debug logging
-            logger.info(f"Generated persona: {persona.get('name', 'N/A')}")
+            logger.info(f"Generated persona: {persona_sanitized.get('name', 'N/A')}")
             logger.info(f"Requirements type: {type(requirements)}, length: {len(requirements)} characters")
             logger.info(f"Offerings type: {type(offerings)}, length: {len(offerings)} characters")
             
             # Store persona data with requirements and offerings using update method
             # Note: "strategy" is the role-agnostic field that maps to investment_philosophy in DB
             # IMPORTANT: All .get() calls must provide default empty strings to prevent DynamoDB SerializationException
+            # BUG-024 FIX: Use persona_sanitized (all strings) instead of raw persona
             user_profile.update(
                 actions=[
-                    UserProfile.persona.name.set(persona.get('name', '')),
-                    UserProfile.persona.archetype.set(persona.get('archetype', '')),
-                    UserProfile.persona.experience.set(persona.get('experience', '')),
-                    UserProfile.persona.focus.set(persona.get('focus', '')),
-                    UserProfile.persona.profile_essence.set(persona.get('profile_essence', '')),
+                    UserProfile.persona.name.set(persona_sanitized.get('name', '')),
+                    UserProfile.persona.archetype.set(persona_sanitized.get('archetype', '')),
+                    UserProfile.persona.experience.set(persona_sanitized.get('experience', '')),
+                    UserProfile.persona.focus.set(persona_sanitized.get('focus', '')),
+                    UserProfile.persona.profile_essence.set(persona_sanitized.get('profile_essence', '')),
                     # Strategy field replaces investment_philosophy (role-agnostic)
-                    UserProfile.persona.investment_philosophy.set(persona.get('strategy') or persona.get('investment_philosophy') or ''),
-                    UserProfile.persona.what_theyre_looking_for.set(persona.get('what_theyre_looking_for', '')),
-                    UserProfile.persona.engagement_style.set(persona.get('engagement_style', '')),
-                    UserProfile.persona.designation.set(persona.get('designation', '')),
+                    UserProfile.persona.investment_philosophy.set(persona_sanitized.get('strategy') or persona_sanitized.get('investment_philosophy') or ''),
+                    UserProfile.persona.what_theyre_looking_for.set(persona_sanitized.get('what_theyre_looking_for', '')),
+                    UserProfile.persona.engagement_style.set(persona_sanitized.get('engagement_style', '')),
+                    UserProfile.persona.designation.set(persona_sanitized.get('designation', '')),
                     UserProfile.persona.requirements.set(requirements or ''),
                     UserProfile.persona.offerings.set(offerings or ''),
                     UserProfile.persona.generated_at.set(datetime.utcnow()),
@@ -139,10 +163,11 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             )
             
             logger.info(f"Successfully stored persona data for user {user_id}")
-            logger.info(f"Successfully generated persona for user {user_id}: {persona.get('name')}")
+            logger.info(f"Successfully generated persona for user {user_id}: {persona_sanitized.get('name')}")
 
             # Generate markdown summary for backend storage
-            markdown_summary = _convert_persona_to_markdown(persona, requirements, offerings)
+            # BUG-024 FIX: Use sanitized persona
+            markdown_summary = _convert_persona_to_markdown(persona_sanitized, requirements, offerings)
 
             # DIRECT DB WRITE (March 2026) - Ensure AI summary is created regardless of webhook status
             # This is a fallback to prevent "No AI summary found" issues

@@ -74,7 +74,42 @@ services:
         value: "true"
       - key: SIMILARITY_UPPER_THRESHOLD
         value: "0.95"
-      # Feedback
+      - key: MAX_INLINE_MATCHES
+        value: "50"
+      # Advanced Matching Algorithms (priority: HYBRID > ENHANCED > MULTI_VECTOR > BASIC)
+      - key: USE_HYBRID_MATCHING
+        value: "true"
+      - key: USE_ENHANCED_MATCHING
+        value: "true"
+      - key: USE_MULTI_VECTOR_MATCHING
+        value: "true"
+      # Enhanced Matching Features
+      - key: ENFORCE_HARD_DEALBREAKERS
+        value: "true"
+      - key: BLOCK_SAME_OBJECTIVE
+        value: "true"
+      # Multi-Vector Dimension Weights (must sum to 1.0)
+      - key: MATCH_WEIGHT_PRIMARY_GOAL
+        value: "0.20"
+      - key: MATCH_WEIGHT_INDUSTRY
+        value: "0.25"
+      - key: MATCH_WEIGHT_STAGE
+        value: "0.20"
+      - key: MATCH_WEIGHT_GEOGRAPHY
+        value: "0.15"
+      - key: MATCH_WEIGHT_ENGAGEMENT
+        value: "0.10"
+      - key: MATCH_WEIGHT_DEALBREAKERS
+        value: "0.10"
+      # Feedback Learning
+      - key: FEEDBACK_LEARNING_RATE
+        value: "0.02"
+      - key: FEEDBACK_MAX_LEARNING_RATE
+        value: "0.10"
+      - key: FEEDBACK_NORMALIZE_VECTORS
+        value: "true"
+      - key: FEEDBACK_CONFIDENCE_SCALING
+        value: "true"
       - key: FEEDBACK_TARGET_PORTION
         value: requirements
       # PostgreSQL - Supabase (AI DB with pgvector)

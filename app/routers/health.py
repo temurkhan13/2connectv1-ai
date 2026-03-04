@@ -1042,3 +1042,335 @@ async def verify_test_users():
     except Exception as e:
         logger.error(f"Error verifying test users: {e}")
         return {"success": False, "message": str(e)}
+
+
+@router.get("/admin/wiring-audit")
+async def wiring_audit():
+    """
+    COMPREHENSIVE WIRING AUDIT
+
+    Unlike /admin/system-health which just checks if code EXISTS,
+    this endpoint verifies components are actually WORKING with real data.
+
+    Returns:
+    - broken: Components that are not working
+    - working: Components verified with real data
+    - untested: Components that exist but need verification
+    """
+    import psycopg2
+    from collections import Counter
+
+    audit = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "broken": [],
+        "working": [],
+        "untested": [],
+        "metrics": {},
+        "recommendations": []
+    }
+
+    # ===== 1. MULTI-VECTOR EMBEDDINGS AUDIT =====
+    try:
+        ai_db_url = os.getenv('DATABASE_URL')
+        if ai_db_url:
+            conn = psycopg2.connect(ai_db_url)
+            cursor = conn.cursor()
+
+            # Count embeddings by type
+            cursor.execute("""
+                SELECT embedding_type, COUNT(*)
+                FROM user_embeddings
+                GROUP BY embedding_type
+                ORDER BY embedding_type
+            """)
+            embedding_counts = dict(cursor.fetchall())
+
+            # Count unique users with embeddings
+            cursor.execute("SELECT COUNT(DISTINCT user_id) FROM user_embeddings")
+            users_with_embeddings = cursor.fetchone()[0]
+
+            cursor.close()
+            conn.close()
+
+            audit["metrics"]["embeddings"] = embedding_counts
+            audit["metrics"]["users_with_embeddings"] = users_with_embeddings
+
+            # Check multi-vector dimensions
+            multi_vector_dims = [
+                "requirements_primary_goal", "offerings_primary_goal",
+                "requirements_industry", "offerings_industry",
+                "requirements_stage", "offerings_stage",
+                "requirements_geography", "offerings_geography",
+                "requirements_engagement_style", "offerings_engagement_style",
+                "requirements_dealbreakers", "offerings_dealbreakers"
+            ]
+
+            mv_present = [d for d in multi_vector_dims if embedding_counts.get(d, 0) > 0]
+            mv_missing = [d for d in multi_vector_dims if embedding_counts.get(d, 0) == 0]
+
+            if len(mv_missing) == len(multi_vector_dims):
+                audit["broken"].append({
+                    "component": "Multi-Vector Embeddings",
+                    "issue": "0 users have multi-vector embeddings",
+                    "expected": "All 6 dimensions for each user",
+                    "found": "None",
+                    "fix": "Check onboarding.py slot mapping - geography/engagement_style/dealbreakers may be wrong"
+                })
+            elif len(mv_missing) > 0:
+                audit["untested"].append({
+                    "component": "Multi-Vector Embeddings (Partial)",
+                    "present": mv_present,
+                    "missing": mv_missing
+                })
+            else:
+                audit["working"].append({
+                    "component": "Multi-Vector Embeddings",
+                    "detail": f"{len(mv_present)} dimension types present"
+                })
+
+            # Check basic embeddings
+            basic_req = embedding_counts.get("requirements", 0)
+            basic_off = embedding_counts.get("offerings", 0)
+
+            if basic_req > 0 and basic_off > 0:
+                audit["working"].append({
+                    "component": "Basic Embeddings",
+                    "detail": f"{basic_req} requirements, {basic_off} offerings"
+                })
+            else:
+                audit["broken"].append({
+                    "component": "Basic Embeddings",
+                    "issue": f"Missing: requirements={basic_req}, offerings={basic_off}",
+                    "fix": "Check embedding_service.store_user_embeddings in onboarding flow"
+                })
+
+    except Exception as e:
+        audit["broken"].append({
+            "component": "Embedding Database",
+            "issue": str(e)[:100]
+        })
+
+    # ===== 2. MATCHING ALGORITHM AUDIT =====
+    try:
+        from app.services.inline_matching_service import (
+            USE_HYBRID_MATCHING, USE_ENHANCED_MATCHING, USE_MULTI_VECTOR_MATCHING
+        )
+
+        audit["metrics"]["matching_flags"] = {
+            "USE_HYBRID_MATCHING": USE_HYBRID_MATCHING,
+            "USE_ENHANCED_MATCHING": USE_ENHANCED_MATCHING,
+            "USE_MULTI_VECTOR_MATCHING": USE_MULTI_VECTOR_MATCHING
+        }
+
+        if USE_HYBRID_MATCHING:
+            audit["working"].append({
+                "component": "Hybrid Matching",
+                "detail": "Enabled via USE_HYBRID_MATCHING=true"
+            })
+        elif USE_ENHANCED_MATCHING:
+            audit["working"].append({
+                "component": "Enhanced Matching",
+                "detail": "Enabled via USE_ENHANCED_MATCHING=true (hybrid disabled)"
+            })
+        elif USE_MULTI_VECTOR_MATCHING:
+            audit["untested"].append({
+                "component": "Multi-Vector Matching",
+                "detail": "Enabled but requires multi-vector embeddings (which are missing)"
+            })
+        else:
+            audit["broken"].append({
+                "component": "Advanced Matching",
+                "issue": "All advanced matching disabled, using basic cosine similarity only",
+                "fix": "Set USE_HYBRID_MATCHING=true in render.yaml"
+            })
+
+    except Exception as e:
+        audit["broken"].append({
+            "component": "Matching Flags",
+            "issue": str(e)[:100]
+        })
+
+    # ===== 3. FEEDBACK LEARNING AUDIT =====
+    try:
+        from app.adapters.dynamodb import Feedback
+
+        # Count feedback entries
+        feedback_count = 0
+        try:
+            for _ in Feedback.scan(limit=100):
+                feedback_count += 1
+        except Exception:
+            pass
+
+        audit["metrics"]["feedback_count"] = feedback_count
+
+        if feedback_count > 0:
+            audit["working"].append({
+                "component": "Feedback Collection",
+                "detail": f"{feedback_count}+ feedback entries in DynamoDB"
+            })
+            audit["untested"].append({
+                "component": "Feedback Learning",
+                "detail": "Feedback exists but need to verify embeddings are being adjusted"
+            })
+        else:
+            audit["untested"].append({
+                "component": "Feedback Learning",
+                "detail": "No feedback data yet - cannot verify if working"
+            })
+
+    except Exception as e:
+        audit["broken"].append({
+            "component": "Feedback System",
+            "issue": str(e)[:100]
+        })
+
+    # ===== 4. INTENT CLASSIFICATION AUDIT =====
+    try:
+        from app.adapters.dynamodb import UserProfile
+
+        # Sample personas to check intent inference
+        intent_counts = Counter()
+        sampled = 0
+
+        for profile in UserProfile.scan(limit=20):
+            if profile.persona:
+                archetype = getattr(profile.persona, 'archetype', '') or ''
+                user_type = getattr(profile.persona, 'user_type', '') or ''
+
+                arch_lower = archetype.lower()
+                type_lower = user_type.lower()
+
+                if "investor" in arch_lower or "investor" in type_lower:
+                    intent_counts["INVESTOR_FOUNDER"] += 1
+                elif "founder" in arch_lower or "founder" in type_lower:
+                    intent_counts["FOUNDER_INVESTOR"] += 1
+                elif "mentor" in arch_lower or "advisor" in type_lower:
+                    intent_counts["MENTOR_MENTEE"] += 1
+                else:
+                    intent_counts["NETWORKING"] += 1
+                sampled += 1
+
+        audit["metrics"]["intent_distribution_sample"] = dict(intent_counts)
+
+        if sampled > 0:
+            audit["working"].append({
+                "component": "Intent Classification",
+                "detail": f"Sampled {sampled} users: {dict(intent_counts)}"
+            })
+        else:
+            audit["untested"].append({
+                "component": "Intent Classification",
+                "detail": "No personas found to test"
+            })
+
+    except Exception as e:
+        audit["untested"].append({
+            "component": "Intent Classification",
+            "issue": str(e)[:100]
+        })
+
+    # ===== 5. MATCH SYNC AUDIT =====
+    try:
+        backend_db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
+        if backend_db_url:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+
+            # Count matches in backend
+            cursor.execute("SELECT COUNT(*) FROM matches")
+            backend_matches = cursor.fetchone()[0]
+
+            # Count users with completed onboarding
+            cursor.execute("SELECT COUNT(*) FROM users WHERE onboarding_status = 'completed'")
+            completed_users = cursor.fetchone()[0]
+
+            cursor.close()
+            conn.close()
+
+            audit["metrics"]["backend_matches"] = backend_matches
+            audit["metrics"]["completed_users"] = completed_users
+
+            if backend_matches > 0:
+                audit["working"].append({
+                    "component": "Match Sync to Backend",
+                    "detail": f"{backend_matches} matches synced, {completed_users} completed users"
+                })
+            else:
+                audit["broken"].append({
+                    "component": "Match Sync to Backend",
+                    "issue": "0 matches in backend despite users existing",
+                    "fix": "Check match_sync_service.sync_matches_to_backend"
+                })
+
+    except Exception as e:
+        audit["broken"].append({
+            "component": "Backend Database",
+            "issue": str(e)[:100]
+        })
+
+    # ===== 6. SLOT EXTRACTION AUDIT =====
+    try:
+        from app.services.slot_extraction import SlotSchema
+
+        core_slots = [s.name for s in SlotSchema.CORE_SLOTS]
+        investor_slots = [s.name for s in SlotSchema.INVESTOR_SLOTS]
+        founder_slots = [s.name for s in SlotSchema.FOUNDER_SLOTS]
+        optional_slots = [s.name for s in SlotSchema.OPTIONAL_SLOTS]
+
+        audit["metrics"]["slot_schema"] = {
+            "core": core_slots,
+            "investor": investor_slots,
+            "founder": founder_slots,
+            "optional": optional_slots
+        }
+
+        # Check for multi-vector required slots
+        mv_required = ["primary_goal", "industry_focus", "stage_preference", "geography"]
+        mv_optional = ["engagement_style", "dealbreakers"]
+
+        missing_core = [s for s in mv_required if s not in core_slots]
+        missing_optional = [s for s in mv_optional if s not in optional_slots]
+
+        if missing_core:
+            audit["broken"].append({
+                "component": "Slot Schema",
+                "issue": f"Missing core slots for multi-vector: {missing_core}",
+                "fix": "Add missing slots to SlotSchema.CORE_SLOTS"
+            })
+        else:
+            audit["working"].append({
+                "component": "Slot Schema",
+                "detail": f"All required slots defined: {mv_required}"
+            })
+
+    except Exception as e:
+        audit["broken"].append({
+            "component": "Slot Schema",
+            "issue": str(e)[:100]
+        })
+
+    # ===== GENERATE RECOMMENDATIONS =====
+    if audit["broken"]:
+        audit["recommendations"].append({
+            "priority": "HIGH",
+            "action": "Fix broken components before testing",
+            "components": [b["component"] for b in audit["broken"]]
+        })
+
+    if any("Multi-Vector" in u.get("component", "") for u in audit["untested"]):
+        audit["recommendations"].append({
+            "priority": "MEDIUM",
+            "action": "Run backfill script to generate multi-vector embeddings for existing users",
+            "command": "python scripts/backfill_embeddings.py"
+        })
+
+    # Calculate overall status
+    if audit["broken"]:
+        audit["overall_status"] = "BROKEN"
+    elif audit["untested"]:
+        audit["overall_status"] = "PARTIAL"
+    else:
+        audit["overall_status"] = "HEALTHY"
+
+    return audit

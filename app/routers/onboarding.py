@@ -660,6 +660,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             from app.services.multi_vector_matcher import multi_vector_matcher
 
             # Build persona_data from slots in the format expected by multi_vector_matcher
+            # FIX: Correct slot names to match slot_extraction.py definitions
             persona_data = {
                 "primary_goal": slots.get("primary_goal", {}).get("value", ""),
                 "objective": slots.get("user_type", {}).get("value", ""),
@@ -667,9 +668,9 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 "stage": slots.get("stage_preference", {}).get("value", ""),
                 "investment_stage": slots.get("investment_stage", {}).get("value", ""),
                 "company_stage": slots.get("company_stage", {}).get("value", ""),
-                "geography": slots.get("geographic_focus", {}).get("value", ""),
-                "engagement_style": "",  # Not collected in current onboarding
-                "dealbreakers": "",  # Not collected in current onboarding
+                "geography": slots.get("geography", {}).get("value", ""),  # FIX: was "geographic_focus"
+                "engagement_style": slots.get("engagement_style", {}).get("value", ""),  # FIX: read from slots
+                "dealbreakers": slots.get("dealbreakers", {}).get("value", ""),  # FIX: read from slots
                 "requirements": slots.get("requirements", {}).get("value", ""),
                 "offerings": slots.get("offerings", {}).get("value", ""),
             }

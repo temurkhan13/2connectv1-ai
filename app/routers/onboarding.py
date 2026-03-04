@@ -429,13 +429,11 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
     logger.info(f"Completing onboarding for session {session_id}")
 
     try:
-        # Get session data
+        # BUG-025 FIX: Add Supabase fallback for resilience
+        # Try to get session data from in-memory context manager first
         slot_summary = context_manager.get_slot_summary(session_id)
-        if not slot_summary:
-            raise HTTPException(status_code=404, detail="Session not found")
 
-        # Get user_id from request or derive from session
-        # Frontend may not send user_id, so we derive it from the session
+        # Get user_id early (needed for both in-memory and Supabase fallback)
         user_id = request.user_id
         if not user_id:
             # Get user_id from the session context
@@ -444,7 +442,47 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 user_id = context.user_id
                 logger.info(f"Derived user_id {user_id} from session {session_id}")
             else:
-                raise HTTPException(status_code=400, detail="user_id not provided and could not be derived from session")
+                # Last resort: user_id must be provided in request if session not in memory
+                if not slot_summary or not slot_summary.get("slots"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="user_id required when session not in memory"
+                    )
+
+        # BUG-025 FIX: Fallback to Supabase if in-memory session missing or empty
+        if not slot_summary or not slot_summary.get("slots"):
+            logger.warning(
+                f"Session {session_id} not in memory or empty, "
+                f"fetching slots from Supabase for user {user_id}"
+            )
+
+            from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
+            supabase = SupabaseOnboardingAdapter()
+
+            if not supabase.enabled:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Session expired and Supabase fallback not available"
+                )
+
+            # Fetch all slots for this user from Supabase
+            supabase_slots = await supabase.get_user_slots(user_id)
+
+            if not supabase_slots:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No slots found for user {user_id} in memory or Supabase"
+                )
+
+            # Convert Supabase format to slot_summary format
+            # Supabase returns: {slot_name: {value, confidence, status, created_at}}
+            # slot_summary expects: {slots: {slot_name: {value, confidence, status}}}
+            slot_summary = {"slots": supabase_slots}
+
+            logger.info(
+                f"Loaded {len(supabase_slots)} slots from Supabase for user {user_id} "
+                f"(session {session_id} not in memory)"
+            )
 
         logger.info(f"Completing onboarding for user {user_id}, session {session_id}")
 

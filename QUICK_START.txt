@@ -1,0 +1,75 @@
+╔══════════════════════════════════════════════════════════════╗
+║         ONBOARDING FIXES - QUICK START GUIDE                 ║
+║                  March 3, 2026                               ║
+╚══════════════════════════════════════════════════════════════╝
+
+STATUS: ✅ DEPLOYED AND READY FOR TESTING
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 WHAT YOU NEED TO DO (2 STEPS):
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 1: MANUAL TEST (5-10 min)
+───────────────────────────────
+
+1. Go to: https://2connectv1-frontend.vercel.app
+2. Sign up with NEW email (e.g., test-march3@example.com)
+3. Complete onboarding (answer 5-7 questions)
+4. Check admin dashboard - verify slots_filled > 0
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+STEP 2: RUN REGENERATION SCRIPT (5 min)
+────────────────────────────────────────
+
+Open terminal and run:
+
+cd /c/Users/hp/reciprocity-ai
+python regenerate_failed_users.py
+
+This will regenerate the 6 failed users and save results.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📄 DETAILED INSTRUCTIONS:
+
+Read: TESTING_GUIDE.md (in this directory)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ WHAT'S ALREADY DONE:
+
+✓ SQL migration deployed
+✓ Environment variable added
+✓ Code deployed to Render
+✓ Services operational
+✓ Regeneration script created
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 SUCCESS CRITERIA:
+
+✓ New users: Slots save to database
+✓ Dashboard: Shows slot counts (not 0/11)
+✓ Regeneration: No 403 errors
+✓ Failed users: Can be recovered
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📞 NEED HELP?
+
+If something fails, save:
+- Error logs
+- regeneration_results.json
+- Screenshot of error
+
+Then share with Claude for debugging.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ESTIMATED TIME: 15-20 minutes total
+START NOW! 🚀
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

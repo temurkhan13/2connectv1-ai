@@ -969,7 +969,7 @@ class ContextManager:
         slots_complete = completion_ratio >= 1.0  # Changed from 0.8
 
         # Requirement 2: Minimum 3 conversation turns (user messages)
-        user_turns = sum(1 for turn in context.conversation_history if turn.turn_type == TurnType.USER)
+        user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
         min_turns_met = user_turns >= 3
 
         is_complete = slots_complete and min_turns_met

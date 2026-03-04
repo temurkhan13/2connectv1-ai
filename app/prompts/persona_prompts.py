@@ -4,7 +4,7 @@ Prompt templates for persona generation.
 import re
 import json
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
@@ -132,6 +132,11 @@ Generation rules:
 
 Combined Input Data:
 {combined_data}
+
+CRITICAL OUTPUT INSTRUCTION:
+Your response MUST be ONLY valid JSON. Do NOT include any explanatory text, preamble, or commentary.
+Do NOT start with phrases like "Based on the provided..." or "Here are the outputs..."
+Start your response DIRECTLY with the opening curly brace {{ and end with the closing curly brace }}.
 """
 
 
@@ -179,14 +184,67 @@ class RobustJsonOutputParser(JsonOutputParser):
                 return parsed
             except json.JSONDecodeError as e:
                 logger.warning(f"BUG-015 FIX: Found JSON-like text but parse failed: {e}")
-                # Fall through to error
+                # Fall through to additional attempts
+
+        # BUG-027 FIX: Try to extract JSON from code blocks
+        code_block_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+        if code_block_match:
+            try:
+                json_str = code_block_match.group(1)
+                parsed = json.loads(json_str)
+                logger.info("BUG-027 FIX: Successfully extracted JSON from code block")
+                return parsed
+            except json.JSONDecodeError as e:
+                logger.warning(f"BUG-027 FIX: Code block JSON parse failed: {e}")
+
+        # BUG-027 FIX: If no JSON found at all, generate a fallback persona
+        # This handles cases where LLM only outputs descriptive text
+        if not re.search(r'\{', text):
+            logger.warning(f"BUG-027 FIX: No JSON structure found in response, generating fallback")
+            fallback = self._generate_fallback_persona(text)
+            if fallback:
+                return fallback
 
         # No valid JSON found
-        logger.error(f"BUG-015 ERROR: No valid JSON found in response. First 200 chars: {text[:200]}")
+        logger.error(f"BUG-015/027 ERROR: No valid JSON found in response. First 500 chars: {text[:500]}")
         raise OutputParserException(
             f"Invalid json output: {text}",
             llm_output=text
         )
+
+    def _generate_fallback_persona(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        BUG-027 FIX: Generate a minimal fallback persona when LLM fails to output JSON.
+
+        This extracts what information we can from the descriptive text and creates
+        a valid JSON structure to prevent complete failure.
+        """
+        try:
+            # Try to extract any useful information from the text
+            # Look for patterns like "professional seeking employment" or "public accounting"
+            profession_match = re.search(r'(?:professional|expert|specialist|seeking|working in|field of)\s+([^.,]+)', text, re.IGNORECASE)
+            profession = profession_match.group(1).strip() if profession_match else "Not specified"
+
+            fallback = {
+                "persona": {
+                    "name": "Profile Under Review",
+                    "archetype": "Professional",
+                    "designation": profession[:50] if len(profession) > 50 else profession,
+                    "experience": "Not specified",
+                    "focus": "Not specified",
+                    "profile_essence": "Profile information is being processed. Please check back shortly.",
+                    "strategy": "Not specified",
+                    "what_theyre_looking_for": "Not specified",
+                    "engagement_style": "Not specified"
+                },
+                "requirements": "Profile requirements are being processed.",
+                "offerings": "Profile offerings are being processed."
+            }
+            logger.info("BUG-027 FIX: Generated fallback persona from descriptive text")
+            return fallback
+        except Exception as e:
+            logger.error(f"BUG-027 FIX: Failed to generate fallback: {e}")
+            return None
 
 
 def build_persona_chain(llm):

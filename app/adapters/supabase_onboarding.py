@@ -81,7 +81,9 @@ class SupabaseOnboardingAdapter:
             return False
 
         try:
-            url = f"{self.supabase_url}/rest/v1/onboarding_answers"
+            # BUG-022 FIX: Add on_conflict parameter for proper upsert
+            # This tells PostgREST which columns to use for conflict detection
+            url = f"{self.supabase_url}/rest/v1/onboarding_answers?on_conflict=user_id,slot_name"
             payload = {
                 "user_id": user_id,
                 "slot_name": slot_name,
@@ -100,7 +102,7 @@ class SupabaseOnboardingAdapter:
                 )
 
                 if response.status_code in [200, 201]:
-                    logger.info(f"✅ Saved slot '{slot_name}' for user {user_id[:8]}... to Supabase")
+                    logger.info(f"✅ Saved slot '{slot_name}' for user {user_id[:8]}... to Supabase (upsert)")
                     return True
                 else:
                     logger.error(f"Failed to save slot '{slot_name}': {response.status_code} - {response.text}")
@@ -146,7 +148,9 @@ class SupabaseOnboardingAdapter:
         if not slots:
             return 0
 
-        url = f"{self.supabase_url}/rest/v1/onboarding_answers"
+        # BUG-022 FIX: Add on_conflict parameter for proper upsert
+        # Combined with Prefer: resolution=merge-duplicates header, this enables true upsert
+        url = f"{self.supabase_url}/rest/v1/onboarding_answers?on_conflict=user_id,slot_name"
         payload = [
             {
                 "user_id": user_id,

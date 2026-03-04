@@ -33,10 +33,13 @@ class SupabaseOnboardingAdapter:
 
     def __init__(self):
         self.supabase_url = os.getenv("SUPABASE_URL", "https://omcjxrhprhtlwqzuhjqb.supabase.co")
-        self.supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+        # BUG-026 FIX: Accept both variable names for backwards compatibility
+        # SUPABASE_SERVICE_ROLE_KEY is the standard Supabase naming (preferred)
+        # SUPABASE_SERVICE_KEY was used in earlier versions (legacy fallback)
+        self.supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
 
         if not self.supabase_key:
-            logger.warning("SUPABASE_SERVICE_KEY not set - slot persistence disabled")
+            logger.warning("SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_KEY) not set - slot persistence disabled")
             self.enabled = False
         else:
             self.enabled = True
@@ -191,7 +194,7 @@ class SupabaseOnboardingAdapter:
             SupabasePersistenceError: If persistence fails after all retries
         """
         if not self.enabled:
-            raise SupabasePersistenceError("Supabase adapter not enabled - SUPABASE_SERVICE_KEY not set")
+            raise SupabasePersistenceError("Supabase adapter not enabled - SUPABASE_SERVICE_ROLE_KEY not set")
 
         if not slots:
             return 0

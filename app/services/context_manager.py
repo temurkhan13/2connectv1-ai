@@ -957,15 +957,27 @@ class ContextManager:
             if slot and slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
                 filled_count += 1
 
-        # Complete if 80%+ of required slots are filled (allows some flexibility)
+        # BUG-023 FIX: Strict completion requirements
+        # Changed from 80% threshold to 100% + minimum conversation turns
+        # Prevents premature completion after 1 comprehensive answer
         if not required_slots:
             return False
 
         completion_ratio = filled_count / len(required_slots)
-        is_complete = completion_ratio >= 0.8
 
-        if is_complete:
-            logger.info(f"Session auto-complete: {filled_count}/{len(required_slots)} required slots filled ({completion_ratio*100:.0f}%)")
+        # Requirement 1: ALL required slots must be filled (100%)
+        slots_complete = completion_ratio >= 1.0  # Changed from 0.8
+
+        # Requirement 2: Minimum 3 conversation turns (user messages)
+        user_turns = sum(1 for turn in context.conversation_history if turn.turn_type == TurnType.USER)
+        min_turns_met = user_turns >= 3
+
+        is_complete = slots_complete and min_turns_met
+
+        if slots_complete and not min_turns_met:
+            logger.info(f"Session {context.session_id}: {filled_count}/{len(required_slots)} slots filled (100%) but only {user_turns}/3 turns - continuing conversation")
+        elif is_complete:
+            logger.info(f"Session auto-complete: {filled_count}/{len(required_slots)} required slots filled (100%), {user_turns} user turns")
 
         return is_complete
 

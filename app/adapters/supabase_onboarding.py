@@ -104,12 +104,60 @@ class SupabaseOnboardingAdapter:
                 if response.status_code in [200, 201]:
                     logger.info(f"✅ Saved slot '{slot_name}' for user {user_id[:8]}... to Supabase (upsert)")
                     return True
+                elif response.status_code == 409:
+                    # BUG-022 FIX: 409 means slot already exists - this is OK, just update it
+                    logger.info(f"Slot '{slot_name}' already exists for user {user_id[:8]}..., attempting update")
+                    return await self._update_existing_slot(user_id, slot_name, value, confidence, source_text, extraction_method, status)
                 else:
                     logger.error(f"Failed to save slot '{slot_name}': {response.status_code} - {response.text}")
                     return False
 
         except Exception as e:
             logger.error(f"Error saving slot '{slot_name}' to Supabase: {e}")
+            return False
+
+    async def _update_existing_slot(
+        self,
+        user_id: str,
+        slot_name: str,
+        value: str,
+        confidence: float,
+        source_text: Optional[str],
+        extraction_method: str,
+        status: str
+    ) -> bool:
+        """
+        BUG-022 FIX: Update an existing slot when INSERT fails with 409.
+
+        Uses PATCH to update the existing row instead of INSERT.
+        """
+        try:
+            # Use PATCH to update existing row, filtering by user_id and slot_name
+            url = f"{self.supabase_url}/rest/v1/onboarding_answers?user_id=eq.{user_id}&slot_name=eq.{slot_name}"
+            payload = {
+                "value": value,
+                "confidence": confidence,
+                "source_text": source_text,
+                "extraction_method": extraction_method,
+                "status": status
+            }
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.patch(
+                    url,
+                    json=payload,
+                    headers=self._get_headers()
+                )
+
+                if response.status_code in [200, 204]:
+                    logger.info(f"✅ Updated existing slot '{slot_name}' for user {user_id[:8]}...")
+                    return True
+                else:
+                    logger.error(f"Failed to update slot '{slot_name}': {response.status_code} - {response.text}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error updating slot '{slot_name}': {e}")
             return False
 
     @retry(
@@ -180,11 +228,49 @@ class SupabaseOnboardingAdapter:
                 await self._validate_persistence(user_id, slots)
 
                 return len(slots)
+            elif response.status_code == 409:
+                # BUG-022 ENHANCED FIX: Handle 409 by falling back to individual upserts
+                logger.warning(f"Batch upsert got 409 conflict, falling back to individual saves for user {user_id[:8]}...")
+                return await self._fallback_individual_saves(user_id, slots)
             else:
                 # BUG-022 FIX: Raise exception instead of returning 0
                 error_msg = f"Supabase save failed: {response.status_code} - {response.text}"
                 logger.error(error_msg)
                 raise SupabasePersistenceError(error_msg)
+
+    async def _fallback_individual_saves(self, user_id: str, slots: List[Dict[str, Any]]) -> int:
+        """
+        BUG-022 ENHANCED FIX: Fallback to individual slot saves when batch fails with 409.
+
+        This handles cases where:
+        1. The same slot appears twice in the batch
+        2. The upsert header/parameter isn't working correctly
+        3. Race conditions with concurrent saves
+        """
+        saved_count = 0
+        for slot in slots:
+            try:
+                success = await self.save_slot(
+                    user_id=user_id,
+                    slot_name=slot.get("name"),
+                    value=slot.get("value"),
+                    confidence=slot.get("confidence", 1.0),
+                    source_text=slot.get("source_text"),
+                    extraction_method=slot.get("extraction_method", "llm"),
+                    status=slot.get("status", "filled")
+                )
+                if success:
+                    saved_count += 1
+            except Exception as e:
+                logger.warning(f"Individual save failed for slot {slot.get('name')}: {e}")
+                # Continue trying other slots
+
+        logger.info(f"✅ Fallback saved {saved_count}/{len(slots)} slots for user {user_id[:8]}...")
+
+        if saved_count > 0:
+            await self._validate_persistence(user_id, slots)
+
+        return saved_count
 
     async def _validate_persistence(self, user_id: str, saved_slots: List[Dict[str, Any]]) -> None:
         """

@@ -49,8 +49,11 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
     # Run tasks synchronously if no worker (staging/free tier)
-    task_always_eager=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'false').lower() == 'true',
-    task_eager_propagates=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'false').lower() == 'true',
+    # BUG-028 FIX: Default to 'true' for Render single-process environment
+    # Without a separate Celery worker, tasks queue to Redis but never run
+    # Set CELERY_TASK_ALWAYS_EAGER=false only if running a dedicated worker
+    task_always_eager=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'true').lower() == 'true',
+    task_eager_propagates=os.getenv('CELERY_TASK_ALWAYS_EAGER', 'true').lower() == 'true',
 )
 
 # Celery Beat Schedule (Periodic Tasks)

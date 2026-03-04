@@ -65,8 +65,11 @@ services:
         value: text-embedding-3-small
       - key: EMBEDDING_DIMENSION
         value: "1536"
+      # BUG-027 FIX: Lowered from 0.7 to 0.5
+      # 0.7 was too strict - excluded complementary founder/investor matches at 0.59 similarity
+      # 0.5 provides good balance: meaningful matches without noise
       - key: SIMILARITY_THRESHOLD
-        value: "0.7"
+        value: "0.5"
       # Matching
       - key: MAX_MATCHES_PER_CYCLE
         value: "10"

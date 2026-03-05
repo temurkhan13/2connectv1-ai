@@ -59,14 +59,16 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
 
     return "\n\n".join(parts)
 
-@celery_app.task(bind=True, name='generate_persona')
+@celery_app.task(bind=True, name='generate_persona', max_retries=2, default_retry_delay=5)
 def generate_persona_task(self, user_id: str, send_notification: bool = True):
     """
     Generate persona for a user using AI.
-    
+
     Args:
         user_id: User ID
         send_notification: Whether to send persona ready notification (default: True)
+
+    Retries up to 2 times with 5 second delay on transient LLM failures.
     """
     try:
         logger.info(f"Starting persona generation for user: {user_id}")
@@ -226,14 +228,28 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
                 "message": "Persona generated successfully"
             }
         else:
-            logger.error(f"Failed to generate persona for user {user_id}")
+            # Log more context about why persona generation failed
+            logger.error(f"Failed to generate persona for user {user_id} (attempt {self.request.retries + 1})")
+            logger.error(f"User {user_id} - questions count: {len(questions)}, resume length: {len(resume_text)} chars")
+
+            # Log sample question codes to help debug
+            if questions:
+                q_codes = [q.get('code', 'unknown') for q in questions[:5]]
+                logger.error(f"User {user_id} - first 5 question codes: {q_codes}")
+
+            # Retry if we haven't exhausted retries (LLM responses can be intermittent)
+            if self.request.retries < self.max_retries:
+                logger.info(f"Retrying persona generation for user {user_id}...")
+                raise self.retry(countdown=5)
+
+            # All retries exhausted - mark as failed
             user_profile.update(actions=[UserProfile.persona_status.set('failed')])
             user_profile.save()
             # Return failure dict but allow chain to continue
             return {
                 "success": False,
                 "user_id": user_id,
-                "message": "Persona generation failed"
+                "message": "Persona generation failed after retries - LLM returned incomplete response"
             }
             
     except UserProfile.DoesNotExist:

@@ -1578,6 +1578,8 @@ async def hard_delete_user(user_id: str, request: dict = None):
     - AI Database embeddings
     - PostgreSQL backend (users, user_responses, user_summaries, matches)
     """
+    from app.adapters.dynamodb import UserProfile, UserMatches
+
     logger.info(f"[HARD-DELETE] Starting hard delete for user {user_id}")
 
     result = {

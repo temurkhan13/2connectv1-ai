@@ -1078,12 +1078,13 @@ async def wiring_audit():
             conn = psycopg2.connect(backend_db_url)
             cursor = conn.cursor()
 
-            # Get the most recently completed user
+            # Get the most recently ACTIVE completed user (not newest account)
+            # This ensures test users being actively tested show up, not dormant new signups
             cursor.execute("""
-                SELECT id, email, first_name, last_name, onboarding_status, created_at
+                SELECT id, email, first_name, last_name, onboarding_status, created_at, updated_at
                 FROM users
                 WHERE onboarding_status = 'completed'
-                ORDER BY created_at DESC
+                ORDER BY COALESCE(updated_at, created_at) DESC
                 LIMIT 1
             """)
             row = cursor.fetchone()
@@ -1094,7 +1095,8 @@ async def wiring_audit():
                     "email": row[1],
                     "name": f"{row[2] or ''} {row[3] or ''}".strip(),
                     "onboarding_status": row[4],
-                    "created_at": row[5].isoformat() if row[5] else None
+                    "created_at": row[5].isoformat() if row[5] else None,
+                    "last_active_at": row[6].isoformat() if row[6] else None
                 }
                 audit["latest_user"] = latest_user
 

@@ -23,6 +23,7 @@ from app.services.slot_extraction import SlotExtractor, ExtractedSlot
 from app.services.context_manager import ContextManager, TurnType
 from app.services.progressive_disclosure import ProgressiveDisclosure
 from app.services.use_case_templates import get_template, get_onboarding_slots
+from app.adapters.supabase_onboarding import supabase_onboarding_adapter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
@@ -227,6 +228,31 @@ async def chat(request: ChatMessageRequest):
                 "confidence": slot.confidence,
                 "status": slot.status.value
             }
+
+        # BUG-027 FIX: Persist slots to Supabase for session resilience
+        # This ensures slots survive if Redis session expires before profile creation
+        if newly_extracted and context.user_id:
+            try:
+                slots_to_save = [
+                    {
+                        "name": slot_name,
+                        "value": str(slot_data.get("value", "")),
+                        "confidence": slot_data.get("confidence", 1.0),
+                        "source_text": request.message,
+                        "extraction_method": "llm",
+                        "status": "filled"
+                    }
+                    for slot_name, slot_data in newly_extracted.items()
+                ]
+                if slots_to_save:
+                    saved_count = await supabase_onboarding_adapter.save_slots_batch(
+                        user_id=context.user_id,
+                        slots=slots_to_save
+                    )
+                    logger.info(f"BUG-027: Persisted {saved_count} newly extracted slots to Supabase for user {context.user_id[:8]}...")
+            except Exception as persist_error:
+                # Log but don't fail the request - in-memory session is primary
+                logger.warning(f"BUG-027: Failed to persist slots to Supabase (non-fatal): {persist_error}")
 
         # Calculate progress
         progress = progressive_disclosure.get_progress_summary(session_id)

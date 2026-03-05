@@ -1105,8 +1105,51 @@ async def wiring_audit():
             cursor.execute("SELECT COUNT(*) FROM matches")
             audit["totals"]["total_matches"] = cursor.fetchone()[0]
 
+            # BUG-027 FIX: Count users with broken state (completed but no profile)
+            # These users have status=completed but profile creation failed
+            cursor.execute("""
+                SELECT id, email, first_name, last_name, created_at
+                FROM users
+                WHERE onboarding_status = 'completed'
+                ORDER BY created_at DESC
+            """)
+            completed_users = cursor.fetchall()
+
             cursor.close()
             conn.close()
+
+            # Check each completed user for DynamoDB profile
+            broken_users = []
+            from app.adapters.dynamodb import UserProfile
+
+            for user_row in completed_users:
+                user_id_check = user_row[0]
+                try:
+                    profile = UserProfile.get(user_id_check)
+                    if not profile or not profile.persona:
+                        broken_users.append({
+                            "id": user_id_check,
+                            "email": user_row[1],
+                            "name": f"{user_row[2] or ''} {user_row[3] or ''}".strip(),
+                            "created_at": user_row[4].isoformat() if user_row[4] else None,
+                            "issue": "no_persona"
+                        })
+                except UserProfile.DoesNotExist:
+                    broken_users.append({
+                        "id": user_id_check,
+                        "email": user_row[1],
+                        "name": f"{user_row[2] or ''} {user_row[3] or ''}".strip(),
+                        "created_at": user_row[4].isoformat() if user_row[4] else None,
+                        "issue": "no_profile"
+                    })
+                except Exception:
+                    pass  # Skip users we can't check
+
+            audit["totals"]["broken_users_count"] = len(broken_users)
+            if broken_users:
+                audit["broken_users"] = broken_users[:20]  # Limit to 20 for response size
+                audit["issues"].append(f"{len(broken_users)} users have completed status but no profile/persona")
+
     except Exception as e:
         audit["issues"].append(f"Backend DB error: {str(e)[:100]}")
 
@@ -1311,3 +1354,157 @@ async def wiring_audit():
                 val["color"] = "RED"
 
     return audit
+
+
+@router.post("/admin/recover-user/{user_id}")
+async def recover_broken_user(user_id: str):
+    """
+    BUG-027 FIX: Recovery endpoint for broken users.
+
+    Re-triggers profile creation for users who have onboarding_status=completed
+    but no DynamoDB profile or persona.
+
+    This endpoint:
+    1. Fetches slots from Supabase (backup storage)
+    2. Creates DynamoDB profile from slots
+    3. Triggers persona generation pipeline
+    4. Returns success/failure status
+    """
+    from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
+    from app.adapters.dynamodb import UserProfile, QuestionAnswer
+    from celery import chain
+    from app.workers.persona_processing import generate_persona_task
+    from app.workers.resume_processing import process_resume_task
+
+    logger.info(f"[RECOVERY] Attempting to recover user {user_id}")
+
+    result = {
+        "user_id": user_id,
+        "success": False,
+        "steps": [],
+        "errors": []
+    }
+
+    # Step 1: Check if user actually exists and is in broken state
+    try:
+        from app.adapters.dynamodb import UserProfile
+
+        try:
+            existing_profile = UserProfile.get(user_id)
+            if existing_profile and existing_profile.persona:
+                result["steps"].append("User already has profile and persona - no recovery needed")
+                result["success"] = True
+                return result
+            elif existing_profile:
+                result["steps"].append("User has profile but no persona - will regenerate")
+        except UserProfile.DoesNotExist:
+            result["steps"].append("User has no DynamoDB profile - will create")
+
+    except Exception as e:
+        result["errors"].append(f"DynamoDB check failed: {str(e)}")
+
+    # Step 2: Fetch slots from Supabase
+    supabase = SupabaseOnboardingAdapter()
+    if not supabase.enabled:
+        result["errors"].append("Supabase adapter not enabled - cannot recover without slot data")
+        return result
+
+    try:
+        supabase_slots = await supabase.get_user_slots(user_id)
+        if not supabase_slots:
+            result["errors"].append(f"No slots found in Supabase for user {user_id}")
+            return result
+
+        result["steps"].append(f"Found {len(supabase_slots)} slots in Supabase")
+        result["slots_found"] = list(supabase_slots.keys())
+
+    except Exception as e:
+        result["errors"].append(f"Supabase fetch failed: {str(e)}")
+        return result
+
+    # Step 3: Convert slots to question/answer format
+    slot_to_question_map = {
+        "name": "What is your name?",
+        "role_title": "What is your job title or designation?",
+        "experience_years": "How many years of experience do you have?",
+        "company_name": "What is your company name?",
+        "primary_goal": "What are you looking for?",
+        "user_type": "What's your role or background?",
+        "industry_focus": "What industry or sector are you in?",
+        "experience_level": "What's your experience level?",
+        "stage_preference": "What stage are you interested in?",
+        "check_size": "What's your typical investment size or budget?",
+        "geographic_focus": "What geographic regions are you focused on?",
+        "offerings": "What can you offer to connections?",
+        "requirements": "What do you need from connections?",
+        "timeline": "What's your timeline?",
+        "skills": "What are your key skills?",
+        "company_info": "Tell me about your company/project",
+        "company_stage": "What stage is your company at?",
+        "funding_need": "How much funding are you seeking?",
+        "team_size": "What is your team size?",
+        "investment_stage": "What stages do you invest in?",
+    }
+
+    INTERNAL_SLOTS_TO_SKIP = {
+        "missing_important_slots", "follow_up_question", "understanding_summary",
+        "user_type_inference", "extraction_confidence", "extracted_slots",
+    }
+
+    questions = []
+    for slot_name, slot_data in supabase_slots.items():
+        if slot_name in INTERNAL_SLOTS_TO_SKIP:
+            continue
+
+        value = slot_data.get("value")
+        if not value:
+            continue
+
+        question_text = slot_to_question_map.get(slot_name, f"About your {slot_name.replace('_', ' ')}")
+
+        questions.append(QuestionAnswer(
+            question_id=slot_name,
+            question=question_text,
+            answer=str(value),
+            category="general"
+        ))
+
+    if not questions:
+        result["errors"].append("No valid slots to convert to profile")
+        return result
+
+    result["steps"].append(f"Converted {len(questions)} slots to Q&A format")
+
+    # Step 4: Create/update DynamoDB profile
+    try:
+        profile = UserProfile(
+            user_id=user_id,
+            questions=questions,
+            created_at=datetime.utcnow().isoformat(),
+            updated_at=datetime.utcnow().isoformat()
+        )
+        profile.save()
+        result["steps"].append("Created DynamoDB profile")
+
+    except Exception as e:
+        result["errors"].append(f"DynamoDB save failed: {str(e)}")
+        return result
+
+    # Step 5: Trigger persona generation pipeline
+    try:
+        pipeline = chain(
+            process_resume_task.s(user_id, None),  # No resume
+            generate_persona_task.s(user_id)
+        )
+        task_result = pipeline.apply_async()
+        result["steps"].append(f"Triggered persona pipeline: {task_result.id}")
+        result["persona_task_id"] = task_result.id
+
+    except Exception as e:
+        result["errors"].append(f"Celery pipeline failed: {str(e)}")
+        # Don't return - profile was created, just persona generation pending
+
+    result["success"] = len(result["errors"]) == 0
+    logger.info(f"[RECOVERY] User {user_id} recovery {'succeeded' if result['success'] else 'failed'}: {result}")
+
+    return result

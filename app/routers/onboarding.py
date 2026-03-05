@@ -139,7 +139,55 @@ async def chat(request: ChatMessageRequest):
     3. Generates a contextual AI response
     4. Returns progress and next questions
     """
+    import hashlib
+
     try:
+        # DEDUPLICATION CHECK (Sentry 7311102382): Prevent duplicate message processing
+        # If same message from same user received within 10s, skip processing
+        if request.session_id:
+            message_hash = hashlib.md5(
+                f"{request.user_id}:{request.session_id}:{request.message.strip().lower()}".encode()
+            ).hexdigest()[:16]
+            dedup_key = f"onboarding:dedup:{message_hash}"
+
+            try:
+                redis_client = _get_redis_client()
+                # SETNX returns True if key was set (first request), False if exists (duplicate)
+                is_first_request = redis_client.setnx(dedup_key, "1")
+                if is_first_request:
+                    # Set expiry - only the first request sets the key
+                    redis_client.expire(dedup_key, 10)  # 10 second dedup window
+                else:
+                    # Duplicate request detected - return cached response from context
+                    logger.warning(f"[DEDUP] Duplicate chat message detected for session {request.session_id}")
+                    context = context_manager.get_session(request.session_id)
+                    if context and context.turns:
+                        # Return the last AI response
+                        last_ai_turn = next(
+                            (t for t in reversed(context.turns) if t.turn_type == TurnType.ASSISTANT),
+                            None
+                        )
+                        if last_ai_turn:
+                            all_slots = {
+                                name: {"value": slot.value, "confidence": slot.confidence, "status": slot.status.value}
+                                for name, slot in context.slots.items()
+                            }
+                            progress = progressive_disclosure.get_progress_summary(request.session_id)
+                            return ChatMessageResponse(
+                                session_id=request.session_id,
+                                ai_response=last_ai_turn.content,
+                                extracted_slots={},
+                                all_slots=all_slots,
+                                completion_percent=progress.get("progress_percent", 0.0),
+                                next_questions=[],
+                                phase=context.phase.value,
+                                is_complete=context_manager.is_complete(request.session_id),
+                                is_off_topic=False
+                            )
+            except Exception as e:
+                # Redis error - log but continue processing (dedup is best-effort)
+                logger.warning(f"[DEDUP] Redis dedup check failed: {e}")
+
         # Get or create session
         if request.session_id:
             context = context_manager.get_session(request.session_id)
@@ -485,6 +533,30 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             )
 
         logger.info(f"Completing onboarding for user {user_id}, session {session_id}")
+
+        # IDEMPOTENCY CHECK (Sentry 7311102382): Check if user already completed onboarding
+        # If profile exists in DynamoDB, return success instead of failing
+        try:
+            existing_profile = UserProfile.get(user_id)
+            if existing_profile:
+                logger.info(f"[IDEMPOTENT] User {user_id} already has DynamoDB profile, returning success")
+                return CompleteOnboardingResponse(
+                    success=True,
+                    user_id=user_id,
+                    message="Profile already exists. Onboarding previously completed.",
+                    profile_created=True,
+                    persona_task_id=None,
+                    diagnostics=OnboardingDiagnostics(
+                        dynamo_profile_created=True,
+                        postgres_status_updated=True,
+                    )
+                )
+        except UserProfile.DoesNotExist:
+            # Expected case - user doesn't have profile yet, continue with creation
+            pass
+        except Exception as e:
+            # DynamoDB error - log but continue (profile creation will fail properly below)
+            logger.warning(f"[IDEMPOTENT] Could not check existing profile: {e}")
 
         # Convert slots to question/answer format for DynamoDB
         questions = []

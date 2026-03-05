@@ -1562,3 +1562,139 @@ async def sync_matches_from_dynamodb(request: dict):
     except Exception as e:
         logger.error(f"Error in sync-matches: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/admin/hard-delete-user/{user_id}")
+async def hard_delete_user(user_id: str, request: dict = None):
+    """
+    ADMIN: Hard delete a user from ALL data stores.
+
+    This is for testing/QA purposes - completely removes a user so they can
+    re-register and test onboarding from scratch.
+
+    Cleans:
+    - DynamoDB UserProfile
+    - DynamoDB UserMatches
+    - AI Database embeddings
+    - PostgreSQL backend (users, user_responses, user_summaries, matches)
+    """
+    logger.info(f"[HARD-DELETE] Starting hard delete for user {user_id}")
+
+    result = {
+        "user_id": user_id,
+        "dynamodb_profile_deleted": False,
+        "dynamodb_matches_deleted": False,
+        "embeddings_deleted": False,
+        "postgres_deleted": False,
+        "errors": []
+    }
+
+    # 1. Delete from DynamoDB UserProfile
+    try:
+        profile = UserProfile.get(user_id)
+        profile.delete()
+        result["dynamodb_profile_deleted"] = True
+        logger.info(f"[HARD-DELETE] Deleted DynamoDB profile for {user_id}")
+    except UserProfile.DoesNotExist:
+        result["errors"].append("DynamoDB profile not found (may not exist)")
+        logger.info(f"[HARD-DELETE] No DynamoDB profile found for {user_id}")
+    except Exception as e:
+        result["errors"].append(f"DynamoDB profile delete error: {str(e)[:100]}")
+        logger.error(f"[HARD-DELETE] DynamoDB profile error: {e}")
+
+    # 2. Delete from DynamoDB UserMatches
+    try:
+        UserMatches.clear_user_matches(user_id)
+        result["dynamodb_matches_deleted"] = True
+        logger.info(f"[HARD-DELETE] Cleared DynamoDB matches for {user_id}")
+    except Exception as e:
+        result["errors"].append(f"DynamoDB matches delete error: {str(e)[:100]}")
+        logger.error(f"[HARD-DELETE] DynamoDB matches error: {e}")
+
+    # 3. Delete embeddings from AI database
+    try:
+        from app.adapters.postgresql import PostgreSQLAdapter
+        pg = PostgreSQLAdapter()
+        conn = pg.get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("DELETE FROM user_embeddings WHERE user_id = %s", (user_id,))
+        deleted_count = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        result["embeddings_deleted"] = True
+        result["embeddings_count"] = deleted_count
+        logger.info(f"[HARD-DELETE] Deleted {deleted_count} embeddings for {user_id}")
+    except Exception as e:
+        result["errors"].append(f"Embeddings delete error: {str(e)[:100]}")
+        logger.error(f"[HARD-DELETE] Embeddings error: {e}")
+
+    # 4. Delete from PostgreSQL backend (Supabase)
+    try:
+        from app.adapters.postgresql import PostgreSQLAdapter
+        pg = PostgreSQLAdapter()
+        conn = pg.get_backend_connection()
+        cursor = conn.cursor()
+
+        # Delete in order (child tables first due to foreign keys)
+        tables_deleted = []
+
+        # Delete user_responses (onboarding answers)
+        cursor.execute("DELETE FROM user_onboarding_answers WHERE user_id = %s", (user_id,))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"user_onboarding_answers: {cursor.rowcount}")
+
+        # Delete user_summaries
+        cursor.execute("DELETE FROM user_summaries WHERE user_id = %s", (user_id,))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"user_summaries: {cursor.rowcount}")
+
+        # Delete matches (both directions)
+        cursor.execute("DELETE FROM matches WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"matches: {cursor.rowcount}")
+
+        # Delete interests (both directions)
+        cursor.execute("DELETE FROM interests WHERE from_user_id = %s OR to_user_id = %s", (user_id, user_id))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"interests: {cursor.rowcount}")
+
+        # Delete messages
+        cursor.execute("DELETE FROM messages WHERE sender_id = %s OR receiver_id = %s", (user_id, user_id))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"messages: {cursor.rowcount}")
+
+        # Delete conversations
+        cursor.execute("DELETE FROM conversations WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"conversations: {cursor.rowcount}")
+
+        # Finally, delete the user record (HARD delete, not soft)
+        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
+        if cursor.rowcount > 0:
+            tables_deleted.append(f"users: {cursor.rowcount}")
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        result["postgres_deleted"] = True
+        result["postgres_tables"] = tables_deleted
+        logger.info(f"[HARD-DELETE] PostgreSQL cleanup: {tables_deleted}")
+
+    except Exception as e:
+        result["errors"].append(f"PostgreSQL delete error: {str(e)[:100]}")
+        logger.error(f"[HARD-DELETE] PostgreSQL error: {e}")
+
+    # Determine overall success
+    success = (
+        result["dynamodb_profile_deleted"] or "not found" in str(result.get("errors", []))
+    ) and result["embeddings_deleted"] and result["postgres_deleted"]
+
+    return {
+        "code": 200 if success else 207,  # 207 = Multi-Status (partial success)
+        "message": "User completely deleted" if success else "User partially deleted (see errors)",
+        "result": result
+    }

@@ -19,7 +19,7 @@ import ssl
 import redis
 import os
 
-from app.services.slot_extraction import SlotExtractor, ExtractedSlot
+from app.services.slot_extraction import SlotExtractor, ExtractedSlot, SlotStatus
 from app.services.context_manager import ContextManager, TurnType
 from app.services.progressive_disclosure import ProgressiveDisclosure
 from app.services.use_case_templates import get_template, get_onboarding_slots
@@ -101,6 +101,24 @@ async def start_session(request: StartSessionRequest):
         # Create session
         context = context_manager.create_session(request.user_id)
 
+        # BUG-029 FIX: Restore slots from Supabase if user had a previous expired session
+        # This ensures returning users don't lose progress
+        try:
+            supabase_slots = await supabase_onboarding_adapter.get_user_slots(request.user_id)
+            if supabase_slots:
+                restored_count = 0
+                for slot_name, slot_data in supabase_slots.items():
+                    context.slots[slot_name] = ExtractedSlot(
+                        name=slot_name,
+                        value=slot_data.get("value"),
+                        confidence=slot_data.get("confidence", 1.0),
+                        status=SlotStatus.FILLED if slot_data.get("status") == "filled" else SlotStatus.CONFIRMED
+                    )
+                    restored_count += 1
+                logger.info(f"BUG-029 FIX: Restored {restored_count} slots from Supabase on session start for user {request.user_id[:8]}...")
+        except Exception as restore_error:
+            logger.warning(f"BUG-029: Could not restore slots on session start: {restore_error}")
+
         # Get template-based questions if objective provided
         if request.objective:
             focus_slots = get_onboarding_slots(request.objective)
@@ -118,11 +136,15 @@ async def start_session(request: StartSessionRequest):
 
         logger.info(f"Started onboarding session {context.session_id} for user {request.user_id}")
 
+        # BUG-029 FIX: Calculate actual progress from restored slots (not hardcoded 0.0)
+        progress = progressive_disclosure.get_progress_summary(context.session_id)
+        progress_percent = progress.get("progress_percent", 0.0)
+
         return StartSessionResponse(
             session_id=context.session_id,
             greeting=greeting,
             suggested_questions=suggested_questions,
-            progress_percent=0.0
+            progress_percent=progress_percent
         )
     except Exception as e:
         logger.error(f"Failed to start session: {e}")
@@ -193,9 +215,28 @@ async def chat(request: ChatMessageRequest):
         if request.session_id:
             context = context_manager.get_session(request.session_id)
             if not context:
-                # Session expired, create new one
+                # BUG-029 FIX: Session expired - create new one AND restore slots from Supabase
+                # Previously: New session created with empty slots, user stuck at in_progress
+                # Fix: Load existing slots from Supabase so is_complete() can detect completion
                 context = context_manager.create_session(request.user_id)
                 logger.info(f"Session {request.session_id} expired, created new: {context.session_id}")
+
+                # BUG-029: Restore slots from Supabase into new session
+                try:
+                    supabase_slots = await supabase_onboarding_adapter.get_user_slots(request.user_id)
+                    if supabase_slots:
+                        restored_count = 0
+                        for slot_name, slot_data in supabase_slots.items():
+                            context.slots[slot_name] = ExtractedSlot(
+                                name=slot_name,
+                                value=slot_data.get("value"),
+                                confidence=slot_data.get("confidence", 1.0),
+                                status=SlotStatus.FILLED if slot_data.get("status") == "filled" else SlotStatus.CONFIRMED
+                            )
+                            restored_count += 1
+                        logger.info(f"BUG-029 FIX: Restored {restored_count} slots from Supabase for user {request.user_id[:8]}...")
+                except Exception as restore_error:
+                    logger.warning(f"BUG-029: Could not restore slots from Supabase (continuing with empty): {restore_error}")
         else:
             context = context_manager.create_session(request.user_id)
 

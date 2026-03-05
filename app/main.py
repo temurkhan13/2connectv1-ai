@@ -181,6 +181,8 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+# Also mount health router at /api/v1 for admin endpoints (backend uses /api/v1 base URL)
+app.include_router(health_router, prefix="/api/v1")
 app.include_router(user_router, prefix="/api/v1")
 app.include_router(matching_router, prefix="/api/v1")
 app.include_router(question_router, prefix="/api/v1")

@@ -1641,42 +1641,44 @@ async def hard_delete_user(user_id: str, request: dict = None):
         cursor = conn.cursor()
 
         # Delete in order (child tables first due to foreign keys)
+        # Wrapped individually to handle missing tables gracefully
         tables_deleted = []
 
+        def safe_delete(table: str, sql: str, params: tuple):
+            """Execute delete, silently skip if table doesn't exist."""
+            try:
+                cursor.execute(sql, params)
+                if cursor.rowcount > 0:
+                    tables_deleted.append(f"{table}: {cursor.rowcount}")
+            except Exception as e:
+                if "does not exist" not in str(e):
+                    logger.warning(f"[HARD-DELETE] {table} delete warning: {e}")
+                # Rollback to clear transaction error state
+                conn.rollback()
+
         # Delete user_responses (onboarding answers)
-        cursor.execute("DELETE FROM user_onboarding_answers WHERE user_id = %s", (user_id,))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"user_onboarding_answers: {cursor.rowcount}")
+        safe_delete("user_onboarding_answers",
+                    "DELETE FROM user_onboarding_answers WHERE user_id = %s", (user_id,))
 
         # Delete user_summaries
-        cursor.execute("DELETE FROM user_summaries WHERE user_id = %s", (user_id,))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"user_summaries: {cursor.rowcount}")
+        safe_delete("user_summaries",
+                    "DELETE FROM user_summaries WHERE user_id = %s", (user_id,))
 
         # Delete matches (both directions)
-        cursor.execute("DELETE FROM matches WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"matches: {cursor.rowcount}")
-
-        # Delete interests (both directions)
-        cursor.execute("DELETE FROM interests WHERE from_user_id = %s OR to_user_id = %s", (user_id, user_id))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"interests: {cursor.rowcount}")
+        safe_delete("matches",
+                    "DELETE FROM matches WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
 
         # Delete messages
-        cursor.execute("DELETE FROM messages WHERE sender_id = %s OR receiver_id = %s", (user_id, user_id))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"messages: {cursor.rowcount}")
+        safe_delete("messages",
+                    "DELETE FROM messages WHERE sender_id = %s OR receiver_id = %s", (user_id, user_id))
 
         # Delete conversations
-        cursor.execute("DELETE FROM conversations WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"conversations: {cursor.rowcount}")
+        safe_delete("conversations",
+                    "DELETE FROM conversations WHERE user_a_id = %s OR user_b_id = %s", (user_id, user_id))
 
         # Finally, delete the user record (HARD delete, not soft)
-        cursor.execute("DELETE FROM users WHERE id = %s", (user_id,))
-        if cursor.rowcount > 0:
-            tables_deleted.append(f"users: {cursor.rowcount}")
+        safe_delete("users",
+                    "DELETE FROM users WHERE id = %s", (user_id,))
 
         conn.commit()
         cursor.close()

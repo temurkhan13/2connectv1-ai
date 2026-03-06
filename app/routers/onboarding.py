@@ -18,6 +18,37 @@ import base64
 import ssl
 import redis
 import os
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
+import traceback
+
+# REC-487: Thread pool for background onboarding tasks
+# This allows heavy operations (embeddings, matching, persona) to run
+# after the HTTP response is sent, preventing timeout errors
+_onboarding_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="onboarding_bg")
+
+# REC-487: Retry configuration for background tasks
+_BG_MAX_RETRIES = 3
+_BG_RETRY_DELAYS = [60, 120, 240]  # Exponential backoff: 1min, 2min, 4min
+
+
+def _send_admin_alert(subject: str, message: str, user_id: str) -> None:
+    """
+    Send alert to admin when background onboarding tasks fail after all retries.
+    Uses Sentry for error tracking (already configured in the AI service).
+    """
+    try:
+        import sentry_sdk
+        with sentry_sdk.push_scope() as scope:
+            scope.set_tag("alert_type", "onboarding_background_failure")
+            scope.set_tag("user_id", user_id)
+            scope.set_level("error")
+            sentry_sdk.capture_message(f"[ADMIN ALERT] {subject}: {message}")
+        logger.error(f"[ADMIN ALERT] {subject} for user {user_id}: {message}")
+    except Exception as e:
+        # If Sentry fails, at least log it
+        logger.error(f"[ADMIN ALERT - Sentry failed] {subject} for user {user_id}: {message}. Sentry error: {e}")
 
 from app.services.slot_extraction import SlotExtractor, ExtractedSlot, SlotStatus
 from app.services.context_manager import ContextManager, TurnType
@@ -32,6 +63,200 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 slot_extractor = SlotExtractor()
 context_manager = ContextManager(slot_extractor)
 progressive_disclosure = ProgressiveDisclosure(context_manager)
+
+
+def _run_background_onboarding_tasks(
+    user_id: str,
+    session_id: str,
+    slots: Dict[str, Any],
+    diag_dict: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    REC-487: Background processing for heavy onboarding operations.
+
+    Runs AFTER the HTTP response is sent to user. User sees success immediately,
+    these operations complete in background (~30-60s):
+    1. Multi-vector embeddings (12+ API calls)
+    2. Basic embeddings (2 API calls)
+    3. Inline bidirectional matching (compares all users)
+    4. Persona generation pipeline
+
+    Returns dict with success status and any errors for retry logic.
+    """
+    thread_name = threading.current_thread().name
+    logger.info(f"[BG:{thread_name}] Starting background onboarding tasks for user {user_id}")
+
+    results = {
+        "multi_vector_ok": False,
+        "basic_embeddings_ok": False,
+        "matching_ok": False,
+        "persona_ok": False,
+        "errors": []
+    }
+
+    # 1. Generate multi-vector embeddings for 6-dimension matching
+    try:
+        from app.services.multi_vector_matcher import multi_vector_matcher
+
+        persona_data = {
+            "primary_goal": slots.get("primary_goal", {}).get("value", ""),
+            "objective": slots.get("user_type", {}).get("value", ""),
+            "industry": slots.get("industry_focus", {}).get("value", ""),
+            "stage": slots.get("stage_preference", {}).get("value", ""),
+            "investment_stage": slots.get("investment_stage", {}).get("value", ""),
+            "company_stage": slots.get("company_stage", {}).get("value", ""),
+            "geography": slots.get("geography", {}).get("value", ""),
+            "engagement_style": slots.get("engagement_style", {}).get("value", ""),
+            "dealbreakers": slots.get("dealbreakers", {}).get("value", ""),
+            "requirements": slots.get("requirements", {}).get("value", ""),
+            "offerings": slots.get("offerings", {}).get("value", ""),
+        }
+
+        req_results = multi_vector_matcher.store_multi_vector_embeddings(
+            user_id=user_id,
+            persona_data=persona_data,
+            direction="requirements"
+        )
+        off_results = multi_vector_matcher.store_multi_vector_embeddings(
+            user_id=user_id,
+            persona_data=persona_data,
+            direction="offerings"
+        )
+
+        stored_count = sum(1 for v in {**req_results, **off_results}.values() if v)
+        results["multi_vector_ok"] = stored_count > 0
+        logger.info(f"[BG:{thread_name}] Stored {stored_count} multi-vector embeddings for {user_id}")
+    except Exception as e:
+        results["errors"].append(f"multi_vector: {e}")
+        logger.warning(f"[BG:{thread_name}] Failed multi-vector embeddings for {user_id}: {e}")
+
+    # 2. Generate basic 2-vector embeddings
+    try:
+        from app.services.embedding_service import embedding_service
+
+        requirements_text = slots.get("requirements", {}).get("value", "")
+        offerings_text = slots.get("offerings", {}).get("value", "")
+
+        if requirements_text or offerings_text:
+            basic_stored = embedding_service.store_user_embeddings(
+                user_id=user_id,
+                requirements=requirements_text,
+                offerings=offerings_text
+            )
+            results["basic_embeddings_ok"] = basic_stored
+            if basic_stored:
+                logger.info(f"[BG:{thread_name}] Stored basic embeddings for {user_id}")
+        else:
+            results["basic_embeddings_ok"] = True  # Nothing to store is OK
+    except Exception as e:
+        results["errors"].append(f"basic_embeddings: {e}")
+        logger.warning(f"[BG:{thread_name}] Failed basic embeddings for {user_id}: {e}")
+
+    # 3. Inline bidirectional matching - CRITICAL for user experience
+    try:
+        from app.services.inline_matching_service import inline_matching_service
+        match_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id)
+
+        if match_result.get('success'):
+            results["matching_ok"] = True
+            logger.info(
+                f"[BG:{thread_name}] {user_id}: "
+                f"{match_result.get('new_user_matches', 0)} matches, "
+                f"{match_result.get('reciprocal_updates', 0)} reciprocal updates"
+            )
+        else:
+            results["errors"].append(f"matching: {match_result.get('errors')}")
+            logger.warning(f"[BG:{thread_name}] Match sync failed for {user_id}: {match_result.get('errors')}")
+    except Exception as e:
+        results["errors"].append(f"matching: {e}")
+        logger.warning(f"[BG:{thread_name}] Failed inline matching for {user_id}: {e}")
+
+    # 4. Trigger persona generation pipeline
+    try:
+        from celery import chain
+        from app.workers.resume_processing import process_resume_task
+        from app.workers.persona_processing import generate_persona_task
+
+        # Check if resume was uploaded during session
+        resume_data = None
+        try:
+            redis_client = _get_redis_client()
+            resume_b64 = redis_client.get(f"resume:{session_id}")
+            if resume_b64:
+                resume_meta = redis_client.hgetall(f"resume_meta:{session_id}")
+                resume_data = {
+                    "content": resume_b64,
+                    "filename": resume_meta.get("filename", "resume.pdf"),
+                    "content_type": resume_meta.get("content_type", "application/pdf")
+                }
+                logger.info(f"[BG:{thread_name}] Found resume for session {session_id}")
+                redis_client.delete(f"resume:{session_id}", f"resume_meta:{session_id}")
+        except Exception as e:
+            logger.warning(f"[BG:{thread_name}] Could not retrieve resume: {e}")
+
+        workflow = chain(
+            process_resume_task.s(user_id, resume_data),
+            generate_persona_task.s()
+        )
+        result = workflow.apply_async()
+        results["persona_ok"] = True
+        logger.info(f"[BG:{thread_name}] Persona pipeline started for {user_id}, task_id: {result.id}")
+    except Exception as e:
+        results["errors"].append(f"persona: {e}")
+        logger.warning(f"[BG:{thread_name}] Failed to start persona pipeline for {user_id}: {e}")
+
+    logger.info(f"[BG:{thread_name}] Background onboarding tasks completed for {user_id}: {results}")
+    return results
+
+
+def _run_background_onboarding_with_retry(
+    user_id: str,
+    session_id: str,
+    slots: Dict[str, Any],
+    diag_dict: Dict[str, Any]
+) -> None:
+    """
+    Wrapper that retries background tasks up to 3 times with exponential backoff.
+    Sends admin alert if all retries fail.
+    """
+    thread_name = threading.current_thread().name
+    last_error = None
+
+    for attempt in range(_BG_MAX_RETRIES):
+        try:
+            results = _run_background_onboarding_tasks(user_id, session_id, slots, diag_dict)
+
+            # Check if critical operations succeeded
+            # Matching is most important - user needs to see matches on dashboard
+            if results.get("matching_ok"):
+                logger.info(f"[BG:{thread_name}] Background tasks succeeded for {user_id} on attempt {attempt + 1}")
+                return  # Success!
+
+            # If matching failed, treat as failure for retry
+            if results.get("errors"):
+                last_error = "; ".join(results["errors"])
+                raise Exception(f"Critical operations failed: {last_error}")
+
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(
+                f"[BG:{thread_name}] Background tasks failed for {user_id} "
+                f"(attempt {attempt + 1}/{_BG_MAX_RETRIES}): {e}"
+            )
+
+            # If not the last attempt, wait before retrying
+            if attempt < _BG_MAX_RETRIES - 1:
+                delay = _BG_RETRY_DELAYS[attempt]
+                logger.info(f"[BG:{thread_name}] Retrying in {delay}s...")
+                time.sleep(delay)
+
+    # All retries exhausted - send admin alert
+    _send_admin_alert(
+        subject="Onboarding Background Tasks Failed",
+        message=f"All {_BG_MAX_RETRIES} retry attempts failed. Last error: {last_error}. "
+                f"User may not have matches until cron job runs.",
+        user_id=user_id
+    )
 
 
 class StartSessionRequest(BaseModel):
@@ -793,138 +1018,48 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             # Log but don't fail - user can still use dashboard
             logger.warning(f"Failed to create user_summary: {e}")
 
-        # Generate multi-vector embeddings for 6-dimension matching
-        # This enables the weighted multi-dimensional matching algorithm
-        try:
-            from app.services.multi_vector_matcher import multi_vector_matcher
-
-            # Build persona_data from slots in the format expected by multi_vector_matcher
-            # FIX: Correct slot names to match slot_extraction.py definitions
-            persona_data = {
-                "primary_goal": slots.get("primary_goal", {}).get("value", ""),
-                "objective": slots.get("user_type", {}).get("value", ""),
-                "industry": slots.get("industry_focus", {}).get("value", ""),
-                "stage": slots.get("stage_preference", {}).get("value", ""),
-                "investment_stage": slots.get("investment_stage", {}).get("value", ""),
-                "company_stage": slots.get("company_stage", {}).get("value", ""),
-                "geography": slots.get("geography", {}).get("value", ""),  # FIX: was "geographic_focus"
-                "engagement_style": slots.get("engagement_style", {}).get("value", ""),  # FIX: read from slots
-                "dealbreakers": slots.get("dealbreakers", {}).get("value", ""),  # FIX: read from slots
-                "requirements": slots.get("requirements", {}).get("value", ""),
-                "offerings": slots.get("offerings", {}).get("value", ""),
-            }
-
-            # Store embeddings for what the user needs (requirements direction)
-            req_results = multi_vector_matcher.store_multi_vector_embeddings(
-                user_id=user_id,
-                persona_data=persona_data,
-                direction="requirements"
-            )
-
-            # Store embeddings for what the user offers (offerings direction)
-            off_results = multi_vector_matcher.store_multi_vector_embeddings(
-                user_id=user_id,
-                persona_data=persona_data,
-                direction="offerings"
-            )
-
-            stored_count = sum(1 for v in {**req_results, **off_results}.values() if v)
-            diag.multi_vector_embeddings_count = stored_count
-            logger.info(f"Stored {stored_count} multi-vector embeddings for user {user_id}")
-        except Exception as e:
-            # Log but don't fail - user can still use platform with basic matching
-            logger.warning(f"Failed to generate multi-vector embeddings: {e}")
-
-        # Generate basic 2-vector embeddings (requirements/offerings) for simple matching
-        try:
-            from app.services.embedding_service import embedding_service
-
-            requirements_text = slots.get("requirements", {}).get("value", "")
-            offerings_text = slots.get("offerings", {}).get("value", "")
-
-            if requirements_text or offerings_text:
-                basic_stored = embedding_service.store_user_embeddings(
-                    user_id=user_id,
-                    requirements=requirements_text,
-                    offerings=offerings_text
-                )
-                if basic_stored:
-                    diag.basic_embeddings_stored = True
-                    logger.info(f"Stored basic embeddings for user {user_id}")
-        except Exception as e:
-            logger.warning(f"Failed to generate basic embeddings: {e}")
-
-        # INLINE BIDIRECTIONAL MATCHING (March 2026)
-        # =========================================
-        # This replaces the old approach of waiting for the 4-hour cron job.
-        # New users get immediate matches AND appear in existing users' match lists.
+        # REC-487: RETURN EARLY, PROCESS IN BACKGROUND
+        # ==============================================
+        # Previously, this endpoint ran all operations synchronously (~60s+):
+        # - Multi-vector embeddings (12+ API calls)
+        # - Basic embeddings (2 API calls)
+        # - Inline bidirectional matching (compares ALL users)
+        # - Persona generation pipeline
         #
-        # The cron job (scheduled_matching.py) still runs for:
-        # - Recalculating matches when embeddings change
-        # - Platform-wide batch updates
+        # This caused HTTP timeouts and "Failed to complete onboarding" errors.
+        # User would have to click 3-4 times for it to work (idempotency check).
         #
-        # See: app/services/inline_matching_service.py for architecture docs
+        # NEW APPROACH: Return success immediately after profile creation (~3s),
+        # then run heavy operations in background thread.
+        # User lands on dashboard, matches appear within ~60s.
+
+        # Log diagnostics before returning
+        logger.info(f"Onboarding diagnostics (pre-background) for {user_id}: {diag.model_dump()}")
+
+        # Schedule background tasks - runs AFTER this response is sent
+        # Uses ThreadPoolExecutor to avoid blocking the HTTP response
+        # Wrapper function handles retry (3x) + admin alert on failure
         try:
-            from app.services.inline_matching_service import inline_matching_service
-            match_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id)
-
-            if match_result.get('success'):
-                diag.matches_found = match_result.get('new_user_matches', 0)
-                diag.matches_synced = match_result.get('new_user_matches', 0) if match_result.get('backend_synced') else 0
-                logger.info(
-                    f"[INLINE MATCH] {user_id}: "
-                    f"{match_result.get('new_user_matches', 0)} matches, "
-                    f"{match_result.get('reciprocal_updates', 0)} reciprocal updates"
-                )
-            else:
-                diag.match_sync_error = '; '.join(match_result.get('errors', ['Unknown error']))
-                logger.warning(f"[INLINE MATCH] Failed for {user_id}: {diag.match_sync_error}")
-        except Exception as e:
-            # Log but don't fail - user can still use platform, matches will sync via cron
-            diag.match_sync_error = str(e)
-            logger.warning(f"[INLINE MATCH] Exception for {user_id}: {e}")
-
-        # Trigger persona generation pipeline
-        try:
-            # Check if resume was uploaded during session
-            resume_data = None
-            try:
-                redis_client = _get_redis_client()
-                resume_b64 = redis_client.get(f"resume:{session_id}")
-                if resume_b64:
-                    # Get metadata
-                    resume_meta = redis_client.hgetall(f"resume_meta:{session_id}")
-                    resume_data = {
-                        "content": resume_b64,  # Already base64 encoded
-                        "filename": resume_meta.get("filename", "resume.pdf"),
-                        "content_type": resume_meta.get("content_type", "application/pdf")
-                    }
-                    logger.info(f"Found uploaded resume for session {session_id}: {resume_data['filename']}")
-                    # Clean up Redis after retrieving
-                    redis_client.delete(f"resume:{session_id}", f"resume_meta:{session_id}")
-            except Exception as e:
-                logger.warning(f"Could not retrieve resume from Redis: {e}")
-
-            workflow = chain(
-                process_resume_task.s(user_id, resume_data),  # Pass resume data if uploaded
-                generate_persona_task.s()
+            _onboarding_executor.submit(
+                _run_background_onboarding_with_retry,
+                user_id,
+                session_id,
+                slots,
+                diag.model_dump()
             )
-            result = workflow.apply_async()
-            task_id = result.id
-            logger.info(f"Persona pipeline started for user {user_id}, task_id: {task_id}")
+            logger.info(f"[REC-487] Scheduled background onboarding tasks for {user_id}")
         except Exception as e:
-            logger.warning(f"Failed to start persona pipeline: {e}")
-            task_id = None
+            # If scheduling fails, log but don't fail the request
+            # User still has their profile, matches will sync via cron job
+            logger.error(f"[REC-487] Failed to schedule background tasks for {user_id}: {e}")
 
-        # Log full diagnostics for debugging
-        logger.info(f"Onboarding diagnostics for {user_id}: {diag.model_dump()}")
-
+        # Return immediately - user sees success in ~3 seconds
         return CompleteOnboardingResponse(
             success=True,
             user_id=user_id,
-            message=f"Profile created with {len(questions)} data points. Persona generation started.",
+            message=f"Profile created with {len(questions)} data points. Finding your matches...",
             profile_created=True,
-            persona_task_id=task_id,
+            persona_task_id=None,  # Task runs in background thread, not Celery
             diagnostics=diag
         )
 

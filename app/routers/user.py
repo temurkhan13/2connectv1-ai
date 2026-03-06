@@ -836,16 +836,42 @@ async def list_all_users():
         except Exception as e:
             logger.error(f"Error fetching match counts: {e}")
 
+        # BUG-031 FIX: Get actual slot counts from Supabase onboarding_answers table
+        # Previously this was counting DynamoDB persona fields, which are empty if
+        # persona generation failed (even though user filled all onboarding slots)
+        slot_counts = {}
+        slot_names_by_user = {}
+        try:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, COUNT(*), array_agg(slot_name)
+                FROM onboarding_answers
+                WHERE status = 'filled'
+                GROUP BY user_id
+            """)
+            for row in cursor.fetchall():
+                uid = str(row[0])
+                slot_counts[uid] = row[1]
+                slot_names_by_user[uid] = row[2] if row[2] else []
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Error fetching slot counts from onboarding_answers: {e}")
+
         # Build user list with status
         for row in rows:
             user_id = str(row[0])
             embed_count = embedding_counts.get(user_id, 0)
             match_count = match_counts.get(user_id, 0)
 
-            # Check persona and slots in DynamoDB
+            # BUG-031 FIX: Get actual slots from Supabase onboarding_answers
+            # Previously counted DynamoDB persona fields which are empty if persona generation failed
+            slots_filled = slot_counts.get(user_id, 0)
+            filled_slots = slot_names_by_user.get(user_id, [])
+
+            # Check persona status in DynamoDB (separate from slots)
             persona_status = "unknown"
-            slots_filled = 0
-            filled_slots = []  # List of filled slot names
             questions_answered = 0
             persona_name = None
             try:
@@ -853,40 +879,6 @@ async def list_all_users():
                 if profile.persona and profile.persona.name:
                     persona_status = "completed"
                     persona_name = profile.persona.name
-                    # Count and track slots filled
-                    if profile.persona.name:
-                        slots_filled += 1
-                        filled_slots.append("Name")
-                    if profile.persona.archetype:
-                        slots_filled += 1
-                        filled_slots.append("Archetype")
-                    if profile.persona.designation:
-                        slots_filled += 1
-                        filled_slots.append("Designation")
-                    if profile.persona.experience:
-                        slots_filled += 1
-                        filled_slots.append("Experience")
-                    if profile.persona.focus:
-                        slots_filled += 1
-                        filled_slots.append("Focus")
-                    if profile.persona.profile_essence:
-                        slots_filled += 1
-                        filled_slots.append("Essence")
-                    if profile.persona.investment_philosophy:
-                        slots_filled += 1
-                        filled_slots.append("Philosophy")
-                    if profile.persona.what_theyre_looking_for:
-                        slots_filled += 1
-                        filled_slots.append("Seeking")
-                    if profile.persona.engagement_style:
-                        slots_filled += 1
-                        filled_slots.append("Style")
-                    if profile.persona.requirements:
-                        slots_filled += 1
-                        filled_slots.append("Requirements")
-                    if profile.persona.offerings:
-                        slots_filled += 1
-                        filled_slots.append("Offerings")
                 else:
                     persona_status = profile.persona_status or "pending"
                 # Count questions answered

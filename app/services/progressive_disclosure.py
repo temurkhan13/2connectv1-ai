@@ -27,6 +27,55 @@ from app.services.llm_slot_extractor import SEMANTIC_TOPIC_CLUSTERS
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# MULTI-VECTOR DIMENSIONS (Critical for Match Quality)
+# =============================================================================
+# These dimensions are used by multi_vector_matcher.py for high-quality matching.
+# Onboarding MUST collect at least 4/6 of these before allowing completion.
+
+MULTI_VECTOR_DIMENSIONS = {
+    "primary_goal": {
+        "weight": 0.20,
+        "required": True,
+        "slot_name": "primary_goal",
+        "description": "User's main objective on the platform"
+    },
+    "industry": {
+        "weight": 0.25,
+        "required": False,
+        "slot_name": "industry_focus",
+        "description": "Industry/sector focus"
+    },
+    "stage": {
+        "weight": 0.20,
+        "required": False,
+        "slot_name": "stage_preference",
+        "description": "Company stage preference"
+    },
+    "geography": {
+        "weight": 0.15,
+        "required": False,
+        "slot_name": "geography",
+        "description": "Geographic focus"
+    },
+    "engagement_style": {
+        "weight": 0.10,
+        "required": False,
+        "slot_name": "engagement_style",
+        "description": "Preferred engagement style"
+    },
+    "dealbreakers": {
+        "weight": 0.10,
+        "required": False,
+        "slot_name": "dealbreakers",
+        "description": "Deal-breaker criteria"
+    }
+}
+
+# Minimum dimensions required before onboarding can complete
+MIN_MULTI_VECTOR_DIMENSIONS = 4
+
+
 class QuestionPriority(int, Enum):
     """Priority levels for questions."""
     CRITICAL = 1      # Must ask - core matching requirements
@@ -148,10 +197,10 @@ class ProgressiveDisclosure:
             slot_name="geography",
             question_text="Where in the world are you focused?",
             question_type=SlotType.MULTI_SELECT,
-            priority=QuestionPriority.MEDIUM,
+            priority=QuestionPriority.HIGH,  # PROMOTED: Critical for multi-vector matching
             options=["UK", "US", "Europe", "Asia", "Global/Remote"],
             help_text="Helps us find people in your target markets.",
-            can_skip=True
+            can_skip=False  # CHANGED: Required for match quality
         ),
 
         # Investor slots - indirect phrasing
@@ -207,25 +256,25 @@ class ProgressiveDisclosure:
             can_skip=True
         ),
 
-        # Optional slots - indirect phrasing
+        # Multi-vector dimension slots - PROMOTED for match quality
         "engagement_style": QuestionCard(
             slot_name="engagement_style",
             question_text="What kind of relationship would be most valuable for you?",
             question_type=SlotType.SINGLE_SELECT,
-            priority=QuestionPriority.LOW,
+            priority=QuestionPriority.HIGH,  # PROMOTED: Critical for multi-vector matching
             options=["Hands-on mentorship", "Strategic advice only",
                     "Introductions and network", "Purely financial"],
-            can_skip=True
+            can_skip=False  # CHANGED: Required for match quality
         ),
         "dealbreakers": QuestionCard(
             slot_name="dealbreakers",
             question_text="Anything that would be a clear 'not for me'?",
             question_type=SlotType.FREE_TEXT,
-            priority=QuestionPriority.MEDIUM,
+            priority=QuestionPriority.HIGH,  # PROMOTED: Critical for multi-vector matching
             examples=["No crypto projects", "Must have technical co-founder",
                      "No single-founder teams"],
             help_text="Things that would be an immediate no for you.",
-            can_skip=True
+            can_skip=False  # CHANGED: Required for match quality
         ),
         "experience_years": QuestionCard(
             slot_name="experience_years",
@@ -377,6 +426,97 @@ class ProgressiveDisclosure:
     def _map_slot_to_topic(self, slot_name: str) -> Optional[str]:
         """P3 FIX: Map a slot name to its semantic topic."""
         return self._slot_to_topic.get(slot_name)
+
+    def _check_multi_vector_coverage(
+        self,
+        context: ConversationContext
+    ) -> Tuple[int, int, List[str]]:
+        """
+        Check how many multi-vector dimensions are filled.
+
+        Returns:
+            Tuple of (filled_count, total_count, missing_dimension_names)
+        """
+        filled_count = 0
+        missing_dimensions = []
+
+        for dim_name, dim_config in MULTI_VECTOR_DIMENSIONS.items():
+            slot_name = dim_config["slot_name"]
+            slot = context.slots.get(slot_name)
+
+            if slot and slot.status.value in ["filled", "confirmed"]:
+                filled_count += 1
+            else:
+                missing_dimensions.append(dim_name)
+
+        total_count = len(MULTI_VECTOR_DIMENSIONS)
+
+        logger.info(
+            f"Multi-vector coverage: {filled_count}/{total_count} "
+            f"(missing: {missing_dimensions})"
+        )
+
+        return filled_count, total_count, missing_dimensions
+
+    def can_complete_onboarding(self, session_id: str) -> Tuple[bool, str]:
+        """
+        Check if onboarding can be completed based on multi-vector coverage.
+
+        Returns:
+            Tuple of (can_complete, reason_if_not)
+        """
+        context = self.context_manager.get_session(session_id)
+        if not context:
+            return False, "Session not found"
+
+        filled, total, missing = self._check_multi_vector_coverage(context)
+
+        if filled < MIN_MULTI_VECTOR_DIMENSIONS:
+            # Build helpful message about what's missing
+            missing_readable = [
+                MULTI_VECTOR_DIMENSIONS[dim]["description"]
+                for dim in missing[:3]  # Top 3 missing
+            ]
+            reason = (
+                f"Need at least {MIN_MULTI_VECTOR_DIMENSIONS}/{total} dimensions for quality matching. "
+                f"Missing: {', '.join(missing_readable)}"
+            )
+            return False, reason
+
+        return True, ""
+
+    def get_multi_vector_status(self, session_id: str) -> Dict[str, Any]:
+        """
+        Get detailed multi-vector coverage status for UI/debugging.
+
+        Returns:
+            Dict with coverage details
+        """
+        context = self.context_manager.get_session(session_id)
+        if not context:
+            return {"error": "Session not found"}
+
+        filled, total, missing = self._check_multi_vector_coverage(context)
+
+        dimension_status = {}
+        for dim_name, dim_config in MULTI_VECTOR_DIMENSIONS.items():
+            slot_name = dim_config["slot_name"]
+            slot = context.slots.get(slot_name)
+            dimension_status[dim_name] = {
+                "slot_name": slot_name,
+                "weight": dim_config["weight"],
+                "filled": slot is not None and slot.status.value in ["filled", "confirmed"],
+                "value": slot.value if slot else None
+            }
+
+        return {
+            "filled_count": filled,
+            "total_count": total,
+            "coverage_percent": round((filled / total) * 100, 1),
+            "can_complete": filled >= MIN_MULTI_VECTOR_DIMENSIONS,
+            "missing_dimensions": missing,
+            "dimensions": dimension_status
+        }
 
     def _detect_covered_topics(self, context: ConversationContext) -> List[str]:
         """
@@ -598,6 +738,9 @@ class ProgressiveDisclosure:
 
         IMPORTANT: Progress is monotonically increasing - never drops.
         Uses DYNAMIC slot selection based on primary_goal.
+
+        UPDATED: Now factors in multi-vector dimension coverage (70% weight)
+        plus traditional slot progress (30% weight) for accurate quality signal.
         """
         # Get primary_goal and user_type
         primary_goal_slot = context.slots.get("primary_goal")
@@ -605,7 +748,7 @@ class ProgressiveDisclosure:
         primary_goal = str(primary_goal_slot.value) if primary_goal_slot else None
         user_type = str(user_type_slot.value) if user_type_slot else None
 
-        # Calculate total required based on objective
+        # Calculate traditional slot progress (30% weight)
         if primary_goal:
             # Use objective-based slot selection
             objective_slots = self.schema.get_slots_for_objective(primary_goal, user_type)
@@ -615,14 +758,25 @@ class ProgressiveDisclosure:
             # Before primary_goal is known, just count core slots
             total_required = len([s for s in self.schema.CORE_SLOTS if s.required])
 
-        # Count filled
-        filled = len([s for s in context.slots.values()
-                     if s.status.value in ["filled", "confirmed"]])
+        # Count filled slots
+        filled_slots = len([s for s in context.slots.values()
+                          if s.status.value in ["filled", "confirmed"]])
 
-        if total_required == 0:
-            return 0.0
+        slot_progress = 0.0
+        if total_required > 0:
+            slot_progress = min(100.0, (filled_slots / total_required) * 100)
 
-        raw_progress = min(100.0, (filled / total_required) * 100)
+        # Calculate multi-vector coverage (70% weight)
+        mv_filled, mv_total, _ = self._check_multi_vector_coverage(context)
+        mv_progress = (mv_filled / mv_total) * 100 if mv_total > 0 else 0.0
+
+        # Combined progress: 70% multi-vector + 30% traditional slots
+        # This ensures users can't reach 100% without multi-vector coverage
+        raw_progress = (mv_progress * 0.70) + (slot_progress * 0.30)
+
+        # Cap at 95% if multi-vector coverage is insufficient
+        if mv_filled < MIN_MULTI_VECTOR_DIMENSIONS:
+            raw_progress = min(raw_progress, 95.0)
 
         # Get highest progress seen (stored in context metadata)
         highest_progress = context.metadata.get("highest_progress", 0.0)

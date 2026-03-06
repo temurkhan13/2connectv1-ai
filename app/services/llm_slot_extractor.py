@@ -261,7 +261,7 @@ class LLMSlotExtractor:
         self.model = self.extraction_model
         # Session-specific pattern memory (keyed by session_id to avoid cross-user pollution)
         # CRITICAL: Service is singleton, so patterns must be session-specific
-        self._session_patterns = {}  # {session_id: {'openers': [], 'structures': [], 'punctuation': []}}
+        self._session_patterns = {}  # {session_id: {'openers': [], 'structures': [], 'punctuation': [], 'interpretations': []}}
 
     @property
     def client(self) -> Anthropic:
@@ -278,6 +278,39 @@ class LLMSlotExtractor:
             logger.info(f"Initializing Anthropic client with API key (first {len(api_key[:4])}... chars)")
             self._client = Anthropic(api_key=api_key)
         return self._client
+
+    def _detect_user_correction(
+        self,
+        user_message: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> Optional[str]:
+        """
+        Detect if user is correcting a previous AI interpretation.
+
+        Returns the last AI response if correction is detected, so we can avoid repeating it.
+        """
+        correction_signals = [
+            "you misunderstood", "that's not what i meant", "no, i said",
+            "i didn't say that", "that's wrong", "not quite", "let me clarify",
+            "what i meant was", "actually, i meant", "no no", "that's incorrect",
+            "you got it wrong", "i didn't mean", "misread", "misheard"
+        ]
+
+        msg_lower = user_message.lower()
+        is_correction = any(signal in msg_lower for signal in correction_signals)
+
+        if not is_correction:
+            return None
+
+        # Get the last AI response that was corrected
+        if conversation_history:
+            for turn in reversed(conversation_history):
+                if turn.get("role") == "assistant":
+                    last_ai_response = turn.get("content", "")
+                    logger.warning(f"User correction detected. Last AI response: {last_ai_response[:100]}...")
+                    return last_ai_response
+
+        return None
 
     def _detect_opener(self, question: str) -> str:
         """Detect the opening phrase pattern of a question."""
@@ -530,13 +563,34 @@ class LLMSlotExtractor:
 You MUST generate a COMPLETELY DIFFERENT question. Even similar phrasing is forbidden.
 """
 
+            # Check if user is correcting us and track wrong interpretations
+            corrected_response = self._detect_user_correction(user_message, conversation_history)
+            wrong_interpretations_text = ""
+            if corrected_response and session_id and session_id in self._session_patterns:
+                # Store the wrong interpretation so we don't repeat it
+                self._session_patterns[session_id]['interpretations'].append(corrected_response[:200])
+                logger.info(f"[{session_id}] Recorded wrong interpretation to avoid")
+
+            # Build wrong interpretations avoidance text
+            if session_id and session_id in self._session_patterns:
+                wrong_interps = self._session_patterns[session_id].get('interpretations', [])
+                if wrong_interps:
+                    wrong_interpretations_text = f"""
+🚫 CRITICAL: INTERPRETATIONS YOU GOT WRONG (NEVER REPEAT THESE):
+The user corrected your previous understanding. DO NOT make the same mistake:
+{chr(10).join([f'  - WRONG: "{interp[:100]}..."' for interp in wrong_interps[-2:]])}
+
+You MUST acknowledge the correction and show you NOW understand correctly.
+"""
+
             # Get session-specific patterns to avoid repetition
             # Initialize session patterns if not exists
             if session_id and session_id not in self._session_patterns:
                 self._session_patterns[session_id] = {
                     'openers': [],
                     'structures': [],
-                    'punctuation': []
+                    'punctuation': [],
+                    'interpretations': []  # Track AI interpretations to avoid repeating wrong ones
                 }
                 logger.info(f"[{session_id}] Initialized session pattern tracking")
 
@@ -571,7 +625,7 @@ USER SAID: "{user_message}"
 WHAT WE LEARNED: {extracted_summary}
 
 WHAT WE STILL NEED: {', '.join(missing_focus)}
-{forbidden_questions_text}
+{forbidden_questions_text}{wrong_interpretations_text}
 CRITICAL PATTERN AVOIDANCE:{pattern_avoidance}
 
 STRUCTURAL DIVERSITY RULES (CRITICAL):
@@ -1225,6 +1279,54 @@ Then you MUST:
 3. Acknowledge briefly if natural ("Got it!" then new topic)
 
 NEVER ask a variation of the same question after user signals repetition.
+
+## 🔧 USER CORRECTION HANDLING (CRITICAL)
+
+If user says ANY of these correction signals:
+- "you misunderstood"
+- "that's not what I meant"
+- "no, I said"
+- "I didn't say that"
+- "that's wrong"
+- "not quite"
+- "let me clarify"
+- "what I meant was"
+- "actually, I meant"
+
+Then you MUST:
+1. STOP and re-read their message carefully
+2. Extract the CORRECTED meaning, not your previous interpretation
+3. Acknowledge the correction naturally: "Ah, I see what you mean now"
+4. Update any slots with the CORRECTED values
+5. NEVER repeat the same wrong interpretation
+
+## 🕐 TENSE AWARENESS (CRITICAL - PREVENTS MISUNDERSTANDING)
+
+Pay close attention to VERB TENSE - it changes meaning completely:
+
+**FUTURE/GOAL tense = What they WANT (extract as primary_goal or requirements):**
+- "I want to land enterprise clients" → primary_goal: seeking enterprise clients
+- "I'm trying to raise funding" → primary_goal: fundraising
+- "I'm looking to expand into Europe" → requirements: European expansion support
+- "hoping to", "aiming to", "planning to", "working towards"
+
+**PAST/ACHIEVEMENT tense = What they DID (extract as offerings or experience):**
+- "I landed my first enterprise client" → offerings: enterprise sales experience
+- "I raised a seed round" → offerings: fundraising experience
+- "I expanded into Europe" → experience: European market expertise
+- "achieved", "built", "grew", "successfully", "managed to"
+
+**EXAMPLES OF TENSE CONFUSION TO AVOID:**
+❌ WRONG: User says "I'm trying to land my first enterprise client" → You extract as achievement
+✅ RIGHT: User says "I'm trying to land my first enterprise client" → Extract as goal/requirement
+
+❌ WRONG: User says "I landed 3 enterprise clients last year" → You extract as goal
+✅ RIGHT: User says "I landed 3 enterprise clients last year" → Extract as achievement/offering
+
+**COMPOUND SENTENCES - Handle both parts:**
+"I landed my first client (past) and now I'm trying to scale (future)"
+→ offerings: proven client acquisition
+→ primary_goal: scaling/growth support
 
 MUST NOT contain:
 - "The user is..." or "They are..." (third person)

@@ -21,6 +21,25 @@ from anthropic import Anthropic
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# MULTI-VECTOR DIMENSIONS FOR STEERING
+# =============================================================================
+# These dimensions are critical for match quality. The LLM should prioritize
+# collecting these before diving deep into detail questions.
+
+MULTI_VECTOR_DIMENSION_SLOTS = {
+    "primary_goal": "What's your main objective on the platform?",
+    "industry_focus": "What industries or sectors do you focus on?",
+    "stage_preference": "What company stage are you most interested in?",
+    "geography": "What regions or markets are you focused on?",
+    "engagement_style": "What kind of relationship would be most valuable for you?",
+    "dealbreakers": "Anything that would be a clear 'not for me'?"
+}
+
+# Maximum questions to ask on a single topic before forcing switch
+MAX_QUESTIONS_PER_TOPIC = 2
+
+
 @dataclass
 class LLMExtractedSlot:
     """A slot extracted by the LLM."""
@@ -510,6 +529,103 @@ class LLMSlotExtractor:
         # All topics covered - signal completion
         return "I think I have a good picture now. Is there anything else you'd like to add?"
 
+    def _detect_topic_from_slots(self, extracted_slots: Dict[str, Any]) -> Optional[str]:
+        """
+        Detect which topic was just discussed based on extracted slots.
+
+        Returns topic name (e.g., 'industry', 'geography') or None.
+        """
+        slot_to_topic = {
+            "primary_goal": "goals",
+            "requirements": "needs",
+            "offerings": "offers",
+            "geography": "geography",
+            "stage_preference": "stage",
+            "industry_focus": "industry",
+            "engagement_style": "engagement",
+            "dealbreakers": "dealbreakers",
+            "challenges": "challenges",
+            "skills": "skills"
+        }
+
+        for slot_name in extracted_slots.keys():
+            topic = slot_to_topic.get(slot_name)
+            if topic:
+                return topic
+        return None
+
+    def _get_missing_multi_vector_dimensions(
+        self,
+        filled_slots: Dict[str, Any],
+        missing_slots: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        Get list of missing multi-vector dimensions that haven't been filled yet.
+
+        These are CRITICAL for match quality and should be prioritized.
+
+        Args:
+            filled_slots: Slots extracted in the current turn
+            missing_slots: All slots still missing (from context manager)
+        """
+        # If missing_slots is provided, use it as the authoritative source
+        if missing_slots:
+            # Filter to only multi-vector dimensions
+            mv_missing = [
+                slot for slot in missing_slots
+                if slot in MULTI_VECTOR_DIMENSION_SLOTS
+            ]
+            return mv_missing
+
+        # Fallback: check against filled_slots from current turn
+        filled_slot_names = set(filled_slots.keys()) if filled_slots else set()
+
+        missing = []
+        for slot_name in MULTI_VECTOR_DIMENSION_SLOTS.keys():
+            if slot_name not in filled_slot_names:
+                missing.append(slot_name)
+
+        return missing
+
+    def _build_multi_vector_steering(
+        self,
+        missing_dimensions: List[str],
+        topic_counts: Dict[str, int],
+        last_topic: Optional[str]
+    ) -> str:
+        """
+        Build prompt text to steer the AI toward collecting multi-vector dimensions.
+
+        Also enforces topic dwelling prevention.
+        """
+        steering_text = ""
+
+        # Check if we're dwelling on a topic
+        if last_topic and topic_counts.get(last_topic, 0) >= MAX_QUESTIONS_PER_TOPIC:
+            steering_text += f"""
+⚠️ TOPIC DWELLING ALERT: You've asked {topic_counts[last_topic]} questions about '{last_topic}'.
+STOP asking about '{last_topic}' and SWITCH to a different topic immediately.
+"""
+
+        # Add missing multi-vector dimensions with urgency
+        if missing_dimensions:
+            dim_questions = []
+            for dim in missing_dimensions[:3]:  # Top 3 missing
+                question = MULTI_VECTOR_DIMENSION_SLOTS.get(dim)
+                if question:
+                    dim_questions.append(f"  • {dim}: \"{question}\"")
+
+            if dim_questions:
+                steering_text += f"""
+🎯 PRIORITY: MISSING MULTI-VECTOR DIMENSIONS (ask about these FIRST):
+{chr(10).join(dim_questions)}
+
+These dimensions are CRITICAL for match quality. Do NOT ask detail questions
+(like "how do you handle compliance?") until you've covered these broad dimensions.
+"""
+
+        return steering_text
+
     def _generate_personalized_followup(
         self,
         user_message: str,
@@ -590,7 +706,9 @@ You MUST acknowledge the correction and show you NOW understand correctly.
                     'openers': [],
                     'structures': [],
                     'punctuation': [],
-                    'interpretations': []  # Track AI interpretations to avoid repeating wrong ones
+                    'interpretations': [],  # Track AI interpretations to avoid repeating wrong ones
+                    'topic_counts': {},  # Track questions per topic to prevent dwelling
+                    'last_topic': None   # Last topic asked about
                 }
                 logger.info(f"[{session_id}] Initialized session pattern tracking")
 
@@ -618,6 +736,41 @@ You MUST acknowledge the correction and show you NOW understand correctly.
             if recent_structures:
                 pattern_avoidance += f"\n🚫 ALREADY USED STRUCTURES (MUST USE DIFFERENT): {', '.join(recent_structures)}"
 
+            # =========================================================
+            # MULTI-VECTOR DIMENSION STEERING (Critical for match quality)
+            # =========================================================
+
+            # Detect which topic we just discussed and track it
+            current_topic = self._detect_topic_from_slots(extracted_slots)
+            topic_counts = {}
+            last_topic = None
+
+            if session_id and session_id in self._session_patterns:
+                patterns = self._session_patterns[session_id]
+                topic_counts = patterns.get('topic_counts', {})
+                last_topic = patterns.get('last_topic')
+
+                # Update topic count for the current topic
+                if current_topic:
+                    topic_counts[current_topic] = topic_counts.get(current_topic, 0) + 1
+                    patterns['topic_counts'] = topic_counts
+                    patterns['last_topic'] = current_topic
+                    logger.info(f"[{session_id}] Topic '{current_topic}' count: {topic_counts[current_topic]}")
+
+            # Get missing multi-vector dimensions
+            # Use missing_slots (from context manager) as authoritative source
+            missing_mv_dimensions = self._get_missing_multi_vector_dimensions(
+                filled_slots=extracted_slots,
+                missing_slots=missing_slots
+            )
+
+            # Build multi-vector steering text
+            multi_vector_steering = self._build_multi_vector_steering(
+                missing_dimensions=missing_mv_dimensions,
+                topic_counts=topic_counts,
+                last_topic=last_topic
+            )
+
             prompt = f"""Based on what this {user_type} just shared, generate ONE warm, personalized follow-up question.
 
 USER SAID: "{user_message}"
@@ -625,7 +778,7 @@ USER SAID: "{user_message}"
 WHAT WE LEARNED: {extracted_summary}
 
 WHAT WE STILL NEED: {', '.join(missing_focus)}
-{forbidden_questions_text}{wrong_interpretations_text}
+{multi_vector_steering}{forbidden_questions_text}{wrong_interpretations_text}
 CRITICAL PATTERN AVOIDANCE:{pattern_avoidance}
 
 STRUCTURAL DIVERSITY RULES (CRITICAL):

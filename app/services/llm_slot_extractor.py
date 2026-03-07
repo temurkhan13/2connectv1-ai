@@ -13,7 +13,7 @@ Key advantages over regex:
 import os
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 from anthropic import Anthropic
@@ -626,6 +626,149 @@ These dimensions are CRITICAL for match quality. Do NOT ask detail questions
 
         return steering_text
 
+    def _detect_topic_from_question(self, question: str) -> Optional[str]:
+        """
+        Detect which topic a generated question is about.
+
+        This is the HARD CONSTRAINT version - we analyze the generated question
+        to see if it's about a blacklisted topic, regardless of what slots it extracts.
+        """
+        question_lower = question.lower()
+
+        # Topic detection based on keywords in the question itself
+        topic_keywords = {
+            "industry": [
+                "industry", "industries", "sector", "sectors", "space",
+                "fintech", "healthtech", "edtech", "saas", "b2b", "b2c",
+                "market segment", "vertical", "domain", "field"
+            ],
+            "geography": [
+                "region", "regions", "location", "locations", "where",
+                "market", "markets", "country", "countries", "uk", "us",
+                "europe", "european", "asia", "global", "remote", "based",
+                "geographic", "geography", "territory"
+            ],
+            "stage": [
+                "stage", "stages", "series a", "series b", "seed",
+                "pre-seed", "growth", "early-stage", "late-stage",
+                "startup", "scale-up", "mature", "funding round"
+            ],
+            "engagement": [
+                "relationship", "mentorship", "hands-on", "hands-off",
+                "advice", "support", "involvement", "engaged", "engagement",
+                "work with", "collaborate", "partnership"
+            ],
+            "dealbreakers": [
+                "dealbreaker", "deal-breaker", "no-go", "avoid",
+                "won't work", "not for me", "red flag", "non-starter",
+                "absolute no", "pass on", "never"
+            ],
+            "goals": [
+                "goal", "goals", "objective", "objectives", "looking for",
+                "trying to", "want to", "aim", "priority", "priorities",
+                "achieve", "accomplish"
+            ]
+        }
+
+        for topic, keywords in topic_keywords.items():
+            if any(kw in question_lower for kw in keywords):
+                return topic
+
+        return None
+
+    def _get_forced_dimension_question(
+        self,
+        missing_dimensions: List[str],
+        blacklisted_topics: List[str],
+        question_count: int = 0
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Get a forced direct question for a missing multi-vector dimension.
+
+        This bypasses the LLM entirely - if we need engagement_style and it's
+        missing, we ask directly. No more trusting the LLM to follow instructions.
+
+        Args:
+            missing_dimensions: List of missing MV dimension slot names
+            blacklisted_topics: Topics we CANNOT ask about (already at limit)
+            question_count: How many questions have been asked so far
+
+        Returns:
+            Tuple of (question, dimension_name) or None if no valid question
+        """
+        # Map slot names to topics for blacklist checking
+        slot_to_topic = {
+            "primary_goal": "goals",
+            "industry_focus": "industry",
+            "stage_preference": "stage",
+            "geography": "geography",
+            "engagement_style": "engagement",
+            "dealbreakers": "dealbreakers"
+        }
+
+        # Natural, conversational questions for each dimension
+        dimension_questions = {
+            "engagement_style": [
+                "What kind of relationship would be most valuable for you - hands-on mentorship, strategic advice, or something else entirely?",
+                "When you think about working with someone, what style fits you best - being closely involved or more of a strategic sounding board?",
+                "How do you prefer to engage - rolling up your sleeves together, or more of a high-level advisor role?"
+            ],
+            "dealbreakers": [
+                "Is there anything that would be an immediate 'not for me'? Any red flags or non-starters?",
+                "What would make you pass on an opportunity, even if everything else looked good?",
+                "Any absolute no-gos for you? Things that would be dealbreakers regardless of potential?"
+            ],
+            "geography": [
+                "Which regions or markets are you most focused on?",
+                "Are you targeting specific geographies, or open to opportunities anywhere?",
+                "Where in the world are you primarily looking to connect?"
+            ],
+            "stage_preference": [
+                "What company stage are you most drawn to - early-stage building, or later-stage scaling?",
+                "Do you prefer working with pre-seed explorers or Series A scale-ups?",
+                "What stage of company excites you most?"
+            ],
+            "industry_focus": [
+                "Are there specific industries or sectors where you're most focused?",
+                "What spaces are you most interested in - fintech, healthtech, or something else?",
+                "Which industries get you most excited?"
+            ],
+            "primary_goal": [
+                "What's the main thing you're hoping to get out of this platform?",
+                "What would make this really valuable for you?",
+                "What's your primary objective here - what success looks like?"
+            ]
+        }
+
+        # Prioritize dimensions not in blacklisted topics
+        for dim in missing_dimensions:
+            topic = slot_to_topic.get(dim)
+            if topic and topic in blacklisted_topics:
+                continue  # Skip blacklisted topics
+
+            questions = dimension_questions.get(dim)
+            if questions:
+                # Rotate based on question count to avoid repetition
+                idx = question_count % len(questions)
+                return (questions[idx], dim)
+
+        # All missing dimensions are blacklisted - this shouldn't happen
+        # but fall back to first missing dimension
+        if missing_dimensions:
+            dim = missing_dimensions[0]
+            questions = dimension_questions.get(dim)
+            if questions:
+                return (questions[0], dim)
+
+        return None
+
+    def _get_blacklisted_topics(self, topic_counts: Dict[str, int]) -> List[str]:
+        """Get list of topics that have been asked about too many times."""
+        return [
+            topic for topic, count in topic_counts.items()
+            if count >= MAX_QUESTIONS_PER_TOPIC
+        ]
+
     def _generate_personalized_followup(
         self,
         user_message: str,
@@ -771,6 +914,45 @@ You MUST acknowledge the correction and show you NOW understand correctly.
                 last_topic=last_topic
             )
 
+            # =========================================================
+            # PRE-LLM HARD CONSTRAINT: Force critical dimensions after Q4
+            # =========================================================
+            # If we've asked 4+ questions and engagement_style or dealbreakers
+            # are still missing, force those questions directly (skip LLM).
+
+            total_questions = sum(topic_counts.values())
+            blacklisted_topics = self._get_blacklisted_topics(topic_counts)
+
+            # Critical dimensions that MUST be asked if missing after Q4
+            critical_missing = [
+                dim for dim in missing_mv_dimensions
+                if dim in ["engagement_style", "dealbreakers"]
+            ]
+
+            if total_questions >= 4 and critical_missing:
+                forced = self._get_forced_dimension_question(
+                    missing_dimensions=critical_missing,
+                    blacklisted_topics=blacklisted_topics,
+                    question_count=total_questions
+                )
+
+                if forced:
+                    forced_question, forced_dimension = forced
+                    logger.info(
+                        f"[{session_id}] PRE-LLM FORCE: After {total_questions} questions, "
+                        f"forcing '{forced_dimension}' question (skipping LLM): "
+                        f"'{forced_question[:60]}...'"
+                    )
+
+                    # Still record patterns for consistency
+                    if session_id and session_id in self._session_patterns:
+                        opener = self._detect_opener(forced_question)
+                        structure = self._detect_structure(forced_question)
+                        self._session_patterns[session_id]['openers'].append(opener)
+                        self._session_patterns[session_id]['structures'].append(structure)
+
+                    return forced_question
+
             prompt = f"""Based on what this {user_type} just shared, generate ONE warm, personalized follow-up question.
 
 USER SAID: "{user_message}"
@@ -822,6 +1004,46 @@ Return ONLY the follow-up question, nothing else."""
             )
 
             followup = response.content[0].text.strip()
+
+            # =========================================================
+            # HARD CONSTRAINT: Topic Blacklist Validation
+            # =========================================================
+            # The LLM may ignore steering instructions. This is the HARD check.
+            # If the generated question is about a blacklisted topic, replace it.
+
+            blacklisted_topics = self._get_blacklisted_topics(topic_counts)
+            if blacklisted_topics:
+                generated_topic = self._detect_topic_from_question(followup)
+
+                if generated_topic and generated_topic in blacklisted_topics:
+                    logger.warning(
+                        f"[{session_id}] HARD CONSTRAINT: LLM ignored steering! "
+                        f"Generated question about '{generated_topic}' which is blacklisted. "
+                        f"Blacklist: {blacklisted_topics}"
+                    )
+
+                    # Get total question count for rotation
+                    total_questions = sum(topic_counts.values())
+
+                    # Force a question about a missing dimension
+                    forced = self._get_forced_dimension_question(
+                        missing_dimensions=missing_mv_dimensions,
+                        blacklisted_topics=blacklisted_topics,
+                        question_count=total_questions
+                    )
+
+                    if forced:
+                        forced_question, forced_dimension = forced
+                        logger.info(
+                            f"[{session_id}] REPLACED with forced question for '{forced_dimension}': "
+                            f"'{forced_question[:60]}...'"
+                        )
+                        followup = forced_question
+                    else:
+                        logger.warning(
+                            f"[{session_id}] No valid forced question available. "
+                            f"Keeping LLM question despite blacklist violation."
+                        )
 
             # Record patterns from this question to avoid in next one (session-specific)
             if session_id and session_id in self._session_patterns:

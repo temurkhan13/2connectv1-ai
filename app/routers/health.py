@@ -753,23 +753,34 @@ async def get_matching_diagnostics():
             except Exception as e:
                 logger.error(f"Error fetching embeddings: {e}")
 
-        # Pre-fetch all personas for match reasoning
+        # BUG-033 FIX: Bulk fetch all user profiles to avoid N+1 query problem
+        # Previously called UserProfile.get() for each user TWICE (persona_lookup + main loop)
+        # With 149+ users, that was 298+ individual database calls causing timeouts
+        # Note: user_profiles is in backend DB (same as users table), not AI DB
         persona_lookup = {}
-        for row in rows:
-            uid = str(row[0])
-            try:
-                profile = UserProfile.get(uid)
-                if profile and profile.persona:
-                    p = profile.persona
-                    persona_lookup[uid] = {
-                        "archetype": getattr(p, 'archetype', None),
-                        "user_type": getattr(p, 'user_type', None),
-                        "requirements": getattr(p, 'requirements', None),
-                        "offerings": getattr(p, 'offerings', None),
-                        "focus": getattr(p, 'focus', None)
-                    }
-            except Exception:
-                pass
+        try:
+            profile_conn = psycopg2.connect(backend_db_url)
+            profile_cursor = profile_conn.cursor()
+            profile_cursor.execute("""
+                SELECT user_id, persona_archetype, persona_user_type,
+                       persona_requirements, persona_offerings, persona_focus
+                FROM user_profiles
+            """)
+            for profile_row in profile_cursor.fetchall():
+                uid = str(profile_row[0])
+                # Build persona_lookup from individual columns (not JSON)
+                persona_lookup[uid] = {
+                    "archetype": profile_row[1],
+                    "user_type": profile_row[2],
+                    "requirements": profile_row[3],
+                    "offerings": profile_row[4],
+                    "focus": profile_row[5]
+                }
+            profile_cursor.close()
+            profile_conn.close()
+            logger.info(f"Bulk fetched {len(persona_lookup)} user profiles")
+        except Exception as e:
+            logger.warning(f"Could not bulk fetch user_profiles: {e}")
 
         # Get match counts and details from backend
         match_info = {}
@@ -820,43 +831,28 @@ async def get_matching_diagnostics():
         for row in rows:
             user_id = str(row[0])
 
-            # Get persona from DynamoDB for intent/dealbreakers
-            persona_data = {}
+            # BUG-033 FIX: Use pre-fetched persona data instead of individual UserProfile.get() calls
+            persona_data = persona_lookup.get(user_id, {})
             intent = "unknown"
             dealbreakers = []
 
-            try:
-                profile = UserProfile.get(user_id)
-                if profile.persona:
-                    p = profile.persona
-                    persona_data = {
-                        "archetype": getattr(p, 'archetype', None),
-                        "user_type": getattr(p, 'user_type', None),
-                        "focus": getattr(p, 'focus', None),
-                        "requirements": getattr(p, 'requirements', None),
-                        "offerings": getattr(p, 'offerings', None)
-                    }
+            # Infer intent from archetype/user_type
+            archetype = (persona_data.get("archetype") or "").lower()
+            user_type = (persona_data.get("user_type") or "").lower()
 
-                    # Infer intent from archetype/user_type
-                    archetype = (persona_data.get("archetype") or "").lower()
-                    user_type = (persona_data.get("user_type") or "").lower()
+            if "investor" in archetype or "investor" in user_type:
+                intent = "INVESTOR_FOUNDER"
+            elif "founder" in archetype or "founder" in user_type:
+                intent = "FOUNDER_INVESTOR"
+            elif "mentor" in archetype or "advisor" in user_type:
+                intent = "MENTOR_MENTEE"
+            elif "cofounder" in archetype:
+                intent = "COFOUNDER"
+            else:
+                intent = "NETWORKING"
 
-                    if "investor" in archetype or "investor" in user_type:
-                        intent = "INVESTOR_FOUNDER"
-                    elif "founder" in archetype or "founder" in user_type:
-                        intent = "FOUNDER_INVESTOR"
-                    elif "mentor" in archetype or "advisor" in user_type:
-                        intent = "MENTOR_MENTEE"
-                    elif "cofounder" in archetype:
-                        intent = "COFOUNDER"
-                    else:
-                        intent = "NETWORKING"
-
-                    # Extract dealbreakers (if stored)
-                    # TODO: Add dealbreakers field to persona if not present
-
-            except Exception:
-                pass
+            # Extract dealbreakers (if stored in persona_data)
+            # TODO: Add dealbreakers field to persona if not present
 
             # Get DynamoDB matches for score details
             dynamo_matches = []

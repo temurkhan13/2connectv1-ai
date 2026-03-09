@@ -79,16 +79,18 @@ try:
 except json.JSONDecodeError:
     cors_origins = None
 
-# Always allow admin dashboard
+# Always allow admin dashboard (even if CORS_ORIGINS is empty/missing)
 ADMIN_DASHBOARD_ORIGINS = [
     "https://2connect-admin-dashboard.vercel.app",
     "http://localhost:3000",
     "http://localhost:5173"
 ]
-if cors_origins:
-    for origin in ADMIN_DASHBOARD_ORIGINS:
-        if origin not in cors_origins:
-            cors_origins.append(origin)
+# Ensure cors_origins is a list before adding admin origins
+if cors_origins is None:
+    cors_origins = []
+for origin in ADMIN_DASHBOARD_ORIGINS:
+    if origin not in cors_origins:
+        cors_origins.append(origin)
 
 # Parse allowed hosts from JSON string
 allowed_hosts_str = os.getenv('ALLOWED_HOSTS')
@@ -103,6 +105,8 @@ missing_vars = [var for var in required_vars if not os.getenv(var)]
 if missing_vars:
     raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
+# Admin dashboard origins are always added, so cors_origins will never be empty
+# This check is kept for clarity but will always pass now
 if not cors_origins:
     raise ValueError("CORS_ORIGINS must be a valid JSON array")
 if not allowed_hosts:

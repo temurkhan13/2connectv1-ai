@@ -99,6 +99,38 @@ class FeedbackRequest(BaseModel):
         return sanitize_html(v.strip())
 
 
+class FeedbackWithReasonsRequest(BaseModel):
+    """
+    Schema for structured feedback with reason tags.
+    Phase 2.1: Feedback Learning Loop
+    """
+    user_id: str = Field(..., description="User identifier")
+    match_id: str = Field(..., description="Match identifier")
+    decision: Literal["approved", "declined"] = Field(..., description="User's decision on the match")
+    reason_tags: Optional[List[str]] = Field(default=[], description="Structured reason tags (e.g., wrong_industry, bad_timing)")
+    reason_text: Optional[str] = Field(None, max_length=MAX_FEEDBACK_LENGTH, description="Free-text explanation")
+    decision_time_ms: Optional[int] = Field(None, description="Time taken to make decision (ms)")
+    other_user_attributes: Optional[dict] = Field(None, description="Snapshot of other user's profile attributes")
+
+    @field_validator('user_id', 'match_id')
+    @classmethod
+    def validate_uuid_format(cls, v: str) -> str:
+        """Validate UUID format for identifiers."""
+        try:
+            UUID(v)
+        except ValueError:
+            raise ValueError(f"Invalid UUID format: {v}")
+        return v
+
+    @field_validator('reason_text')
+    @classmethod
+    def sanitize_reason_text(cls, v: Optional[str]) -> Optional[str]:
+        """Sanitize reason text to prevent XSS."""
+        if v is None:
+            return v
+        return sanitize_html(v.strip())
+
+
 class InitiateAIChatRequest(BaseModel):
     """Schema for initiating AI-to-AI chat."""
     initiator_id: str = Field(..., description="Initiator user ID")

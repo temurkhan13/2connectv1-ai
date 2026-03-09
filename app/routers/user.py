@@ -12,6 +12,7 @@ from app.schemas.user import (
     UserProfileResponse,
     ApproveSummaryRequest,
     FeedbackRequest,
+    FeedbackWithReasonsRequest,
     InitiateAIChatRequest,
     InitiateAIChatResponse
 )
@@ -177,6 +178,112 @@ async def submit_feedback(
                 "result": False
             }
         )
+
+
+@router.post("/user/feedback-with-reasons")
+async def submit_feedback_with_reasons(data: FeedbackWithReasonsRequest):
+    """
+    Endpoint: Accepts structured feedback with reason tags.
+    Phase 2.1: Feedback Learning Loop
+
+    This endpoint:
+    1. Receives structured feedback (decision + reason_tags + reason_text)
+    2. Triggers embedding adjustment via feedback_learner
+    3. Returns success with learning_triggered flag
+
+    Note: The backend stores this in match_feedback table. This endpoint
+    focuses on the AI learning/embedding adjustment.
+    """
+    from app.services.feedback_learner import feedback_learner
+
+    try:
+        logger.info(f"Processing structured feedback for user {data.user_id}, match {data.match_id}")
+        logger.info(f"Decision: {data.decision}, Reason tags: {data.reason_tags}")
+
+        # Convert structured feedback to text for the learner
+        feedback_text = _build_feedback_text(data)
+
+        # Get match context if other_user_attributes provided
+        match_context = None
+        if data.other_user_attributes:
+            match_context = {
+                "other_user": data.other_user_attributes,
+                "decision": data.decision,
+                "reason_tags": data.reason_tags or []
+            }
+
+        # Process through feedback learner
+        result = feedback_learner.process_feedback(
+            user_id=data.user_id,
+            feedback_text=feedback_text,
+            feedback_type="match",
+            match_context=match_context
+        )
+
+        if result.get("success"):
+            logger.info(f"Feedback learning successful for user {data.user_id}")
+            return {
+                "Code": 200,
+                "Message": "success",
+                "Result": True,
+                "feedback_id": data.match_id,  # Use match_id as reference
+                "learning_triggered": True,
+                "analysis": result.get("analysis", {})
+            }
+        else:
+            logger.warning(f"Feedback learning failed: {result.get('message')}")
+            return {
+                "Code": 200,
+                "Message": "Feedback received but learning skipped",
+                "Result": True,
+                "feedback_id": data.match_id,
+                "learning_triggered": False,
+                "reason": result.get("message")
+            }
+
+    except Exception as e:
+        logger.error(f"Error processing structured feedback: {str(e)}")
+        # Return success anyway to not block the UI (fire-and-forget pattern)
+        return {
+            "Code": 200,
+            "Message": "Feedback received",
+            "Result": True,
+            "feedback_id": data.match_id,
+            "learning_triggered": False,
+            "error": str(e)
+        }
+
+
+def _build_feedback_text(data: FeedbackWithReasonsRequest) -> str:
+    """Convert structured feedback to natural language text for the learner."""
+    parts = []
+
+    # Decision
+    if data.decision == "declined":
+        parts.append("I declined this match.")
+    else:
+        parts.append("I approved this match.")
+
+    # Reason tags
+    if data.reason_tags:
+        tag_descriptions = {
+            "wrong_industry": "wrong industry",
+            "bad_timing": "bad timing",
+            "not_relevant": "not relevant to my needs",
+            "already_connected": "already connected",
+            "location_mismatch": "location doesn't work",
+            "stage_mismatch": "wrong company stage",
+            "budget_mismatch": "budget doesn't align",
+            "no_mutual_value": "don't see mutual value"
+        }
+        reasons = [tag_descriptions.get(tag, tag.replace("_", " ")) for tag in data.reason_tags]
+        parts.append(f"Reasons: {', '.join(reasons)}.")
+
+    # Free text
+    if data.reason_text:
+        parts.append(f"Additional context: {data.reason_text}")
+
+    return " ".join(parts)
 
 
 @router.post("/user/initiate-ai-chat", response_model=InitiateAIChatResponse)

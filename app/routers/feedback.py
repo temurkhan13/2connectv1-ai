@@ -232,3 +232,56 @@ async def get_user_feedback_history(user_id: str, limit: int = 50):
     except Exception as e:
         logger.error(f"Error getting user feedback: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get feedback: {str(e)}")
+
+
+# ==========================================
+# Admin Endpoints for Pattern Learning
+# ==========================================
+
+@router.get("/admin/health")
+async def get_feedback_data_health():
+    """
+    Get health status of feedback data for pattern learning.
+
+    Returns:
+    - Total feedback count
+    - Users ready for learning (5+ feedback records)
+    - Approved/declined breakdown
+    """
+    try:
+        from app.workers.feedback_aggregation import check_feedback_data_health
+        result = check_feedback_data_health()
+        return result
+    except Exception as e:
+        logger.error(f"Error checking feedback health: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
+@router.post("/admin/trigger-aggregation")
+async def trigger_feedback_aggregation():
+    """
+    Manually trigger feedback pattern aggregation.
+
+    This runs the weekly aggregation job immediately.
+    Use this to test or force-update learned preferences.
+    """
+    try:
+        from app.workers.feedback_aggregation import feedback_aggregation_task
+
+        # Run synchronously for immediate feedback (or use .delay() for async)
+        result = feedback_aggregation_task()
+
+        return {
+            "success": True,
+            "message": "Aggregation completed",
+            "result": result
+        }
+    except Exception as e:
+        logger.error(f"Error triggering aggregation: {e}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(e)
+        }

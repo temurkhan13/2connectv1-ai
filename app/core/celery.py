@@ -32,7 +32,8 @@ celery_app = Celery(
         'app.workers.persona_processing',
         'app.workers.embedding_processing',
         'app.workers.scheduled_matching',
-        'app.workers.ai_chat_processing'
+        'app.workers.ai_chat_processing',
+        'app.workers.feedback_aggregation'
     ]
 )
 
@@ -57,4 +58,12 @@ celery_app.conf.update(
 )
 
 # Celery Beat Schedule (Periodic Tasks)
-# No periodic scheduling; scheduled worker is triggered via API only
+# Note: Requires running celery beat: celery -A app.core.celery beat
+celery_app.conf.beat_schedule = {
+    # Feedback aggregation - runs every Sunday at 3 AM UTC
+    'weekly-feedback-aggregation': {
+        'task': 'feedback_aggregation_task',
+        'schedule': crontab(hour=3, minute=0, day_of_week=0),  # Sunday 3 AM
+        'options': {'queue': 'default'}
+    },
+}

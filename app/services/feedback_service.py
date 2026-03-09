@@ -1,79 +1,68 @@
-"""Feedback processing service."""
+"""Feedback processing service.
+
+This service handles feedback from the legacy /user/feedback endpoint.
+For structured feedback with reasons, use /user/feedback-with-reasons endpoint.
+
+Note: Feedback storage is handled by the backend (match_feedback table).
+This service focuses only on embedding/persona adjustment via feedback_learner.
+"""
 import logging
-import uuid
-from datetime import datetime
 from typing import Dict, Any
 
-from app.adapters.dynamodb import Feedback, ChatRecord
 from app.schemas.user import FeedbackRequest
-from app.services.persona_service import update_persona_vector_with_feedback
+from app.services.feedback_learner import feedback_learner
 
 logger = logging.getLogger(__name__)
 
 
 class FeedbackService:
     """Service for processing user feedback on matches/chats."""
-    
+
     def process_feedback(self, data: FeedbackRequest) -> Dict[str, Any]:
-        """Process user feedback: save to DB and update persona embeddings."""
+        """
+        Process user feedback and update persona embeddings.
+
+        Note: Feedback is NOT stored in DynamoDB anymore.
+        The backend stores feedback in match_feedback table.
+        This service only handles the AI learning/embedding adjustment.
+        """
         try:
-            # Generate unique feedback_id
-            feedback_id = str(uuid.uuid4())
-            
-            # Save feedback in DynamoDB
-            feedback_item = Feedback(
-                feedback_id=feedback_id,
+            logger.info(f"Processing feedback for user {data.user_id}, type: {data.type}")
+
+            # Prepare context
+            context = {
+                "feedback_type": data.type,
+                "target_id": data.id
+            }
+
+            # Process through feedback learner
+            result = feedback_learner.process_feedback(
                 user_id=data.user_id,
-                type=data.type,
-                target_id=data.id,
-                feedback=data.feedback,
-                created_at=datetime.utcnow()
-            )
-            feedback_item.save()
-            
-            # Prepare context based on feedback type
-            context = None
-            if data.type == "chat":
-                # Fetch chat conversation for context
-                try:
-                    chat = ChatRecord.get(data.id)
-                    context = {
-                        "chat_id": chat.chat_id,
-                        "conversation": [
-                            {
-                                "sender_id": getattr(msg, "sender_id", msg.get("sender_id") if isinstance(msg, dict) else None),
-                                "content": getattr(msg, "content", msg.get("content") if isinstance(msg, dict) else None)
-                            }
-                            for msg in chat.conversation_data
-                        ],
-                        "ai_remarks": getattr(chat, "ai_remarks", None),
-                        "compatibility_score": getattr(chat, "compatibility_score", None)
-                    }
-                    logger.debug(f"Retrieved chat context for feedback: {data.id}")
-                except ChatRecord.DoesNotExist:
-                    logger.warning(f"Chat record not found: {data.id}")
-                    context = None
-                except Exception as e:
-                    logger.error(f"Error fetching chat context: {e}")
-                    context = None
-            
-            # Update persona vector using feedback
-            update_persona_vector_with_feedback(
-                user_id=data.user_id,
-                feedback=data.feedback,
+                feedback_text=data.feedback,
                 feedback_type=data.type,
                 match_context=context
             )
-            
+
+            if result.get("success"):
+                logger.info(f"Feedback processed successfully for user {data.user_id}")
+                return {
+                    "success": True,
+                    "message": "Feedback processed and persona updated",
+                    "analysis": result.get("analysis", {})
+                }
+            else:
+                logger.warning(f"Feedback processing returned failure: {result.get('message')}")
+                return {
+                    "success": True,  # Return success anyway to not block UI
+                    "message": "Feedback received but embedding update skipped",
+                    "reason": result.get("message")
+                }
+
+        except Exception as e:
+            logger.error(f"Error processing feedback for user {data.user_id}: {e}")
+            # Return success anyway (fire-and-forget pattern)
             return {
                 "success": True,
-                "message": "Feedback saved and persona updated",
-                "data": data.dict()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing feedback: {e}")
-            return {
-                "success": False,
-                "message": f"Failed to process feedback: {str(e)}"
+                "message": "Feedback received",
+                "error": str(e)
             }

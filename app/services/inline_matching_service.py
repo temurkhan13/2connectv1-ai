@@ -100,7 +100,7 @@ class InlineMatchingService:
         """
         from app.services.matching_service import matching_service
         from app.services.match_sync_service import match_sync_service
-        from app.adapters.dynamodb import UserMatches, NotifiedMatchPairs
+        from app.adapters.supabase_profiles import UserMatches, NotifiedMatchPairs
 
         if threshold is None:
             threshold = self.threshold
@@ -219,7 +219,7 @@ class InlineMatchingService:
         This is the key difference from the old approach which only
         calculated one-way matches.
         """
-        from app.adapters.dynamodb import UserMatches, UserProfile
+        from app.adapters.supabase_profiles import UserMatches, UserProfile
 
         updated_count = 0
         processed_users = set()
@@ -347,7 +347,7 @@ class InlineMatchingService:
         Returns dict in same format as matching_service.find_and_store_user_matches()
         """
         from app.services.enhanced_matching_service import enhanced_matching_service
-        from app.adapters.dynamodb import UserMatches
+        from app.adapters.supabase_profiles import UserMatches
 
         try:
             logger.info(f"[INLINE MATCH] Using ENHANCED matching for user {user_id}")
@@ -444,7 +444,7 @@ class InlineMatchingService:
         Returns dict in same format as matching_service.find_and_store_user_matches()
         """
         from app.services.multi_vector_matcher import MultiVectorMatcher, MatchTier
-        from app.adapters.dynamodb import UserMatches
+        from app.adapters.supabase_profiles import UserMatches
 
         try:
             logger.info(f"[INLINE MATCH] Using MULTI-VECTOR matching for user {user_id}")
@@ -558,7 +558,7 @@ class InlineMatchingService:
             MatchIntent,
             INTENT_SCORING_CONFIGS
         )
-        from app.adapters.dynamodb import UserProfile, UserMatches
+        from app.adapters.supabase_profiles import UserProfile, UserMatches
 
         try:
             logger.info(f"[INLINE MATCH] Using HYBRID matching for user {user_id}")

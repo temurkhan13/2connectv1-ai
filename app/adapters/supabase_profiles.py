@@ -915,3 +915,9 @@ class _NotifiedPairRow:
 UserProfile = SupabaseUserProfile
 UserMatches = SupabaseUserMatches
 NotifiedMatchPairs = SupabaseNotifiedMatchPairs
+
+# Helper class aliases for compatibility with DynamoDB imports
+QuestionAnswer = _QuestionAnswer
+PersonaData = _PersonaData
+ProfileData = _ProfileData
+ResumeTextData = _ResumeTextData

@@ -4,7 +4,7 @@ Celery worker for persona generation tasks.
 from celery import current_app
 from app.core.celery import celery_app
 from app.services.persona_service import PersonaService
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 from app.services.notification_service import NotificationService
 from datetime import datetime
 from typing import Dict, Any

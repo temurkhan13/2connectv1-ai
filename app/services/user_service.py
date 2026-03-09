@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional, List
 
 from celery import chain
 
-from app.adapters.dynamodb import UserProfile, QuestionAnswer
+from app.adapters.supabase_profiles import UserProfile, QuestionAnswer
 from app.schemas.user import UserRegistrationRequest, UserRegistrationResponse
 from app.workers.embedding_processing import generate_embeddings_task
 from app.workers.persona_processing import generate_persona_task

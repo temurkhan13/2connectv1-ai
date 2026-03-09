@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
 from anthropic import Anthropic
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 
 logger = logging.getLogger(__name__)
 

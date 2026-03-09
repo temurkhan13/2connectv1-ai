@@ -10,7 +10,7 @@ Supports three matching algorithms:
 - Multi-vector weighted (6 dimensions) - set USE_MULTI_VECTOR_MATCHING=true
 - Enhanced bidirectional with intent classification - set USE_ENHANCED_MATCHING=true
 """
-from app.adapters.dynamodb import UserProfile, NotifiedMatchPairs, UserMatches
+from app.adapters.supabase_profiles import UserProfile, NotifiedMatchPairs, UserMatches
 from app.services.matching_service import matching_service
 from app.services.notification_service import NotificationService
 from app.core.celery import celery_app

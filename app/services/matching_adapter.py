@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Any
 
 from app.services.enhanced_matching_service import enhanced_matching_service
-from app.adapters.dynamodb import UserMatches
+from app.adapters.supabase_profiles import UserMatches
 
 logger = logging.getLogger(__name__)
 

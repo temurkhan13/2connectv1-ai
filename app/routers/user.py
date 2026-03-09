@@ -243,7 +243,7 @@ async def regenerate_persona(
     - User has updated their onboarding answers
     """
     from app.workers.persona_processing import generate_persona_task
-    from app.adapters.dynamodb import UserProfile
+    from app.adapters.supabase_profiles import UserProfile
 
     try:
         user_id = request.user_id
@@ -328,7 +328,7 @@ async def init_tables(request: dict):
     Admin endpoint to create missing DynamoDB tables.
     Should be called once during initial deployment.
     """
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
     import os
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
@@ -380,7 +380,7 @@ async def import_profile(request: dict):
         "persona_status": "completed"
     }
     """
-    from app.adapters.dynamodb import UserProfile, PersonaData, ProfileData, QuestionAnswer, ResumeTextData
+    from app.adapters.supabase_profiles import UserProfile, PersonaData, ProfileData, QuestionAnswer, ResumeTextData
     from datetime import datetime
     import os
 
@@ -476,7 +476,7 @@ async def get_user_diagnostics(email: str):
     import os
     import psycopg2
     from datetime import datetime
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
 
     diagnostics = {
         "email": email,
@@ -742,7 +742,7 @@ async def list_all_users():
     """
     import os
     import psycopg2
-    from app.adapters.dynamodb import UserProfile
+    from app.adapters.supabase_profiles import UserProfile
 
     users = []
 
@@ -1022,7 +1022,7 @@ async def regenerate_all_matches(request: dict):
     """
     import os
     from app.services.inline_matching_service import inline_matching_service
-    from app.adapters.dynamodb import UserProfile
+    from app.adapters.supabase_profiles import UserProfile
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -1094,7 +1094,7 @@ async def regenerate_embeddings_sync(request: dict):
     """
     import os
     from app.services.embedding_service import embedding_service
-    from app.adapters.dynamodb import UserProfile, UserMatches, NotifiedMatchPairs
+    from app.adapters.supabase_profiles import UserProfile, UserMatches, NotifiedMatchPairs
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -1184,7 +1184,7 @@ async def generate_multi_vector_embeddings(request: dict):
     """
     import os
     from app.services.multi_vector_matcher import multi_vector_matcher
-    from app.adapters.dynamodb import UserProfile
+    from app.adapters.supabase_profiles import UserProfile
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -1290,7 +1290,7 @@ async def backfill_multi_vector_embeddings(request: dict, background_tasks: Back
     """
     import os
     import uuid
-    from app.adapters.dynamodb import UserProfile
+    from app.adapters.supabase_profiles import UserProfile
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -1371,7 +1371,7 @@ async def clear_and_resync_matches(request: dict):
     """
     import os
     import psycopg2
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
     from app.services.match_sync_service import match_sync_service
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
@@ -1484,7 +1484,7 @@ async def sync_matches_from_dynamodb(request: dict):
     from DynamoDB UserMatches table.
     """
     import os
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
     from app.services.match_sync_service import match_sync_service
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
@@ -1570,7 +1570,7 @@ async def hard_delete_user(user_id: str, request: dict = None):
     - AI Database embeddings
     - PostgreSQL backend (users, user_responses, user_summaries, matches)
     """
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
 
     logger.info(f"[HARD-DELETE] Starting hard delete for user {user_id}")
 

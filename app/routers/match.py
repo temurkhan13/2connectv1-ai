@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.services.match_explanation_service import match_explanation_service
 from app.services.llm_service import get_llm_service
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 from app.adapters.postgresql import postgresql_adapter
 
 logger = logging.getLogger(__name__)

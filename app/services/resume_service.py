@@ -15,7 +15,7 @@ import logging
 import base64
 from datetime import datetime
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 
 logger = logging.getLogger(__name__)
 

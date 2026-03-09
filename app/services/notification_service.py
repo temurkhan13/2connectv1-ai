@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 import psycopg2
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 
 logger = logging.getLogger(__name__)
 

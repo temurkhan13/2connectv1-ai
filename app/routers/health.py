@@ -263,7 +263,7 @@ async def get_system_health():
 
     # 7. DynamoDB
     try:
-        from app.adapters.dynamodb import UserProfile
+        from app.adapters.supabase_profiles import UserProfile
         count = 0
         for _ in UserProfile.scan(limit=1):
             count += 1
@@ -677,7 +677,7 @@ async def get_matching_diagnostics():
     - Same objective blocking status
     """
     import psycopg2
-    from app.adapters.dynamodb import UserProfile, UserMatches
+    from app.adapters.supabase_profiles import UserProfile, UserMatches
 
     users = []
 
@@ -1122,7 +1122,7 @@ async def wiring_audit():
 
             # Check each completed user for DynamoDB profile
             broken_users = []
-            from app.adapters.dynamodb import UserProfile
+            from app.adapters.supabase_profiles import UserProfile
 
             for user_row in completed_users:
                 user_id_check = user_row[0]
@@ -1230,7 +1230,7 @@ async def wiring_audit():
 
     # ===== CHECK 3: INTENT CLASSIFICATION (from DynamoDB persona) =====
     try:
-        from app.adapters.dynamodb import UserProfile
+        from app.adapters.supabase_profiles import UserProfile
 
         profile = None
         try:
@@ -1373,7 +1373,7 @@ async def recover_broken_user(user_id: str):
     4. Returns success/failure status
     """
     from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
-    from app.adapters.dynamodb import UserProfile, QuestionAnswer
+    from app.adapters.supabase_profiles import UserProfile, QuestionAnswer
     from celery import chain
     from app.workers.persona_processing import generate_persona_task
     from app.workers.resume_processing import process_resume_task
@@ -1389,7 +1389,7 @@ async def recover_broken_user(user_id: str):
 
     # Step 1: Check if user actually exists and is in broken state
     try:
-        from app.adapters.dynamodb import UserProfile
+        from app.adapters.supabase_profiles import UserProfile
 
         try:
             existing_profile = UserProfile.get(user_id)

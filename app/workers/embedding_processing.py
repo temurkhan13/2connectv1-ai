@@ -5,7 +5,7 @@ from celery import current_app
 from app.core.celery import celery_app
 from app.services.embedding_service import embedding_service
 from app.services.matching_service import matching_service
-from app.adapters.dynamodb import UserProfile, UserMatches, NotifiedMatchPairs
+from app.adapters.supabase_profiles import UserProfile, UserMatches, NotifiedMatchPairs
 from app.services.notification_service import NotificationService
 import logging
 import uuid

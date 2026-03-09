@@ -338,7 +338,7 @@ class EnhancedMatchingService:
                 return []
 
             # Get user's persona for intent classification
-            from app.adapters.dynamodb import UserProfile
+            from app.adapters.supabase_profiles import UserProfile
             try:
                 user_profile = UserProfile.get(user_id)
                 user_persona = user_profile.persona

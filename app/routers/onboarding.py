@@ -760,7 +760,7 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
     Call this after the user reviews and approves their onboarding summary.
     """
     from celery import chain
-    from app.adapters.dynamodb import UserProfile, QuestionAnswer
+    from app.adapters.supabase_profiles import UserProfile, QuestionAnswer
     from app.workers.persona_processing import generate_persona_task
     from app.workers.resume_processing import process_resume_task
 

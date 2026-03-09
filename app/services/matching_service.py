@@ -8,7 +8,7 @@ from app.services.embedding_service import embedding_service
 from app.services.match_explanation_service import match_explanation_service
 from app.services.multi_vector_matcher import multi_vector_matcher, MatchTier
 from app.adapters.postgresql import postgresql_adapter
-from app.adapters.dynamodb import UserMatches, NotifiedMatchPairs
+from app.adapters.supabase_profiles import UserMatches, NotifiedMatchPairs
 
 
 # Pydantic Models
@@ -417,7 +417,7 @@ class MatchingService:
     def update_reciprocal_matches(self, source_user_id: str, source_matches: Dict[str, Any], skip_already_notified: bool = True) -> List[Dict[str, Any]]:
         """Update reciprocal matches when a user is processed. Skips already-notified pairs."""
         try:
-            from app.adapters.dynamodb import UserProfile
+            from app.adapters.supabase_profiles import UserProfile
             
             logger.info(f"Updating reciprocal matches for source user {source_user_id}")
             

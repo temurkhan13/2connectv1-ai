@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.services.matching_service import matching_service, MatchResult, UserMatchesResponse
 from app.services.multi_vector_matcher import MultiVectorMatcher, MatchTier
-from app.adapters.dynamodb import UserProfile
+from app.adapters.supabase_profiles import UserProfile
 from app.adapters.postgresql import postgresql_adapter
 
 logger = logging.getLogger(__name__)

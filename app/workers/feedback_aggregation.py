@@ -18,7 +18,7 @@ from collections import defaultdict
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from app.celery_app import celery_app
+from app.core.celery import celery_app
 
 logger = logging.getLogger(__name__)
 

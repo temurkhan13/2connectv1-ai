@@ -827,6 +827,16 @@ async def get_matching_diagnostics():
         except Exception as e:
             logger.error(f"Error fetching matches: {e}")
 
+        # BUG-033 FIX: Bulk fetch all user match caches to avoid N+1 query problem
+        # Previously called UserMatches.get_user_matches() for each user in the loop
+        # With 97+ users, that was 97+ individual database calls causing 90s+ timeouts
+        all_user_matches = {}
+        try:
+            all_user_matches = UserMatches.get_all_user_matches()
+            logger.info(f"Bulk fetched {len(all_user_matches)} user match caches")
+        except Exception as e:
+            logger.warning(f"Could not bulk fetch user matches: {e}")
+
         # Build user diagnostics
         for row in rows:
             user_id = str(row[0])
@@ -854,10 +864,10 @@ async def get_matching_diagnostics():
             # Extract dealbreakers (if stored in persona_data)
             # TODO: Add dealbreakers field to persona if not present
 
-            # Get DynamoDB matches for score details
+            # BUG-033 FIX: Use pre-fetched user matches instead of individual get_user_matches() calls
             dynamo_matches = []
             try:
-                stored = UserMatches.get_user_matches(user_id)
+                stored = all_user_matches.get(user_id, {'requirements_matches': [], 'offerings_matches': []})
                 if stored:
                     req_matches = stored.get("requirements_matches", [])
                     for m in req_matches[:10]:  # Limit to top 10

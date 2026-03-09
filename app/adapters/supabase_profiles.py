@@ -673,6 +673,52 @@ class SupabaseUserMatches:
             return None
 
     @classmethod
+    def get_all_user_matches(cls) -> Dict[str, Dict[str, Any]]:
+        """
+        Bulk fetch all user matches in a single query.
+
+        Returns:
+            Dict mapping user_id to their matches data.
+            Empty dict on error.
+        """
+        adapter = get_adapter()
+        conn = None
+        cursor = None
+        result = {}
+
+        try:
+            conn = adapter.get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            cursor.execute("""
+                SELECT user_id, matches, total_matches, last_updated
+                FROM user_match_cache
+            """)
+
+            for row in cursor.fetchall():
+                uid = str(row['user_id'])
+                matches = row.get('matches') or {}
+                result[uid] = {
+                    'user_id': uid,
+                    'total_matches': row.get('total_matches', 0),
+                    'requirements_matches': matches.get('requirements_matches', []),
+                    'offerings_matches': matches.get('offerings_matches', []),
+                    'last_updated': row['last_updated'].isoformat() if row.get('last_updated') else None
+                }
+
+            logger.info(f"Bulk fetched {len(result)} user match caches")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error bulk fetching user matches: {e}")
+            return {}
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
+    @classmethod
     def clear_user_matches(cls, user_id: str) -> bool:
         """Clear all stored matches for a user."""
         if not user_id:

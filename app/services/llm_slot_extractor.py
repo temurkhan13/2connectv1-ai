@@ -769,6 +769,70 @@ These dimensions are CRITICAL for match quality. Do NOT ask detail questions
             if count >= MAX_QUESTIONS_PER_TOPIC
         ]
 
+    def _is_duplicate_question(self, new_question: str, previous_questions: List[str], threshold: float = 0.7) -> bool:
+        """
+        Check if a question is too similar to any previously asked question.
+
+        Uses simple word overlap similarity - if 70%+ of significant words match,
+        it's considered a duplicate. This catches rephrased versions of the same question.
+
+        Args:
+            new_question: The newly generated question
+            previous_questions: List of all previous AI questions
+            threshold: Similarity threshold (0.7 = 70% word overlap)
+
+        Returns:
+            True if the question is a duplicate
+        """
+        if not previous_questions:
+            return False
+
+        # Normalize: lowercase, remove punctuation, split into words
+        def normalize(text: str) -> set:
+            import re
+            words = re.findall(r'\b[a-z]+\b', text.lower())
+            # Filter out common stop words
+            stop_words = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been',
+                         'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will',
+                         'would', 'could', 'should', 'may', 'might', 'must', 'shall',
+                         'can', 'need', 'dare', 'ought', 'used', 'to', 'of', 'in',
+                         'for', 'on', 'with', 'at', 'by', 'from', 'as', 'into',
+                         'through', 'during', 'before', 'after', 'above', 'below',
+                         'between', 'under', 'again', 'further', 'then', 'once',
+                         'here', 'there', 'when', 'where', 'why', 'how', 'all',
+                         'each', 'few', 'more', 'most', 'other', 'some', 'such',
+                         'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than',
+                         'too', 'very', 'just', 'and', 'but', 'if', 'or', 'because',
+                         'until', 'while', 'about', 'against', 'any', 'both',
+                         'i', 'you', 'your', 'me', 'my', 'we', 'our', 'they', 'their',
+                         'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those',
+                         'im', 'youre', 'thats', 'its', 'lets', 'tell'}
+            return {w for w in words if w not in stop_words and len(w) > 2}
+
+        new_words = normalize(new_question)
+        if not new_words:
+            return False
+
+        for prev_q in previous_questions:
+            prev_words = normalize(prev_q)
+            if not prev_words:
+                continue
+
+            # Calculate Jaccard similarity
+            intersection = len(new_words & prev_words)
+            union = len(new_words | prev_words)
+
+            if union > 0:
+                similarity = intersection / union
+                if similarity >= threshold:
+                    logger.warning(
+                        f"DUPLICATE DETECTED: '{new_question[:50]}...' is {similarity:.0%} similar to "
+                        f"'{prev_q[:50]}...'"
+                    )
+                    return True
+
+        return False
+
     def _generate_personalized_followup(
         self,
         user_message: str,
@@ -1044,6 +1108,46 @@ Return ONLY the follow-up question, nothing else."""
                             f"[{session_id}] No valid forced question available. "
                             f"Keeping LLM question despite blacklist violation."
                         )
+
+            # =========================================================
+            # HARD CONSTRAINT #2: Exact duplicate question detection
+            # =========================================================
+            # Even if topic is different, we must not ask the same question text.
+            # This catches cases where LLM rephrases or repeats exact questions.
+            if previous_questions and self._is_duplicate_question(followup, previous_questions):
+                logger.warning(
+                    f"[{session_id}] HARD CONSTRAINT: Duplicate question detected! "
+                    f"Question: '{followup[:60]}...' matches a previous question."
+                )
+
+                # Force a completely different question
+                total_questions = sum(topic_counts.values()) if topic_counts else len(previous_questions)
+                blacklisted = self._get_blacklisted_topics(topic_counts) if topic_counts else []
+
+                forced = self._get_forced_dimension_question(
+                    missing_dimensions=missing_mv_dimensions,
+                    blacklisted_topics=blacklisted,
+                    question_count=total_questions
+                )
+
+                if forced:
+                    forced_question, forced_dimension = forced
+                    logger.info(
+                        f"[{session_id}] REPLACED duplicate with forced question for '{forced_dimension}': "
+                        f"'{forced_question[:60]}...'"
+                    )
+                    followup = forced_question
+                else:
+                    # Fallback: ask a generic question that's definitely different
+                    fallback_questions = [
+                        "What would make this platform incredibly valuable for you specifically?",
+                        "If you could wave a magic wand and change one thing about your current situation, what would it be?",
+                        "What's the biggest gap in your network right now?",
+                        "What kind of conversations are you hoping to have on this platform?"
+                    ]
+                    import random
+                    followup = random.choice(fallback_questions)
+                    logger.info(f"[{session_id}] Using fallback question to avoid duplicate: '{followup[:60]}...'")
 
             # Record patterns from this question to avoid in next one (session-specific)
             if session_id and session_id in self._session_patterns:

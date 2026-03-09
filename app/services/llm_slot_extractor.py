@@ -102,7 +102,7 @@ SLOT_DEFINITIONS = {
     "company_name": {
         "description": "Name of the user's company (if founder/executive)",
         "type": "text",
-        "extraction_hint": "Extract company name if mentioned"
+        "extraction_hint": "Extract ONLY proper noun company names (e.g., 'MedFlow AI', 'Acme Corp', 'TechStart'). NEVER extract descriptions like 'startup in AI space', 'healthcare company', 'my company', 'tech startup' - these are NOT company names. If no specific company name is mentioned, leave this field EMPTY. A company name is a specific brand/entity name, not a category or description."
     },
     "role_title": {
         "description": "User's job title or role",

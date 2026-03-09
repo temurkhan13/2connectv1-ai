@@ -966,6 +966,28 @@ async def list_all_users():
         except Exception as e:
             logger.error(f"Error fetching slot counts from onboarding_answers: {e}")
 
+        # BUG-032 FIX: Bulk fetch all user profiles to avoid N+1 query problem
+        # Previously called UserProfile.get() for each user, causing timeouts with 149+ users
+        persona_data = {}
+        try:
+            conn = psycopg2.connect(backend_db_url)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, persona_name, persona_status, raw_questions
+                FROM user_profiles
+            """)
+            for profile_row in cursor.fetchall():
+                uid = str(profile_row[0])
+                persona_data[uid] = {
+                    'persona_name': profile_row[1],
+                    'persona_status': profile_row[2] or 'not_initiated',
+                    'questions_count': len(profile_row[3]) if profile_row[3] else 0
+                }
+            cursor.close()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Could not fetch user_profiles (table may not exist): {e}")
+
         # Build user list with status
         for row in rows:
             user_id = str(row[0])
@@ -977,24 +999,14 @@ async def list_all_users():
             slots_filled = slot_counts.get(user_id, 0)
             filled_slots = slot_names_by_user.get(user_id, [])
 
-            # Check persona status in DynamoDB (separate from slots)
-            persona_status = "unknown"
-            questions_answered = 0
-            persona_name = None
-            try:
-                profile = UserProfile.get(user_id)
-                if profile.persona and profile.persona.name:
-                    persona_status = "completed"
-                    persona_name = profile.persona.name
-                else:
-                    persona_status = profile.persona_status or "pending"
-                # Count questions answered
-                if profile.profile and profile.profile.raw_questions:
-                    questions_answered = len(profile.profile.raw_questions)
-            except UserProfile.DoesNotExist:
-                persona_status = "no_profile"
-            except Exception:
-                persona_status = "error"
+            # Get persona data from bulk fetch (BUG-032 fix)
+            profile_info = persona_data.get(user_id, {})
+            persona_name = profile_info.get('persona_name')
+            persona_status = profile_info.get('persona_status', 'no_profile')
+            questions_answered = profile_info.get('questions_count', 0)
+
+            if persona_name:
+                persona_status = "completed"
 
             # Determine overall status
             onboarding_status = row[4] or "unknown"

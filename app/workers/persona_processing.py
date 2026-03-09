@@ -141,28 +141,25 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             logger.info(f"Requirements type: {type(requirements)}, length: {len(requirements)} characters")
             logger.info(f"Offerings type: {type(offerings)}, length: {len(offerings)} characters")
             
-            # Store persona data with requirements and offerings using update method
+            # Store persona data with requirements and offerings
             # Note: "strategy" is the role-agnostic field that maps to investment_philosophy in DB
-            # IMPORTANT: All .get() calls must provide default empty strings to prevent DynamoDB SerializationException
             # BUG-024 FIX: Use persona_sanitized (all strings) instead of raw persona
-            user_profile.update(
-                actions=[
-                    UserProfile.persona.name.set(persona_sanitized.get('name', '')),
-                    UserProfile.persona.archetype.set(persona_sanitized.get('archetype', '')),
-                    UserProfile.persona.experience.set(persona_sanitized.get('experience', '')),
-                    UserProfile.persona.focus.set(persona_sanitized.get('focus', '')),
-                    UserProfile.persona.profile_essence.set(persona_sanitized.get('profile_essence', '')),
-                    # Strategy field replaces investment_philosophy (role-agnostic)
-                    UserProfile.persona.investment_philosophy.set(persona_sanitized.get('strategy') or persona_sanitized.get('investment_philosophy') or ''),
-                    UserProfile.persona.what_theyre_looking_for.set(persona_sanitized.get('what_theyre_looking_for', '')),
-                    UserProfile.persona.engagement_style.set(persona_sanitized.get('engagement_style', '')),
-                    UserProfile.persona.designation.set(persona_sanitized.get('designation', '')),
-                    UserProfile.persona.requirements.set(requirements or ''),
-                    UserProfile.persona.offerings.set(offerings or ''),
-                    UserProfile.persona.generated_at.set(datetime.utcnow()),
-                    UserProfile.persona_status.set('completed')
-                ]
-            )
+            # SUPABASE FIX: Use direct attribute assignment + save() instead of PynamoDB update()
+            user_profile.persona.name = persona_sanitized.get('name', '')
+            user_profile.persona.archetype = persona_sanitized.get('archetype', '')
+            user_profile.persona.experience = persona_sanitized.get('experience', '')
+            user_profile.persona.focus = persona_sanitized.get('focus', '')
+            user_profile.persona.profile_essence = persona_sanitized.get('profile_essence', '')
+            user_profile.persona.strategy = persona_sanitized.get('strategy') or persona_sanitized.get('investment_philosophy') or ''
+            user_profile.persona.investment_philosophy = user_profile.persona.strategy  # Legacy alias
+            user_profile.persona.what_theyre_looking_for = persona_sanitized.get('what_theyre_looking_for', '')
+            user_profile.persona.engagement_style = persona_sanitized.get('engagement_style', '')
+            user_profile.persona.designation = persona_sanitized.get('designation', '')
+            user_profile.persona.requirements = requirements or ''
+            user_profile.persona.offerings = offerings or ''
+            user_profile.persona.generated_at = datetime.utcnow()
+            user_profile.persona_status = 'completed'
+            user_profile.save()
             
             logger.info(f"Successfully stored persona data for user {user_id}")
             logger.info(f"Successfully generated persona for user {user_id}: {persona_sanitized.get('name')}")
@@ -243,7 +240,8 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
                 raise self.retry(countdown=5)
 
             # All retries exhausted - mark as failed
-            user_profile.update(actions=[UserProfile.persona_status.set('failed')])
+            # SUPABASE FIX: Use direct attribute assignment + save()
+            user_profile.persona_status = 'failed'
             user_profile.save()
             # Return failure dict but allow chain to continue
             return {
@@ -263,7 +261,8 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
         logger.exception(f"Error generating persona for user {user_id}: {e}")
         try:
             user_profile = UserProfile.get(user_id)
-            user_profile.update(actions=[UserProfile.persona_status.set('failed')])
+            # SUPABASE FIX: Use direct attribute assignment + save()
+            user_profile.persona_status = 'failed'
             user_profile.save()
         except Exception:
             pass

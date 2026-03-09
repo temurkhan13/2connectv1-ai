@@ -363,7 +363,9 @@ async def regenerate_persona(
             raise HTTPException(status_code=404, detail="User not found")
 
         # Reset persona status to trigger regeneration
-        user_profile.update(actions=[UserProfile.persona_status.set('pending')])
+        # SUPABASE FIX: Use direct attribute assignment + save()
+        user_profile.persona_status = 'pending'
+        user_profile.save()
 
         # Trigger persona regeneration task
         task_result = generate_persona_task.apply_async(args=[user_id, True])

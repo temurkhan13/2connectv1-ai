@@ -102,7 +102,7 @@ SLOT_DEFINITIONS = {
     "company_name": {
         "description": "Name of the user's company (if founder/executive)",
         "type": "text",
-        "extraction_hint": "Extract ONLY proper noun company names (e.g., 'MedFlow AI', 'Acme Corp', 'TechStart'). NEVER extract descriptions like 'startup in AI space', 'healthcare company', 'my company', 'tech startup' - these are NOT company names. If no specific company name is mentioned, leave this field EMPTY. A company name is a specific brand/entity name, not a category or description."
+        "extraction_hint": "Extract ONLY the official registered business name - a proper noun like 'Stripe', 'MedFlow AI', 'Acme Corp'. TEST: Does it look like a brand that could be trademarked? If YES → extract. If NO → return null. EXAMPLES: 'I run a healthtech startup' → null (no name given). 'CEO of HealthTech Solutions Inc' → 'HealthTech Solutions Inc'. 'my AI company' → null. 'founder of Anthropic' → 'Anthropic'. NEVER return: 'startup', 'company', 'tech company', 'healthtech startup', 'AI platform', 'my business' - these are categories, NOT names."
     },
     "role_title": {
         "description": "User's job title or role",
@@ -1969,6 +1969,32 @@ YOU MUST RETURN VALID JSON. NO EXCEPTIONS.
                     # Not a valid number, skip
                     logger.warning(f"team_size value '{value}' is not a valid number, skipping slot")
                     continue
+
+            # CRITICAL VALIDATION: Reject generic descriptions for company_name
+            # A proper company name is a specific brand like "MedFlow AI", "Acme Corp"
+            # NOT generic descriptions like "healthtech startup", "my company", "tech startup"
+            if slot_name == "company_name" and value is not None and isinstance(value, str):
+                value_lower = value.lower().strip()
+                # Generic patterns that are NOT valid company names
+                generic_patterns = [
+                    "startup", "company", "business", "venture", "firm", "enterprise",
+                    "my ", "our ", "the ", "a ", "an ",
+                    "tech", "healthtech", "fintech", "edtech", "cleantech", "biotech",
+                    "ai ", "ml ", "saas", "b2b", "b2c", "d2c",
+                    "platform", "solution", "service", "app", "application",
+                    "not specified", "n/a", "none", "unknown", "tbd"
+                ]
+                # Check if the value is just a generic description
+                is_generic = any(pattern in value_lower for pattern in generic_patterns)
+                # Also check if it's too short (< 3 chars) or has no capital letters (proper nouns are capitalized)
+                has_proper_noun = any(c.isupper() for c in value)
+                is_too_short = len(value.strip()) < 3
+
+                if is_generic or is_too_short or (not has_proper_noun and len(value) < 20):
+                    logger.warning(
+                        f"company_name '{value}' appears to be a generic description, not a proper company name. Skipping slot."
+                    )
+                    continue  # Skip this slot - will trigger follow-up question for company name
 
             # BUG-005 FIX: Validate offerings/requirements are concise, not full message text
             # If LLM returns full sentences/paragraphs, truncate or flag for re-extraction

@@ -117,9 +117,21 @@ Generate the following outputs:
    - what_theyre_looking_for: What they ACTUALLY seek (investors for founders, deals for investors)
    - engagement_style: Preferred communication or collaboration approach
 
-2. requirements: 3–4 sentences focusing on what this individual ACTUALLY seeks based on their role
+2. requirements: 3–4 sentences focusing on what this individual ACTIVELY SEEKS from connections
+   CRITICAL DISTINCTION:
+   - Extract ONLY from their stated GOALS, NEEDS, and what they're LOOKING FOR in answers
+   - These are GAPS they want to FILL - things they DON'T have
+   - Examples: "looking for investors", "need help with marketing", "seeking advisors", "want introductions to X"
+   - NEVER include capabilities from their resume or background here - that's offerings!
+   - RULE: If it describes what they CAN DO or HAVE DONE, it's offerings, NOT requirements
 
-3. offerings: 3–4 sentences focusing on what this individual can ACTUALLY provide
+3. offerings: 3–4 sentences focusing on what this individual can PROVIDE to connections
+   CRITICAL DISTINCTION:
+   - Extract from their BACKGROUND, EXPERIENCE, SKILLS, ACHIEVEMENTS, and NETWORK
+   - These come from their resume/CV and professional history
+   - Examples: "20 years in healthcare", "connections to VCs", "built companies that raised $XM", "expertise in X"
+   - These are capabilities they ALREADY HAVE - value they bring to others
+   - RULE: If it describes what they WANT or NEED, it's requirements, NOT offerings
 
 Generation rules:
 - Use ONLY the provided input; never infer beyond it.
@@ -260,12 +272,21 @@ def build_persona_chain(llm):
 
 
 def combine_user_data(questions: list, resume_text: str) -> str:
-    """Combine user questions and resume text into a single string."""
+    """
+    Combine user questions and resume text into a single string.
+
+    IMPORTANT: Sections are clearly marked to help LLM distinguish:
+    - Q&A Section: Contains user's stated goals/needs → PRIMARY SOURCE for REQUIREMENTS
+    - Resume Section: Contains background/experience → PRIMARY SOURCE for OFFERINGS
+    """
     combined = []
-    
-    # Add questions section
+
+    # Add questions section with clear labeling
     if questions:
-        combined.append("User Questions:")
+        combined.append("=" * 60)
+        combined.append("USER Q&A RESPONSES (SOURCE: Extract REQUIREMENTS from this section)")
+        combined.append("What they said they're looking for, need, want to achieve")
+        combined.append("=" * 60)
         for i, q in enumerate(questions, 1):
             if isinstance(q, dict):
                 prompt = q.get('prompt', '')
@@ -274,10 +295,13 @@ def combine_user_data(questions: list, resume_text: str) -> str:
             else:
                 combined.append(f"{i}. {q}")
         combined.append("")
-    
-    # Add resume section
+
+    # Add resume section with clear labeling
     if resume_text:
-        combined.append("Resume Content:")
+        combined.append("=" * 60)
+        combined.append("RESUME/BACKGROUND (SOURCE: Extract OFFERINGS from this section)")
+        combined.append("What they have done, can do, their expertise and network")
+        combined.append("=" * 60)
         combined.append(resume_text)
-    
+
     return "\n".join(combined)

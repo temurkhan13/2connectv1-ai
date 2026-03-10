@@ -65,6 +65,66 @@ context_manager = ContextManager(slot_extractor)
 progressive_disclosure = ProgressiveDisclosure(context_manager)
 
 
+# BUG-002 FIX: Slot-to-keyword mapping for hard filtering LLM questions
+# This prevents LLM from asking about topics that already have filled slots
+SLOT_QUESTION_KEYWORDS = {
+    "primary_goal": ["goal", "objective", "looking for", "hoping to", "trying to", "want to achieve", "aim", "target"],
+    "user_type": ["role", "describe yourself", "what do you do", "who are you", "your background", "professional"],
+    "industry_focus": ["industry", "sector", "vertical", "market", "field", "domain", "space"],
+    "stage_preference": ["stage", "seed", "series", "pre-seed", "early-stage", "growth", "maturity", "company stage"],
+    "geography": ["geography", "location", "region", "country", "market focus", "based in", "where", "uk", "us", "europe"],
+    "engagement_style": ["engagement", "collaborate", "work together", "partnership", "involvement", "hands-on", "passive"],
+    "investment_range": ["invest", "investment", "ticket size", "check size", "capital", "funding amount", "how much"],
+    "funding_range": ["raise", "raising", "funding", "investment needed", "capital required", "how much funding"],
+    "team_size": ["team", "employees", "people", "headcount", "staff", "how many people"],
+    "requirements": ["need", "looking for", "require", "want from", "seeking", "help with", "support"],
+    "offerings": ["offer", "provide", "bring", "contribute", "expertise", "can help with", "value add"],
+    "dealbreakers": ["dealbreaker", "won't work", "no-go", "avoid", "not interested in", "red flag"],
+    "specialization": ["specialize", "specialization", "expertise", "focus area", "niche", "strength"],
+    "target_clients": ["clients", "customers", "who do you serve", "target market", "who do you work with"],
+    "years_experience": ["experience", "years", "how long", "background", "track record"],
+}
+
+
+def _question_covers_filled_slot(question: str, slots: Dict[str, Any]) -> Optional[str]:
+    """
+    BUG-002 FIX: Check if an LLM-generated question covers an already-filled slot.
+
+    Args:
+        question: The LLM-generated follow-up question
+        slots: Dict of slot_name -> ExtractedSlot objects
+
+    Returns:
+        The name of the filled slot that the question covers, or None if no overlap.
+    """
+    if not question:
+        return None
+
+    question_lower = question.lower()
+
+    # Get filled slot names
+    filled_slots = set()
+    for slot_name, slot in slots.items():
+        if hasattr(slot, 'status'):
+            if slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
+                filled_slots.add(slot_name)
+        elif isinstance(slot, dict) and slot.get('status') in ['filled', 'confirmed']:
+            filled_slots.add(slot_name)
+
+    if not filled_slots:
+        return None
+
+    # Check if question contains keywords for any filled slot
+    for slot_name in filled_slots:
+        keywords = SLOT_QUESTION_KEYWORDS.get(slot_name, [])
+        for keyword in keywords:
+            if keyword in question_lower:
+                logger.info(f"BUG-002 FIX: LLM question '{question[:50]}...' covers filled slot '{slot_name}' (keyword: '{keyword}')")
+                return slot_name
+
+    return None
+
+
 def _run_background_onboarding_tasks(
     user_id: str,
     session_id: str,
@@ -541,8 +601,25 @@ async def chat(request: ChatMessageRequest):
             # Generate AI response using LLM result if available
             # NOTE: Only show follow_up_question to user - understanding_summary is internal
             if llm_result and llm_result.follow_up_question:
-                # Use only the follow-up question - don't repeat back what user said
-                ai_response = llm_result.follow_up_question
+                # BUG-002 FIX: Hard filter - check if LLM question covers an already-filled slot
+                # LLMs are unreliable at following negative constraints ("DO NOT ASK AGAIN")
+                # so we enforce the constraint here in code
+                covered_slot = _question_covers_filled_slot(llm_result.follow_up_question, context.slots)
+
+                if covered_slot:
+                    # LLM asked about a filled slot - replace with progressive_disclosure question
+                    logger.info(f"BUG-002 FIX: Replacing LLM question (covers '{covered_slot}') with progressive_disclosure question")
+                    batch = progressive_disclosure.get_next_batch(session_id)
+                    if batch and batch.questions:
+                        # Use the first question from progressive_disclosure (already filtered for filled slots)
+                        ai_response = batch.questions[0].question_text
+                        logger.info(f"BUG-002 FIX: Using progressive_disclosure question: {ai_response[:50]}...")
+                    else:
+                        # No more questions from progressive_disclosure - use fallback
+                        ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
+                else:
+                    # LLM question is valid - use it
+                    ai_response = llm_result.follow_up_question
             else:
                 # Fallback to template-based response
                 ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
@@ -689,7 +766,27 @@ async def upload_resume(
         raise HTTPException(status_code=403, detail="User ID mismatch")
 
     try:
-        # Store resume content in Redis (base64 encoded)
+        # ISSUE-1 FIX: Extract resume text IMMEDIATELY during upload
+        # This allows the text to be used for question filtering during onboarding
+        # The full resume processing (persona generation) still happens after onboarding
+        from app.services.resume_service import ResumeService
+        resume_service = ResumeService()
+
+        extraction_result = resume_service.extract_text_from_content(
+            content=contents,
+            filename=file.filename,
+            content_type=file.content_type
+        )
+
+        extracted_text = ""
+        if extraction_result.get("success"):
+            extracted_text = extraction_result.get("text", "")
+            logger.info(f"ISSUE-1 FIX: Extracted {len(extracted_text)} chars from resume during upload")
+        else:
+            # Log but don't fail - resume will be re-processed after onboarding
+            logger.warning(f"ISSUE-1 FIX: Could not extract text during upload: {extraction_result.get('error')}")
+
+        # Store resume content in Redis (base64 encoded) - for Celery processing later
         redis_client = _get_redis_client()
         redis_client.setex(
             f"resume:{session_id}",
@@ -706,11 +803,20 @@ async def upload_resume(
         })
         redis_client.expire(f"resume_meta:{session_id}", 3600)
 
+        # ISSUE-1 FIX: Store extracted text separately for use during onboarding
+        if extracted_text:
+            redis_client.setex(
+                f"resume_text:{session_id}",
+                3600,  # 1 hour TTL
+                extracted_text
+            )
+            logger.info(f"ISSUE-1 FIX: Stored extracted resume text for session {session_id}")
+
         logger.info(f"Resume uploaded for session {session_id}: {file.filename} ({len(contents)} bytes)")
 
         return ResumeUploadResponse(
             success=True,
-            message="Resume uploaded successfully",
+            message="Resume uploaded successfully" + (f" - extracted {len(extracted_text)} characters" if extracted_text else ""),
             filename=file.filename
         )
     except Exception as e:

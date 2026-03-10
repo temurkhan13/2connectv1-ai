@@ -233,10 +233,10 @@ class SlotSchema:
             name="team_size",
             display_name="Team Size",
             slot_type=SlotType.NUMBER,
-            description="Current team size",
+            description="Number of employees/staff on their team (NOT clients, customers, or companies served)",
             required=False,
             depends_on=["user_type"],
-            extract_keywords=["team", "employees", "people", "members"]
+            extract_keywords=["team", "employees", "people", "members", "staff", "headcount"]
         ),
     ]
 

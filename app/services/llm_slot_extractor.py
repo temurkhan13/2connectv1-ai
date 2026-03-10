@@ -115,14 +115,14 @@ SLOT_DEFINITIONS = {
         "extraction_hint": "Extract mentioned experience like '10+ years', '5 years in tech', etc."
     },
     "offerings": {
-        "description": "What the user can offer to connections",
+        "description": "What the user can GIVE TO others they meet on this platform - their expertise, connections, resources",
         "type": "text",
-        "extraction_hint": "Extract BOTH explicit offers ('I offer X', 'I provide Y', 'I can help with Z') AND implicit capabilities that translate to offerings: 'I have connections to X' → offering: introductions to X; 'I built Y with Z results' → offering: proven expertise in Y; '20 years experience in X' → offering: domain expertise/mentorship in X; 'I achieved X% improvement' → offering: case studies/proof points; 'portfolio of X companies' → offering: network/introductions; 'warm intros to X' → offering: direct introductions. Think: what VALUE can this person bring to others based on their background, network, achievements, and experience? CRITICAL: Extract CONCISE VALUE PROPOSITION (3-8 words max per offering, separate multiple offerings with semicolons). Examples: 'introductions to UCSF network; healthcare domain expertise' NOT full sentences or paragraphs."
+        "extraction_hint": "OFFERINGS = What this user CAN PROVIDE to help OTHERS. Extract from their background/expertise: 'I have 20 years in X' → offering: X domain expertise; 'I know investors at Y' → offering: introductions to Y investors; 'I built companies that raised $XM' → offering: fundraising guidance. CRITICAL DISTINCTION: Offerings come from PAST EXPERIENCE, CURRENT CAPABILITIES, and NETWORK ACCESS. Do NOT confuse with what they're seeking (requirements). If user says 'I want to help startups' that's NOT an offering - they need to specify HOW they can help. CONCISE ONLY: 3-8 words max per item, semicolon-separated. Example: 'healthcare operations expertise; UCSF network introductions'"
     },
     "requirements": {
-        "description": "What the user needs from connections",
+        "description": "What the user NEEDS FROM others they meet on this platform - help, connections, resources they're seeking",
         "type": "text",
-        "extraction_hint": "Extract BOTH explicit needs ('I need X', 'looking for Y', 'seeking Z') AND implicit needs from their challenges or goals: 'trying to navigate X' → needs: guidance on X; 'struggling with Y' → needs: help with Y; 'want to raise funding' → needs: investors; 'building a team' → needs: talent/recruiters; 'expanding to X market' → needs: market expertise/introductions; 'working on customer acquisition' → needs: growth advice/connections. Think: what SUPPORT would help them achieve their goals or overcome their stated challenges? CRITICAL: Extract CONCISE NEEDS (3-8 words max per need, separate multiple needs with semicolons). Examples: 'Series A investors; European market guidance' NOT full sentences or paragraphs."
+        "extraction_hint": "REQUIREMENTS = What this user is ACTIVELY SEEKING from connections. Extract from stated goals/challenges: 'I need help with X' → requirement: X help/guidance; 'looking for investors' → requirement: investor introductions; 'want to expand to Europe' → requirement: European market access. CRITICAL DISTINCTION: Requirements are about GAPS TO FILL - what they DON'T have. Do NOT confuse with what they can offer. If user describes past achievements, that's offerings NOT requirements. CONCISE ONLY: 3-8 words max per item, semicolon-separated. Example: 'Series A investors; European distribution partners'"
     },
     "timeline": {
         "description": "Timeline for their goals",
@@ -175,9 +175,9 @@ SLOT_DEFINITIONS = {
         "extraction_hint": "Map stages: 'just an idea' → Idea, 'working prototype' → MVP, 'customers paying' → Product-Market Fit"
     },
     "team_size": {
-        "description": "Current team size (NUMBER OF PEOPLE on the team, NOT years of experience)",
+        "description": "Current team size - NUMBER OF EMPLOYEES/STAFF on their own team. NOT clients, customers, or companies they serve.",
         "type": "number",
-        "extraction_hint": "Extract TEAM MEMBER COUNT ONLY: 'team of 5' → 5, 'solo founder' → 1, '12 employees' → 12. CRITICAL: NEVER extract years (experience_years) as team_size. Valid range: 1-1000. If user says '7 years', that's experience_years NOT team_size."
+        "extraction_hint": "Extract EMPLOYEE COUNT ONLY - people who work FOR the user, NOT people they work WITH or serve. CORRECT: 'team of 5' → 5, 'solo founder' → 1, '12 employees' → 12. WRONG (DO NOT EXTRACT): 'help 200 SMEs' (clients, not team), 'work with 50 companies' (customers), 'serve 100 businesses' (clients). NEVER extract years or client counts. Valid range: 1-1000."
     },
     # HIRING-specific slots - MUST match SlotSchema for progress tracking
     "role_type": {
@@ -1180,7 +1180,8 @@ Return ONLY the follow-up question, nothing else."""
         conversation_history: Optional[List[Dict[str, str]]] = None,
         already_filled_slots: Optional[Dict[str, Any]] = None,
         target_slots: Optional[List[str]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        resume_context: Optional[str] = None
     ) -> LLMExtractionResult:
         """
         Extract slot values from user message using LLM comprehension.
@@ -1190,12 +1191,18 @@ Return ONLY the follow-up question, nothing else."""
             conversation_history: Previous turns for context
             already_filled_slots: Slots already extracted in this session
             target_slots: Specific slots to focus on (None = all)
+            session_id: Session ID for logging
+            resume_context: Optional extracted resume text to inform extraction
 
         Returns:
             LLMExtractionResult with extracted slots and follow-up
         """
         already_filled = already_filled_slots or {}
         history = conversation_history or []
+
+        # ISSUE-1 FIX: Log if we have resume context
+        if resume_context:
+            logger.info(f"ISSUE-1 FIX: Using resume context ({len(resume_context)} chars) for slot extraction")
 
         # BUG-001 FIX: Check for completion intent BEFORE calling LLM
         # If user signals they're done, return early with empty follow_up_question
@@ -1216,8 +1223,8 @@ Return ONLY the follow-up question, nothing else."""
         if covered_topics:
             logger.info(f"Topics already covered in conversation: {covered_topics}")
 
-        # Build the extraction prompt with covered topics
-        system_prompt = self._build_system_prompt(already_filled, target_slots, covered_topics)
+        # Build the extraction prompt with covered topics and resume context
+        system_prompt = self._build_system_prompt(already_filled, target_slots, covered_topics, resume_context)
 
         # Build conversation context (Anthropic API: system is separate, messages are user/assistant only)
         messages = []
@@ -1468,9 +1475,28 @@ Your response MUST be parseable JSON. Begin with {{ now."""
         self,
         already_filled: Dict[str, Any],
         target_slots: Optional[List[str]],
-        covered_topics: Optional[List[str]] = None
+        covered_topics: Optional[List[str]] = None,
+        resume_context: Optional[str] = None
     ) -> str:
         """Build the system prompt for extraction."""
+
+        # ISSUE-1 FIX: Build resume context section
+        resume_context_text = ""
+        if resume_context:
+            # Truncate to prevent context overflow
+            truncated_resume = resume_context[:3000] if len(resume_context) > 3000 else resume_context
+            resume_context_text = f"""
+## 📄 USER'S RESUME (Background Context)
+The user has uploaded a resume. Use this background to:
+1. SKIP questions about information already clear from resume (e.g., industry, experience level)
+2. Infer their OFFERINGS (what they can provide) from their background
+3. Focus questions on what's MISSING (requirements, specific goals, what they're seeking)
+
+Resume Summary:
+{truncated_resume}
+
+IMPORTANT: DO NOT ask about information clearly stated in the resume above.
+"""
 
         # Filter to target slots if specified
         slots_to_extract = SLOT_DEFINITIONS
@@ -1696,7 +1722,7 @@ Extract ALL of these:
 
 ## Slots to Extract
 {chr(10).join(slot_descriptions)}
-{already_filled_text}
+{already_filled_text}{resume_context_text}
 ## Response Format
 Return valid JSON:
 {{

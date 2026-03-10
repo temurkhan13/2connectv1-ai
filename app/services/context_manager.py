@@ -197,6 +197,35 @@ class ContextManager:
                 logger.error(f"Failed to load session from Redis: {e}")
         return None
 
+    def _get_resume_text_from_redis(self, session_id: str) -> Optional[str]:
+        """
+        ISSUE-1 FIX: Fetch extracted resume text from Redis.
+
+        The resume text is stored by the upload_resume endpoint immediately
+        after upload, allowing it to be used during slot extraction.
+
+        Args:
+            session_id: The onboarding session ID
+
+        Returns:
+            Extracted resume text if available, None otherwise
+        """
+        if not self._use_redis or not self.redis:
+            return None
+
+        try:
+            key = f"resume_text:{session_id}"
+            resume_text = self.redis.get(key)
+            if resume_text:
+                # Redis returns bytes or string depending on decode_responses setting
+                if isinstance(resume_text, bytes):
+                    resume_text = resume_text.decode('utf-8')
+                return resume_text
+        except Exception as e:
+            logger.debug(f"Could not fetch resume text from Redis: {e}")
+
+        return None
+
     def _dict_to_context(self, data: dict) -> ConversationContext:
         """Convert dict back to ConversationContext."""
         from app.services.slot_extraction import SlotStatus
@@ -391,13 +420,24 @@ class ContextManager:
         try:
             logger.info(f"LLM extraction starting. Already filled: {list(already_filled.keys())}")
 
+            # ISSUE-1 FIX: Fetch resume text from Redis if available
+            # This allows the LLM to skip questions about info already in the resume
+            resume_context = None
+            try:
+                resume_context = self._get_resume_text_from_redis(context.session_id)
+                if resume_context:
+                    logger.info(f"ISSUE-1 FIX: Found resume context for session ({len(resume_context)} chars)")
+            except Exception as e:
+                logger.debug(f"Could not fetch resume context: {e}")
+
             # Use LLM to extract slots with full comprehension
             # CRITICAL: Always call LLM even on cache hit to generate fresh personalized question
             llm_result = self.llm_extractor.extract_slots(
                 user_message=content,
                 conversation_history=conversation_history,
                 already_filled_slots=already_filled,
-                session_id=context.session_id
+                session_id=context.session_id,
+                resume_context=resume_context
             )
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")

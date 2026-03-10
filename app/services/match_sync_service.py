@@ -3,6 +3,10 @@ Match Sync Service.
 
 Automatically syncs matches from AI service to backend database.
 This ensures matches are persisted and visible in the frontend.
+
+IMPORTANT: This service requires proper environment variables to be set.
+For production/staging, ensure RECIPROCITY_BACKEND_URL and RECIPROCITY_BACKEND_DB_URL
+are set to the actual cloud endpoints (NOT localhost).
 """
 import os
 import uuid
@@ -16,8 +20,15 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-BACKEND_URL = os.getenv('RECIPROCITY_BACKEND_URL', 'http://localhost:3000')
-BACKEND_API_KEY = os.getenv('BACKEND_API_KEY', 'dev-webhook-key')
+# CRITICAL: No localhost fallbacks - these must be properly configured
+BACKEND_URL = os.getenv('RECIPROCITY_BACKEND_URL')
+BACKEND_API_KEY = os.getenv('BACKEND_API_KEY')
+
+# Validate at import time - log warnings if not configured
+if not BACKEND_URL:
+    logger.warning("RECIPROCITY_BACKEND_URL not set - match sync will fail")
+if not BACKEND_API_KEY:
+    logger.warning("BACKEND_API_KEY not set - match sync will fail")
 
 
 def is_valid_uuid(val: str) -> bool:
@@ -51,22 +62,35 @@ class MatchSyncService:
         self._valid_user_ids_cache: Optional[Set[str]] = None
         self._cache_ttl = 300  # 5 minutes
 
+        # Log configuration status
+        if not self.backend_url:
+            logger.error("MatchSyncService: RECIPROCITY_BACKEND_URL not configured")
+        if not self.api_key:
+            logger.error("MatchSyncService: BACKEND_API_KEY not configured")
+
     def get_valid_user_ids_from_backend(self) -> Set[str]:
-        """Get set of valid user IDs from backend database."""
+        """
+        Get set of valid user IDs from backend database (Supabase).
+
+        Uses the same connection pattern as supabase_profiles adapter.
+        """
+        db_url = os.getenv('RECIPROCITY_BACKEND_DB_URL')
+        if not db_url:
+            logger.error("RECIPROCITY_BACKEND_DB_URL not set - cannot fetch valid user IDs")
+            return set()
+
         try:
             import psycopg2
-            conn = psycopg2.connect(
-                os.getenv('RECIPROCITY_BACKEND_DB_URL',
-                         'postgresql://postgres:postgres@localhost:5432/reciprocity_db')
-            )
+            conn = psycopg2.connect(db_url)
             cursor = conn.cursor()
             cursor.execute('SELECT id FROM users')
             valid_ids = set(str(row[0]) for row in cursor.fetchall())
             cursor.close()
             conn.close()
+            logger.debug(f"Fetched {len(valid_ids)} valid user IDs from Supabase")
             return valid_ids
         except Exception as e:
-            logger.warning(f"Could not fetch valid user IDs: {e}")
+            logger.error(f"Could not fetch valid user IDs from Supabase: {e}")
             return set()
 
     def calculate_user_matches(self, user_id: str, threshold: float = 0.3) -> Dict[str, Any]:
@@ -93,6 +117,15 @@ class MatchSyncService:
         valid_user_ids: Optional[Set[str]] = None
     ) -> Dict[str, Any]:
         """Send matches to backend webhook to persist them."""
+        # Fail early if not configured
+        if not self.backend_url:
+            logger.error(f"Cannot sync matches for {user_id}: RECIPROCITY_BACKEND_URL not configured")
+            return {'success': False, 'error': 'Backend URL not configured'}
+
+        if not self.api_key:
+            logger.error(f"Cannot sync matches for {user_id}: BACKEND_API_KEY not configured")
+            return {'success': False, 'error': 'Backend API key not configured'}
+
         batch_id = str(uuid.uuid4())
 
         # Validate source user ID

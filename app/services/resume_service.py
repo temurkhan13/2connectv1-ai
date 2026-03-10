@@ -122,6 +122,102 @@ class ResumeService:
             f.write(content)
         return path
 
+    def extract_text_from_content(self, content: bytes, filename: str, content_type: str) -> Dict[str, Any]:
+        """
+        Extract text from resume content WITHOUT database operations.
+
+        This is used during onboarding to immediately extract resume text
+        for use in question filtering, while the full processing
+        (persona generation, etc.) happens later in the Celery pipeline.
+
+        Args:
+            content: Raw binary content of the resume file
+            filename: Original filename
+            content_type: MIME type of the file
+
+        Returns:
+            Dict with:
+                - success: bool
+                - text: Extracted text (if successful)
+                - error: Error message (if failed)
+        """
+        try:
+            # Validate size
+            if len(content) > MAX_RESUME_SIZE_BYTES:
+                return {
+                    "success": False,
+                    "text": "",
+                    "error": f"File too large: exceeds {MAX_RESUME_SIZE_BYTES / 1024 / 1024:.0f}MB limit"
+                }
+
+            # Determine file extension
+            if 'pdf' in content_type.lower():
+                suffix = '.pdf'
+            elif 'word' in content_type.lower() or filename.endswith('.docx'):
+                suffix = '.docx'
+            elif filename.endswith('.doc'):
+                suffix = '.doc'
+            elif filename.endswith('.txt'):
+                suffix = '.txt'
+            else:
+                suffix = os.path.splitext(filename)[1].lower() or '.pdf'
+
+            # Save to temp file
+            temp_path = self._save_upload_to_temp(content, suffix)
+
+            try:
+                # Extract text
+                text = ""
+                if suffix == '.pdf':
+                    loader = PyPDFLoader(temp_path)
+                    docs = loader.load()
+                    text = "\n\n".join(d.page_content for d in docs)
+                elif suffix == '.docx':
+                    loader = Docx2txtLoader(temp_path)
+                    docs = loader.load()
+                    text = "\n\n".join(d.page_content for d in docs)
+                elif suffix in ('.txt', '.text'):
+                    loader = TextLoader(temp_path, encoding="utf-8")
+                    docs = loader.load()
+                    text = "\n\n".join(d.page_content for d in docs)
+                else:
+                    return {
+                        "success": False,
+                        "text": "",
+                        "error": f"Unsupported file type: {suffix}"
+                    }
+
+                # Clean up the text
+                text = self._cleanup_text(text)
+
+                if not text:
+                    return {
+                        "success": False,
+                        "text": "",
+                        "error": "No text extracted from resume"
+                    }
+
+                logger.info(f"Extracted {len(text)} characters from resume ({filename})")
+
+                return {
+                    "success": True,
+                    "text": text,
+                    "error": None
+                }
+
+            finally:
+                # Clean up temp file
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+
+        except Exception as e:
+            logger.error(f"Error extracting text from resume {filename}: {e}")
+            return {
+                "success": False,
+                "text": "",
+                "error": str(e)
+            }
+
     def _process_base64_resume(self, user_id: str, resume_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Process base64-encoded resume content from conversational upload.

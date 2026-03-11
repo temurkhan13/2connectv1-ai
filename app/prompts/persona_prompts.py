@@ -95,12 +95,16 @@ CRITICAL - ROLE DETECTION: First identify the user's role from the data:
 - BUG-038 FIX: If they mention "recruiting", "recruiter", "talent acquisition", "headhunter", "placing candidates", "hiring for clients", "staffing", "talent partner" → They are a RECRUITER/TALENT PROFESSIONAL (NOT entrepreneur even if they say "founder of recruiting firm")
 - BUG-038 FIX: If they mention "agency", "consulting firm", "service provider", "client work", "serving companies" → They are a SERVICE PROVIDER (NOT entrepreneur)
 - IMPORTANT: "founder of X" where X is a service business (recruiting, consulting, agency) = SERVICE PROVIDER, not startup founder
+- If they mention "job search", "looking for a job", "seeking employment", "career change", "open to opportunities", "target role", "salary expectations", "notice period" → They are a JOB SEEKER/CANDIDATE
+- If they mention "partnership", "strategic alliance", "joint venture", "distribution partner", "co-marketing" → They are seeking BUSINESS PARTNERSHIP
 - Otherwise, infer from context or default to professional seeking connections
 
 ROLE-AWARE OUTPUT - The "strategy" field MUST match their role:
 - For FOUNDERS: Business strategy, growth plans, market approach (NOT investment philosophy)
 - For INVESTORS: Investment thesis, check size preferences, sector focus
 - For ADVISORS: Advisory approach, areas of expertise, engagement style
+- For JOB SEEKERS: Career goals, target roles, growth aspirations, work preferences
+- For PARTNERSHIP SEEKERS: Partnership objectives, collaboration style, mutual value creation
 
 Mandatory fallback behavior:
 - If the provided information is blank, irrelevant, or insufficient, you MUST still output VALID JSON.

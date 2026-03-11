@@ -125,6 +125,87 @@ def _question_covers_filled_slot(question: str, slots: Dict[str, Any]) -> Option
     return None
 
 
+def _get_unfilled_critical_slots(slots: Dict[str, Any], user_type: Optional[str] = None) -> List[str]:
+    """
+    Get list of critical slots that are still unfilled.
+
+    Used for fallback-to-critical logic: when LLM question generation fails,
+    check if there are unfilled critical slots and ask about those instead
+    of falling back to generic questions.
+
+    Args:
+        slots: Dict of slot_name -> ExtractedSlot objects or dicts
+        user_type: Optional user type for role-specific critical slots
+
+    Returns:
+        List of unfilled critical slot names, ordered by priority
+    """
+    # Universal critical slots (for all users)
+    critical_slots = [
+        "primary_goal", "user_type", "industry_focus", "geography",
+        "stage_preference", "requirements", "offerings"
+    ]
+
+    # Add role-specific critical slots
+    if user_type:
+        user_type_lower = user_type.lower() if isinstance(user_type, str) else ""
+        if "investor" in user_type_lower:
+            critical_slots.extend(["check_size", "investment_thesis"])
+        elif "founder" in user_type_lower or "entrepreneur" in user_type_lower:
+            critical_slots.extend(["funding_need", "company_stage"])
+
+    unfilled = []
+    for slot_name in critical_slots:
+        slot = slots.get(slot_name)
+        if not slot:
+            unfilled.append(slot_name)
+            continue
+
+        # Check status - handle both ExtractedSlot objects and dicts
+        if hasattr(slot, 'status'):
+            if slot.status not in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
+                unfilled.append(slot_name)
+        elif isinstance(slot, dict):
+            if slot.get('status') not in ['filled', 'confirmed']:
+                unfilled.append(slot_name)
+        else:
+            unfilled.append(slot_name)
+
+    return unfilled
+
+
+def _get_critical_slot_question(slots: Dict[str, Any], user_type: Optional[str] = None) -> Optional[str]:
+    """
+    Get a question for the first unfilled critical slot.
+
+    Used for fallback-to-critical logic: when LLM question generation fails,
+    ask about unfilled critical slots instead of generic questions.
+
+    Args:
+        slots: Dict of slot_name -> ExtractedSlot objects or dicts
+        user_type: Optional user type for role-specific critical slots
+
+    Returns:
+        Question text for the first unfilled critical slot, or None if all filled
+    """
+    unfilled = _get_unfilled_critical_slots(slots, user_type)
+    if not unfilled:
+        return None
+
+    # Import here to avoid circular imports
+    from app.services.progressive_disclosure import ProgressiveDisclosure
+
+    # Get the question template for the first unfilled critical slot
+    for slot_name in unfilled:
+        template = ProgressiveDisclosure.QUESTION_TEMPLATES.get(slot_name)
+        if template:
+            logger.info(f"Fallback-to-critical: Using template question for unfilled slot '{slot_name}'")
+            return template.question_text
+
+    # No template found for any unfilled critical slot
+    return None
+
+
 def _run_background_onboarding_tasks(
     user_id: str,
     session_id: str,
@@ -588,6 +669,16 @@ async def chat(request: ChatMessageRequest):
         # This prevents the AI from asking follow-up questions when user says "I'm done"
         is_complete = context_manager.is_complete(session_id)
 
+        # ISSUE #5 FIX: Enforce MV dimension coverage before allowing completion
+        # Even if user signals completion, don't allow it until 4+ MV dimensions are filled
+        mv_override_reason = None
+        if is_complete:
+            can_complete, reason = progressive_disclosure.can_skip_to_completion(session_id)
+            if not can_complete:
+                logger.info(f"Session {session_id}: Overriding completion - MV coverage insufficient: {reason}")
+                is_complete = False
+                mv_override_reason = reason
+
         # Get LLM result early so we can access is_off_topic for the response
         llm_result = context_manager.get_llm_response(session_id)
         is_off_topic = llm_result.is_off_topic if llm_result else False
@@ -598,9 +689,30 @@ async def chat(request: ChatMessageRequest):
             ai_response = "Perfect! I have everything I need to find your matches. Click the button below to complete your profile."
             logger.info(f"Session {session_id}: User completion detected, skipping follow-up")
         else:
-            # Generate AI response using LLM result if available
-            # NOTE: Only show follow_up_question to user - understanding_summary is internal
-            if llm_result and llm_result.follow_up_question:
+            # ISSUE #5 FIX: If MV override is active, prioritize MV dimension questions
+            mv_question = None
+            if mv_override_reason:
+                # Get MV status to find missing dimensions
+                mv_status = progressive_disclosure.get_multi_vector_status(session_id)
+                missing_dims = mv_status.get("missing_dimensions", [])
+                logger.info(f"Session {session_id}: MV override active, missing dimensions: {missing_dims}")
+
+                # Try to get a question for the first missing dimension
+                from app.services.progressive_disclosure import MULTI_VECTOR_DIMENSIONS
+                for dim in missing_dims:
+                    dim_config = MULTI_VECTOR_DIMENSIONS.get(dim)
+                    if dim_config:
+                        slot_name = dim_config["slot_name"]
+                        template = progressive_disclosure.QUESTION_TEMPLATES.get(slot_name)
+                        if template:
+                            mv_question = template.question_text
+                            logger.info(f"Session {session_id}: Using MV dimension question for '{dim}' (slot: {slot_name})")
+                            break
+
+            # Generate AI response - prioritize MV question if override is active
+            if mv_question:
+                ai_response = f"Almost there! {mv_question}"
+            elif llm_result and llm_result.follow_up_question:
                 # BUG-002 FIX: Hard filter - check if LLM question covers an already-filled slot
                 # LLMs are unreliable at following negative constraints ("DO NOT ASK AGAIN")
                 # so we enforce the constraint here in code
@@ -615,14 +727,27 @@ async def chat(request: ChatMessageRequest):
                         ai_response = batch.questions[0].question_text
                         logger.info(f"BUG-002 FIX: Using progressive_disclosure question: {ai_response[:50]}...")
                     else:
-                        # No more questions from progressive_disclosure - use fallback
-                        ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
+                        # No more questions from progressive_disclosure - try critical slot fallback
+                        user_type_slot = context.slots.get("user_type")
+                        user_type = str(user_type_slot.value) if user_type_slot and hasattr(user_type_slot, 'value') else None
+                        critical_question = _get_critical_slot_question(context.slots, user_type)
+                        if critical_question:
+                            ai_response = critical_question
+                        else:
+                            ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
                 else:
                     # LLM question is valid - use it
                     ai_response = llm_result.follow_up_question
             else:
-                # Fallback to template-based response
-                ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
+                # Fallback to template-based response - but first check for unfilled critical slots
+                user_type_slot = context.slots.get("user_type")
+                user_type = str(user_type_slot.value) if user_type_slot and hasattr(user_type_slot, 'value') else None
+                critical_question = _get_critical_slot_question(context.slots, user_type)
+                if critical_question:
+                    logger.info(f"Using critical slot question instead of generic fallback")
+                    ai_response = critical_question
+                else:
+                    ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
 
         # Add assistant turn
         # BUG-008 FIX: Await async add_turn

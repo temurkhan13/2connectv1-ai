@@ -202,6 +202,26 @@ class ProgressiveDisclosure:
             help_text="Helps us find people in your target markets.",
             can_skip=False  # CHANGED: Required for match quality
         ),
+        "requirements": QuestionCard(
+            slot_name="requirements",
+            question_text="What are you hoping to find through 2Connect?",
+            question_type=SlotType.FREE_TEXT,
+            priority=QuestionPriority.CRITICAL,
+            examples=["Investors for my Series A", "Technical co-founder",
+                     "Startups in climate tech to invest in"],
+            help_text="Understanding what you're looking for helps us match you better.",
+            can_skip=False
+        ),
+        "offerings": QuestionCard(
+            slot_name="offerings",
+            question_text="What unique value do you bring to the table?",
+            question_type=SlotType.FREE_TEXT,
+            priority=QuestionPriority.CRITICAL,
+            examples=["Industry expertise in fintech", "Network of enterprise buyers",
+                     "Hands-on operational experience"],
+            help_text="This helps potential connections understand what you offer.",
+            can_skip=False
+        ),
 
         # Investor slots - indirect phrasing
         "check_size": QuestionCard(
@@ -646,17 +666,17 @@ class ProgressiveDisclosure:
         user_type = str(user_type_slot.value) if user_type_slot else None
 
         if context.phase == ConversationPhase.CORE_COLLECTION:
-            # During core collection, just ask core universal slots
-            slot_names = [s.name for s in self.schema.CORE_SLOTS
-                         if s.name in ["primary_goal", "user_type", "industry_focus", "geography"]]
+            # During core collection, ask ALL required CORE_SLOTS
+            # FIX: Previously hardcoded to only 4 slots, missing requirements, offerings, stage_preference
+            slot_names = [s.name for s in self.schema.CORE_SLOTS if s.required]
 
         elif context.phase == ConversationPhase.ROLE_SPECIFIC:
             # DYNAMIC SELECTION based on objective (primary_goal)
             if primary_goal:
                 # Use objective-based slot selection
                 objective_slots = self.schema.get_slots_for_objective(primary_goal, user_type)
-                # Filter out core slots already asked in CORE_COLLECTION
-                core_names = {"primary_goal", "user_type", "industry_focus", "geography"}
+                # Filter out core slots already asked in CORE_COLLECTION (all required CORE_SLOTS)
+                core_names = {s.name for s in self.schema.CORE_SLOTS if s.required}
                 slot_names = [s.name for s in objective_slots if s.name not in core_names]
             elif user_type:
                 # Fallback to user_type selection (legacy behavior)

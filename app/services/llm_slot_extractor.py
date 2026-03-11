@@ -599,20 +599,33 @@ class LLMSlotExtractor:
 ## Task
 Extract structured slot data from this resume. Focus on factual information that's explicitly stated.
 
-## Slots to Extract
+## Universal Slots (Extract for Everyone)
 - user_type: Their primary role (Founder/Entrepreneur, Angel Investor, VC Partner, Corporate Executive, Mentor/Advisor, Service Provider)
 - industry_focus: Industries they work in (Technology/SaaS, Healthcare/Biotech, FinTech, E-commerce, AI/ML, CleanTech, EdTech, Consumer, Enterprise, Other)
-- experience_years: Years of experience (extract from dates or explicit mentions)
+- experience_years: Years of experience IN CURRENT ROLE. For career changers (e.g., "former athlete turned investor"), use time since transition.
 - role_title: Current or most recent job title
 - company_name: Current or most recent company
 - geography: Regions mentioned (UK, US, Europe, Asia, etc.)
 - offerings: What they can offer based on their background (expertise, network, skills)
+- requirements: What they're looking for (often in "What I'm Looking For" or "Seeking" sections)
+- stage_preference: Company stages they work with (Pre-seed, Seed, Series A, B, C, Growth, etc.)
+
+## Investor-Specific Slots (Extract if user_type indicates investor)
+- check_size: Investment amount range (e.g., "$250K-$1M", "$50K-$500K")
+- investment_thesis: Investment focus/thesis statement
+- portfolio_size: Number of investments or portfolio companies
+
+## Founder-Specific Slots (Extract if user_type indicates founder)
+- funding_need: Amount seeking to raise (e.g., "$2M Seed round")
+- company_stage: Current company stage (Idea, MVP, Revenue, Growth)
+- team_size: Number of team members
 
 ## Rules
 1. ONLY extract information explicitly stated in the resume
-2. Do NOT infer requirements (those come from conversation, not resume)
+2. For requirements, look for "Looking for", "Seeking", "Want to connect with" sections
 3. For offerings, summarize their key skills/expertise in 2-3 sentences
 4. Set confidence based on how explicit the information is (0.9+ for explicit, 0.7-0.9 for implied)
+5. For career changers, experience_years should reflect current role, not prior career
 
 ## Response Format
 Return valid JSON:
@@ -632,9 +645,12 @@ CRITICAL: Only return the JSON object. No explanatory text."""
         try:
             logger.info(f"BUG-043: Extracting slots from resume ({len(truncated)} chars)")
 
+            # BUG-043 FIX: Use Sonnet (personalization_model) for resume extraction
+            # Rationale: Resume extraction happens ONCE at upload time, user expects wait.
+            # Sonnet handles nuances better (career transitions, complex backgrounds).
             response = self.client.messages.create(
-                model=self.extraction_model,
-                max_tokens=1000,
+                model=self.personalization_model,
+                max_tokens=1500,  # Increased for more detailed extraction
                 system=system_prompt,
                 messages=[{
                     "role": "user",

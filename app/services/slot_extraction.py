@@ -152,7 +152,7 @@ class SlotSchema:
             display_name="Stage Preference",
             slot_type=SlotType.MULTI_SELECT,
             description="Investment or company stage",
-            required=True,
+            required=False,  # ISSUE #6 FIX: Role-specific versions in INVESTOR_SLOTS/FOUNDER_SLOTS
             options=[
                 "Pre-seed", "Seed", "Series A", "Series B", "Series C+",
                 "Growth", "Late Stage", "Any Stage"
@@ -175,6 +175,19 @@ class SlotSchema:
 
     # Investor-specific slots
     INVESTOR_SLOTS = [
+        SlotDefinition(
+            name="stage_preference",
+            display_name="Investment Stage Preference",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What company stages do you invest in?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Pre-seed", "Seed", "Series A", "Series B", "Series C+",
+                "Growth", "Late Stage", "Any Stage"
+            ],
+            extract_keywords=["pre-seed", "seed", "series", "growth", "early", "late", "stage"]
+        ),
         SlotDefinition(
             name="check_size",
             display_name="Check Size",
@@ -208,6 +221,19 @@ class SlotSchema:
 
     # Founder-specific slots
     FOUNDER_SLOTS = [
+        SlotDefinition(
+            name="stage_preference",
+            display_name="Investor Stage Preference",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What stage investors are you looking to connect with?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Pre-seed", "Seed", "Series A", "Series B", "Series C+",
+                "Growth", "Any Stage"
+            ],
+            extract_keywords=["pre-seed", "seed", "series", "growth", "stage", "investor"]
+        ),
         SlotDefinition(
             name="company_stage",
             display_name="Company Stage",

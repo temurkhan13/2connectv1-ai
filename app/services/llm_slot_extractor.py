@@ -39,6 +39,71 @@ MULTI_VECTOR_DIMENSION_SLOTS = {
 # Maximum questions to ask on a single topic before forcing switch
 MAX_QUESTIONS_PER_TOPIC = 2
 
+# =============================================================================
+# BUG-045 FIX: OBJECTIVE-SPECIFIC SLOT FILTERING
+# =============================================================================
+# These slots should ONLY be extracted when the user's primary_goal matches.
+# Prevents confusing extractions like "Sales" for a CTO seeking funding.
+
+# Slots specific to HIRING objective - exclude for non-hiring users
+HIRING_SPECIFIC_SLOTS = {"role_type", "seniority_level", "remote_preference", "compensation_range"}
+
+# Slots specific to COFOUNDER objective - exclude for non-cofounder users
+COFOUNDER_SPECIFIC_SLOTS = {"skills_have", "skills_need", "commitment_level", "equity_expectations"}
+
+# Slots specific to MENTORSHIP objective
+MENTORSHIP_SPECIFIC_SLOTS = {"mentorship_areas", "mentorship_format", "mentorship_commitment"}
+
+# Map primary_goal values to specific slot sets
+OBJECTIVE_SLOT_MAPPING = {
+    "hiring": HIRING_SPECIFIC_SLOTS,
+    "find co-founder": COFOUNDER_SPECIFIC_SLOTS,
+    "seek mentorship": MENTORSHIP_SPECIFIC_SLOTS,
+}
+
+
+def filter_slots_by_objective(slot_definitions: Dict, primary_goal: Optional[str]) -> Dict:
+    """
+    BUG-045 FIX: Filter slot definitions based on user's primary objective.
+
+    Prevents extracting irrelevant slots (e.g., hiring slots for founders seeking funding).
+
+    Args:
+        slot_definitions: Full SLOT_DEFINITIONS dictionary
+        primary_goal: User's primary goal (e.g., "Raise Funding", "Find Co-founder")
+
+    Returns:
+        Filtered slot definitions with objective-irrelevant slots removed
+    """
+    if not primary_goal:
+        return slot_definitions
+
+    # Normalize primary_goal for comparison
+    goal_lower = primary_goal.lower()
+
+    # Collect slots to EXCLUDE based on what's NOT the user's goal
+    slots_to_exclude = set()
+
+    # If NOT hiring, exclude hiring-specific slots
+    if "hiring" not in goal_lower and "recruit" not in goal_lower:
+        slots_to_exclude.update(HIRING_SPECIFIC_SLOTS)
+
+    # If NOT seeking co-founder, exclude co-founder slots
+    if "co-founder" not in goal_lower and "cofounder" not in goal_lower:
+        slots_to_exclude.update(COFOUNDER_SPECIFIC_SLOTS)
+
+    # If NOT seeking mentorship, exclude mentorship slots
+    if "mentor" not in goal_lower:
+        slots_to_exclude.update(MENTORSHIP_SPECIFIC_SLOTS)
+
+    # Filter out excluded slots
+    filtered = {k: v for k, v in slot_definitions.items() if k not in slots_to_exclude}
+
+    if slots_to_exclude:
+        logger.debug(f"BUG-045 FIX: Excluded {len(slots_to_exclude)} objective-specific slots for goal '{primary_goal}'")
+
+    return filtered
+
 
 @dataclass
 class LLMExtractedSlot:
@@ -177,7 +242,7 @@ SLOT_DEFINITIONS = {
     "team_size": {
         "description": "Current team size - NUMBER OF EMPLOYEES/STAFF on their own team. NOT clients, customers, or companies they serve.",
         "type": "number",
-        "extraction_hint": "Extract EMPLOYEE COUNT ONLY - people who work FOR the user, NOT people they work WITH or serve. CORRECT: 'team of 5' → 5, 'solo founder' → 1, '12 employees' → 12. WRONG (DO NOT EXTRACT): 'help 200 SMEs' (clients, not team), 'work with 50 companies' (customers), 'serve 100 businesses' (clients). NEVER extract years or client counts. Valid range: 1-1000."
+        "extraction_hint": "Extract EMPLOYEE COUNT ONLY. CRITICAL: Read carefully to distinguish employees vs customers. Example: 'leading team of 8 engineers' → 8 (team = employees). 'achieved 15 pilot customers' → DO NOT EXTRACT (customers, not employees). 'managing product roadmap for 20 clients' → DO NOT EXTRACT (clients). ONLY extract when they explicitly mention: 'team of X', 'X employees', 'X engineers on my team', 'staff of X', 'X people work for me'. NEVER extract customer/client/pilot counts. Valid range: 1-1000."
     },
     # HIRING-specific slots - MUST match SlotSchema for progress tracking
     "role_type": {
@@ -1661,6 +1726,13 @@ IMPORTANT: DO NOT ask about information clearly stated in the resume above.
         slots_to_extract = SLOT_DEFINITIONS
         if target_slots:
             slots_to_extract = {k: v for k, v in SLOT_DEFINITIONS.items() if k in target_slots}
+
+        # BUG-045 FIX: Apply objective-aware filtering based on user's primary_goal
+        # This prevents extracting irrelevant slots (e.g., role_type for founders seeking funding)
+        primary_goal = already_filled.get("primary_goal")
+        if primary_goal:
+            slots_to_extract = filter_slots_by_objective(slots_to_extract, primary_goal)
+            logger.info(f"BUG-045 FIX: Filtered slots by objective '{primary_goal}', {len(slots_to_extract)} slots remaining")
 
         # Remove already filled slots from extraction targets
         remaining_slots = {k: v for k, v in slots_to_extract.items() if k not in already_filled}

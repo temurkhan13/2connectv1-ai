@@ -951,10 +951,12 @@ async def get_matching_diagnostics():
                 },
 
                 # Intent classification
+                # BUG-047 FIX: Use archetype as fallback for user_type since persona schema
+                # generates archetype, not user_type. Both represent the same concept.
                 "intent_classification": {
                     "inferred_intent": intent,
                     "archetype": persona_data.get("archetype"),
-                    "user_type": persona_data.get("user_type")
+                    "user_type": persona_data.get("user_type") or persona_data.get("archetype")
                 },
 
                 # Dealbreakers

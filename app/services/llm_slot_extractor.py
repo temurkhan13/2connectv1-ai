@@ -459,6 +459,51 @@ class LLMSlotExtractor:
 
         return json_str
 
+    def _generate_fallback_response(self, raw_text: str, covered_topics: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        BUG-042 FIX: Generate a fallback JSON response when LLM returns non-JSON.
+
+        This prevents ValueError from reaching Sentry when the LLM breaks out of
+        JSON format (e.g., "I apologize, I should not have repeated...").
+
+        The fallback acknowledges the situation gracefully and asks a safe question
+        that's unlikely to be a duplicate.
+        """
+        logger.warning(f"BUG-042 FIX: Generating fallback response. LLM returned non-JSON: {raw_text[:150]}...")
+
+        # Determine which topics to avoid
+        safe_topics = ["geography", "timeline", "success_metrics", "collaboration_style"]
+        if covered_topics:
+            safe_topics = [t for t in safe_topics if t not in covered_topics]
+
+        # Pick a safe fallback question
+        fallback_questions = {
+            "geography": "What regions or markets are you most focused on right now?",
+            "timeline": "What's your ideal timeline for making meaningful connections?",
+            "success_metrics": "How would you define success from being on this platform?",
+            "collaboration_style": "What kind of working relationship works best for you?"
+        }
+
+        # Pick first available safe topic
+        question = "What would be most helpful for you to connect with right now?"
+        for topic in safe_topics:
+            if topic in fallback_questions:
+                question = fallback_questions[topic]
+                break
+
+        # Build fallback response
+        fallback = {
+            "is_off_topic": False,
+            "extracted_slots": {},
+            "user_type_inference": "unknown",
+            "understanding_summary": "Fallback response generated due to parsing issue. Continuing conversation naturally.",
+            "missing_important_slots": ["primary_goal", "requirements", "offerings"],
+            "follow_up_question": question
+        }
+
+        logger.info(f"BUG-042 FIX: Generated fallback with question: {question[:50]}...")
+        return fallback
+
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
         Analyze conversation history to find which semantic topics have been asked.
@@ -1395,8 +1440,12 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                 if not result_text.startswith("{"):
                     json_start = result_text.find("{")
                     if json_start == -1:
-                        logger.error(f"No JSON found in response: {result_text[:200]}")
-                        raise ValueError("No JSON object found in LLM response")
+                        # BUG-042 FIX: Instead of raising, use fallback response
+                        # This handles cases like "I apologize, I should not have repeated..."
+                        logger.warning(f"BUG-042 FIX: No JSON found in response, using fallback: {result_text[:200]}")
+                        result_data = self._generate_fallback_response(result_text, covered_topics)
+                        result = self._parse_llm_response(result_data, already_filled)
+                        return result
                     # Find matching closing brace
                     brace_count = 0
                     json_end = -1
@@ -1471,8 +1520,10 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                     logger.warning(f"Attempt {attempt + 1} failed: {e}, retrying...")
                     continue
                 else:
-                    # All retries exhausted, fall through to outer exception handler
-                    raise
+                    # BUG-042 FIX: All retries exhausted, use fallback instead of raising
+                    logger.warning(f"BUG-042 FIX: All retries exhausted ({e}), using fallback response")
+                    fallback_data = self._generate_fallback_response(str(e), covered_topics)
+                    return self._parse_llm_response(fallback_data, already_filled)
 
         # If we exit the loop without returning (all retries exhausted), return fallback
         logger.error(f"All {max_retries + 1} extraction attempts failed")
@@ -1930,6 +1981,8 @@ YOU MUST RETURN VALID JSON. NO EXCEPTIONS.
 - Preambles before the JSON object
 - Explanations after the JSON object
 - Any text that is not valid JSON
+- APOLOGIES outside of JSON (NEVER say "I apologize..." without wrapping in JSON)
+- META-COMMENTARY about the conversation (NEVER say "I do not see the message..." without JSON)
 
 **REQUIRED:**
 - Your response MUST start with {{
@@ -1937,7 +1990,40 @@ YOU MUST RETURN VALID JSON. NO EXCEPTIONS.
 - Your response MUST be parseable as JSON
 - NO text before or after the JSON object
 
-**BUG-016 FIX:** If you return ANY text that is not valid JSON (like "Okay, let me try this again..." or "Based on the details you shared..."), the system will FAIL. Your ONLY valid response is the JSON object defined above. Nothing else."""
+**BUG-016 FIX:** If you return ANY text that is not valid JSON (like "Okay, let me try this again..." or "Based on the details you shared..."), the system will FAIL. Your ONLY valid response is the JSON object defined above. Nothing else.
+
+## 🚨 BUG-041 FIX: HANDLING CONFUSION/REPETITION (STAY IN JSON)
+
+If you realize you're about to repeat a question or are confused about the conversation:
+- NEVER break out of JSON format to apologize or explain
+- ALWAYS output valid JSON with a DIFFERENT question
+- Put your acknowledgment INSIDE the follow_up_question field
+
+**EXAMPLE - IF YOU DETECT REPETITION:**
+{{
+    "is_off_topic": false,
+    "extracted_slots": {{}},
+    "user_type_inference": "unknown",
+    "understanding_summary": "User may have already answered this. Switching topics.",
+    "missing_important_slots": ["geography", "industry_focus"],
+    "follow_up_question": "Actually, let me ask something different - what regions or markets are you most focused on?"
+}}
+
+**EXAMPLE - IF YOU'RE CONFUSED ABOUT CONVERSATION:**
+{{
+    "is_off_topic": false,
+    "extracted_slots": {{}},
+    "user_type_inference": "unknown",
+    "understanding_summary": "Need to understand user's direction better.",
+    "missing_important_slots": ["primary_goal", "requirements"],
+    "follow_up_question": "I want to make sure I'm on the right track - what would be most helpful for you to connect with right now?"
+}}
+
+NEVER DO THIS (causes system failure):
+"I apologize, I should not have repeated the same question."
+"I do not see the message 'wrap up' in the conversation."
+
+ALWAYS OUTPUT JSON, even when confused or apologizing."""
 
     def _parse_llm_response(
         self,

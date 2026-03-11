@@ -89,9 +89,12 @@ You are an expert persona generation system. Using the combined data provided be
 Output STRICTLY in VALID JSON format matching this schema: {json_schema}
 
 CRITICAL - ROLE DETECTION: First identify the user's role from the data:
-- If they mention "raising funding", "seeking investment", "looking for investors", "founder", "CEO of a startup", "building a company" → They are a FOUNDER/ENTREPRENEUR seeking funding
+- If they mention "raising funding", "seeking investment", "looking for investors", "CEO of a startup", "building a company" → They are a FOUNDER/ENTREPRENEUR seeking funding
 - If they mention "investing", "portfolio", "check size", "deal flow", "angel investor", "VC" → They are an INVESTOR
 - If they mention "advisory", "consulting", "mentoring", "board member" → They are an ADVISOR
+- BUG-038 FIX: If they mention "recruiting", "recruiter", "talent acquisition", "headhunter", "placing candidates", "hiring for clients", "staffing", "talent partner" → They are a RECRUITER/TALENT PROFESSIONAL (NOT entrepreneur even if they say "founder of recruiting firm")
+- BUG-038 FIX: If they mention "agency", "consulting firm", "service provider", "client work", "serving companies" → They are a SERVICE PROVIDER (NOT entrepreneur)
+- IMPORTANT: "founder of X" where X is a service business (recruiting, consulting, agency) = SERVICE PROVIDER, not startup founder
 - Otherwise, infer from context or default to professional seeking connections
 
 ROLE-AWARE OUTPUT - The "strategy" field MUST match their role:

@@ -250,8 +250,11 @@ SEMANTIC_TOPIC_CLUSTERS = {
                "contribute", "give", "share", "can do", "able to"],
     "geography": ["geography", "location", "region", "country", "where", "based",
                   "operate", "market", "markets", "uk", "us", "europe", "asia"],
+    # BUG-036 FIX: Added "journey" keywords to prevent duplicate "company journey" questions
     "stage": ["stage", "stages", "phase", "level", "round", "seed", "series",
-              "pre-seed", "growth", "early-stage", "late-stage"],
+              "pre-seed", "growth", "early-stage", "late-stage",
+              "journey", "company journey", "on this journey", "your journey",
+              "where are you", "how far along"],
     "industry": ["industry", "industries", "sector", "sectors", "space", "field",
                  "domain", "vertical", "market", "niche", "focus area"],
     # BUG-034 FIX: Added target_clients cluster to prevent duplicate questions about customer type
@@ -2116,12 +2119,16 @@ YOU MUST RETURN VALID JSON. NO EXCEPTIONS.
             True if user wants to finish and has enough data
         """
         # Completion phrases that indicate user wants to finish
+        # BUG-037 FIX: Added "wrap up" and variations to prevent wrap-up loop
         completion_phrases = [
             "done", "that's all", "that's everything", "i'm done", "im done",
             "show me my matches", "find my matches", "i'm ready", "im ready",
             "start matching", "no more", "nothing else", "finish", "complete",
             "let's start", "lets start", "proceed", "move on", "that covers",
-            "ready to match", "see my matches"
+            "ready to match", "see my matches",
+            # BUG-037 FIX: Added wrap up variations
+            "wrap up", "wrap", "move ahead", "we can move", "can move ahead",
+            "move forward", "let's move", "lets move", "good to go", "all set"
         ]
 
         msg_lower = message.lower().strip()

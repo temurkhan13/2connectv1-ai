@@ -603,6 +603,7 @@ class SlotSchema:
                 seen_names.add(slot_name)
 
         # Add relevant optional slots based on objective
+        # BUG-039 FIX: Added recruiter, talent, service provider to get engagement_style
         optional_for_objective = {
             "seeking investment": ["engagement_style", "experience_years"],
             "looking to invest": ["engagement_style"],
@@ -611,6 +612,14 @@ class SlotSchema:
             "cofounder": ["engagement_style", "experience_years"],
             "partnership": ["engagement_style"],
             "networking": ["experience_years"],
+            # BUG-039 FIX: Recruiters and service providers need engagement_style
+            "recruiting": ["engagement_style", "experience_years"],
+            "recruiter": ["engagement_style", "experience_years"],
+            "talent": ["engagement_style", "experience_years"],
+            "staffing": ["engagement_style", "experience_years"],
+            "consulting": ["engagement_style", "experience_years"],
+            "agency": ["engagement_style", "experience_years"],
+            "service": ["engagement_style", "experience_years"],
         }
 
         for key, optional_names in optional_for_objective.items():

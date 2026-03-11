@@ -33,6 +33,9 @@ class MatchIntent(str, Enum):
     OPPORTUNITY_SEEKING = "opportunity_seeking" # Talent seeking opportunity
     PARTNERSHIP = "partnership"                # B2B partnership
     GENERAL = "general"                        # General networking
+    # BUG-040 FIX: Added recruiter and service provider intents
+    RECRUITER = "recruiter"                    # Recruiter seeking clients AND candidates
+    SERVICE_PROVIDER = "service_provider"      # Consultant/agency seeking clients
 
 
 class IntentClassifier:
@@ -71,6 +74,17 @@ class IntentClassifier:
         MatchIntent.PARTNERSHIP: [
             "partner", "collaborate", "b2b", "enterprise", "strategic",
             "alliance", "joint venture", "integration"
+        ],
+        # BUG-040 FIX: Added recruiter and service provider keywords
+        MatchIntent.RECRUITER: [
+            "recruiter", "recruiting", "talent acquisition", "headhunter",
+            "staffing", "placing candidates", "hiring for clients",
+            "talent partner", "executive search", "recruitment firm"
+        ],
+        MatchIntent.SERVICE_PROVIDER: [
+            "consulting", "consultant", "agency", "service provider",
+            "client work", "serving companies", "advisory services",
+            "professional services", "boutique firm"
         ]
     }
 
@@ -179,6 +193,22 @@ INTENT_SCORING_CONFIGS = {
         stage_match_weight=0.5,
         geography_weight=0.5,
         bidirectional_required=True
+    ),
+    # BUG-040 FIX: Recruiter scoring - industry matters most, can match across stages
+    MatchIntent.RECRUITER: IntentScoringConfig(
+        experience_gap_weight=0.0,
+        industry_match_weight=1.5,    # Industry alignment is key
+        stage_match_weight=0.8,       # Stage matters for company clients
+        geography_weight=0.6,         # Can work remotely but local helps
+        bidirectional_required=False  # Recruiters can initiate matches
+    ),
+    # BUG-040 FIX: Service provider scoring - similar to partnership
+    MatchIntent.SERVICE_PROVIDER: IntentScoringConfig(
+        experience_gap_weight=0.0,
+        industry_match_weight=1.3,
+        stage_match_weight=0.7,
+        geography_weight=0.5,
+        bidirectional_required=False  # Service providers seek clients
     )
 }
 
@@ -290,6 +320,8 @@ class EnhancedMatchingService:
         - Cofounder ↔ Cofounder (both seeking partners) - OK
         - Partnership ↔ Partnership (both seeking partners) - OK
         - General ↔ General (networking) - OK
+        - BUG-040 FIX: Recruiter ↔ Recruiter (referral network) - OK
+        - BUG-040 FIX: Service Provider ↔ Service Provider (referral network) - OK
         """
         blocked_same_pairs = {
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
@@ -534,6 +566,18 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
             (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,  # Both seeking cofounders
             (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
+            # BUG-040 FIX: Recruiter matches both sides
+            (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,  # Recruiter ↔ Hiring company
+            (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
+            (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,  # Recruiter ↔ Job seeker
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
+            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,  # Recruiters can refer each other
+            # BUG-040 FIX: Service provider matches with clients
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,  # Consultant ↔ Founder
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,  # Consultant ↔ Company
+            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,  # Service providers can refer
         }
 
         pair = (user_intent, match_intent)

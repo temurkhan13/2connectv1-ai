@@ -154,6 +154,34 @@ class ProgressiveDisclosure:
     collecting necessary information for quality matching.
     """
 
+    # BUG-047 FIX: Role-specific question text overrides
+    # Generic questions like industry_focus use investor language by default.
+    # This dict provides alternative phrasing for different user types.
+    ROLE_QUESTION_OVERRIDES = {
+        "job_seeker": {
+            "industry_focus": "What industry or sector are you targeting for your next role?",
+            "stage_preference": "What stage of company interests you? (startup vs established)",
+            "engagement_style": "What kind of work environment suits you best?",
+            "requirements": "What are you looking for in your next opportunity?",
+            "offerings": "What skills and experience do you bring?",
+            "dealbreakers": "What would be a clear 'no' for you in a role?",
+        },
+        "advisor": {
+            "industry_focus": "What industries do you focus your advisory work on?",
+            "stage_preference": "What stage companies do you prefer to advise?",
+            "engagement_style": "How do you typically engage with your advisory clients?",
+            "requirements": "What are you looking for in advisory relationships?",
+            "offerings": "What expertise and value do you bring as an advisor?",
+        },
+        "service_provider": {
+            "industry_focus": "What industries do you serve?",
+            "stage_preference": "What stage companies are your ideal clients?",
+            "engagement_style": "How do you typically work with clients?",
+            "requirements": "What kind of clients are you looking for?",
+            "offerings": "What services do you provide?",
+        },
+    }
+
     # Question templates by slot name
     # NOTE: Uses INDIRECT phrasing - conversational, not form-like
     QUESTION_TEMPLATES = {
@@ -412,6 +440,59 @@ class ProgressiveDisclosure:
                     "Based on contribution", "Open to discuss", "With vesting"],
             can_skip=True
         ),
+
+        # ====================================================================
+        # JOB SEEKER slots - for candidates seeking employment
+        # BUG-046 FIX: Previously missing - Job Seekers fell back to investor questions
+        # ====================================================================
+        "target_role": QuestionCard(
+            slot_name="target_role",
+            question_text="What kind of role are you looking for?",
+            question_type=SlotType.FREE_TEXT,
+            priority=QuestionPriority.CRITICAL,
+            examples=["Senior Product Manager", "Full Stack Engineer", "VP Engineering"],
+            help_text="Job title or type of position you're targeting."
+        ),
+        "desired_seniority": QuestionCard(
+            slot_name="desired_seniority",
+            question_text="What level are you targeting for your next role?",
+            question_type=SlotType.SINGLE_SELECT,
+            priority=QuestionPriority.HIGH,
+            options=["Junior", "Mid-level", "Senior", "Lead/Staff", "Director", "VP/C-Suite"],
+            help_text="Helps match you with the right opportunities."
+        ),
+        "salary_expectation": QuestionCard(
+            slot_name="salary_expectation",
+            question_text="What's your target compensation range?",
+            question_type=SlotType.RANGE,
+            priority=QuestionPriority.MEDIUM,
+            examples=["$150K-200K", "£80K-120K + equity", "Flexible based on opportunity"],
+            can_skip=True
+        ),
+        "work_preference": QuestionCard(
+            slot_name="work_preference",
+            question_text="What's your preferred work setup?",
+            question_type=SlotType.SINGLE_SELECT,
+            priority=QuestionPriority.HIGH,
+            options=["Fully Remote", "Hybrid", "On-site", "Flexible"],
+            help_text="Helps find companies that match your work style."
+        ),
+        "availability": QuestionCard(
+            slot_name="availability",
+            question_text="When could you start a new role?",
+            question_type=SlotType.SINGLE_SELECT,
+            priority=QuestionPriority.MEDIUM,
+            options=["Immediately", "2 weeks", "1 month", "2-3 months", "3+ months"],
+            can_skip=True
+        ),
+        "company_size_preference": QuestionCard(
+            slot_name="company_size_preference",
+            question_text="What size company are you interested in?",
+            question_type=SlotType.SINGLE_SELECT,
+            priority=QuestionPriority.MEDIUM,
+            options=["Startup (1-20)", "Small (21-100)", "Medium (101-500)", "Large (500+)", "Any"],
+            help_text="Early-stage startup or established company?"
+        ),
     }
 
     def __init__(self, context_manager: Optional[ContextManager] = None):
@@ -446,6 +527,58 @@ class ProgressiveDisclosure:
     def _map_slot_to_topic(self, slot_name: str) -> Optional[str]:
         """P3 FIX: Map a slot name to its semantic topic."""
         return self._slot_to_topic.get(slot_name)
+
+    def _get_role_aware_question(
+        self,
+        slot_name: str,
+        user_type: Optional[str]
+    ) -> Optional[QuestionCard]:
+        """
+        BUG-047 FIX: Get question template with role-appropriate phrasing.
+
+        Generic questions like industry_focus use investor language by default.
+        For other roles (Job Seeker, Advisor, etc.), we override the text.
+        """
+        template = self.QUESTION_TEMPLATES.get(slot_name)
+        if not template:
+            return None
+
+        # Normalize user_type for lookup
+        if not user_type:
+            return template
+
+        user_type_lower = user_type.lower().replace(" ", "_").replace("-", "_")
+
+        # Check for job seeker variants
+        if any(term in user_type_lower for term in ["job", "seeker", "candidate", "looking_for"]):
+            role_key = "job_seeker"
+        elif any(term in user_type_lower for term in ["advisor", "mentor", "consultant"]):
+            role_key = "advisor"
+        elif any(term in user_type_lower for term in ["service", "provider", "agency"]):
+            role_key = "service_provider"
+        else:
+            # Investor/Founder use default templates
+            return template
+
+        # Check if we have an override for this role + slot
+        role_overrides = self.ROLE_QUESTION_OVERRIDES.get(role_key, {})
+        override_text = role_overrides.get(slot_name)
+
+        if override_text:
+            # Create new QuestionCard with overridden text
+            return QuestionCard(
+                slot_name=template.slot_name,
+                question_text=override_text,  # Override!
+                question_type=template.question_type,
+                priority=template.priority,
+                options=template.options,
+                examples=template.examples,
+                help_text=template.help_text,
+                can_skip=template.can_skip,
+                estimated_time_seconds=template.estimated_time_seconds
+            )
+
+        return template
 
     def _check_multi_vector_coverage(
         self,
@@ -715,8 +848,8 @@ class ProgressiveDisclosure:
                 logger.info(f"Skipping slot '{slot_name}' - topic '{slot_topic}' already covered")
                 continue
 
-            # Get question template
-            template = self.QUESTION_TEMPLATES.get(slot_name)
+            # Get question template - BUG-047 FIX: use role-aware phrasing
+            template = self._get_role_aware_question(slot_name, user_type)
             if template:
                 pending.append(template)
 

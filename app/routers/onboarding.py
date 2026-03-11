@@ -699,11 +699,16 @@ async def chat(request: ChatMessageRequest):
 
                 # Try to get a question for the first missing dimension
                 from app.services.progressive_disclosure import MULTI_VECTOR_DIMENSIONS
+                # BUG-047 FIX: Get user_type for role-aware question phrasing
+                user_type_slot = context.slots.get("user_type")
+                user_type_val = str(user_type_slot.value) if user_type_slot and hasattr(user_type_slot, 'value') else None
+
                 for dim in missing_dims:
                     dim_config = MULTI_VECTOR_DIMENSIONS.get(dim)
                     if dim_config:
                         slot_name = dim_config["slot_name"]
-                        template = progressive_disclosure.QUESTION_TEMPLATES.get(slot_name)
+                        # BUG-047 FIX: Use role-aware question instead of direct template
+                        template = progressive_disclosure._get_role_aware_question(slot_name, user_type_val)
                         if template:
                             mv_question = template.question_text
                             logger.info(f"Session {session_id}: Using MV dimension question for '{dim}' (slot: {slot_name})")
@@ -711,7 +716,17 @@ async def chat(request: ChatMessageRequest):
 
             # Generate AI response - prioritize MV question if override is active
             if mv_question:
-                ai_response = f"Almost there! {mv_question}"
+                # BUG-045 FIX: Only add encouragement if actually near completion
+                # Previously hardcoded "Almost there!" at all progress levels
+                progress_info = progressive_disclosure.get_progress(session_id)
+                progress_pct = progress_info.get("progress_percent", 0) if progress_info else 0
+
+                if 85 <= progress_pct <= 95:
+                    ai_response = f"Almost done! {mv_question}"
+                elif 45 <= progress_pct <= 55:
+                    ai_response = f"Halfway there! {mv_question}"
+                else:
+                    ai_response = mv_question  # No prefix at low progress
             elif llm_result and llm_result.follow_up_question:
                 # BUG-002 FIX: Hard filter - check if LLM question covers an already-filled slot
                 # LLMs are unreliable at following negative constraints ("DO NOT ASK AGAIN")

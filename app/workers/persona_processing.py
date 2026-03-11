@@ -19,6 +19,12 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
 
     This is used by the direct DB write fallback to ensure AI summary
     is created even if the webhook notification fails.
+
+    UX improvements (2026-03-11):
+    - Changed "Archetype" to "Profile Type" (less jargon)
+    - Changed "What They're Looking For" to "Looking For" (less awkward on own profile)
+    - Removed redundant "Requirements" section (duplicated Looking For content)
+    - Using "Strategy" instead of "Investment Philosophy" (role-agnostic)
     """
     parts = []
 
@@ -26,7 +32,7 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
         parts.append(f"# {persona['name']}")
 
     if persona.get('archetype'):
-        parts.append(f"**Archetype:** {persona['archetype']}")
+        parts.append(f"**Profile Type:** {persona['archetype']}")
 
     if persona.get('designation'):
         parts.append(f"**Designation:** {persona['designation']}")
@@ -46,13 +52,13 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
         parts.append(f"\n## Strategy\n{strategy}")
 
     if persona.get('what_theyre_looking_for'):
-        parts.append(f"\n## What They're Looking For\n{persona['what_theyre_looking_for']}")
+        parts.append(f"\n## Looking For\n{persona['what_theyre_looking_for']}")
 
     if persona.get('engagement_style'):
         parts.append(f"\n## Engagement Style\n{persona['engagement_style']}")
 
-    if requirements:
-        parts.append(f"\n## Requirements\n{requirements}")
+    # NOTE: Removed "Requirements" section - it was redundant with "Looking For"
+    # The requirements slot content is already captured in what_theyre_looking_for
 
     if offerings:
         parts.append(f"\n## Offerings\n{offerings}")

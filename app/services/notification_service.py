@@ -76,50 +76,57 @@ class NotificationService:
     def _convert_persona_to_markdown(self, persona_data: Dict[str, Any]) -> str:
         """
         Convert persona data dictionary to markdown formatted string.
-        
+
         Args:
             persona_data: Dictionary containing persona fields
-            
+
         Returns:
             Markdown formatted string
+
+        UX improvements (2026-03-11):
+        - Changed "Archetype" to "Profile Type" (less jargon)
+        - Changed "What They're Looking For" to "Looking For" (less awkward on own profile)
+        - Removed redundant "Requirements" section (duplicated Looking For content)
+        - Using "Strategy" instead of "Investment Philosophy" (role-agnostic)
         """
         markdown_parts = []
-        
+
         # Add name and archetype at the top if available
         if persona_data.get('name'):
             markdown_parts.append(f"# {persona_data['name']}")
-        
+
         if persona_data.get('archetype'):
-            markdown_parts.append(f"**Archetype:** {persona_data['archetype']}")
-        
+            markdown_parts.append(f"**Profile Type:** {persona_data['archetype']}")
+
         if persona_data.get('designation'):
             markdown_parts.append(f"**Designation:** {persona_data['designation']}")
-        
+
         if persona_data.get('experience'):
             markdown_parts.append(f"**Experience:** {persona_data['experience']}")
-        
+
         # Add sections with headers
         if persona_data.get('focus'):
             markdown_parts.append(f"\n## Focus\n{persona_data['focus']}")
-        
+
         if persona_data.get('profile_essence'):
             markdown_parts.append(f"\n## Profile Essence\n{persona_data['profile_essence']}")
-        
-        if persona_data.get('investment_philosophy'):
-            markdown_parts.append(f"\n## Investment Philosophy\n{persona_data['investment_philosophy']}")
-        
+
+        # Strategy field (role-agnostic, replaces investment_philosophy)
+        strategy = persona_data.get('strategy') or persona_data.get('investment_philosophy')
+        if strategy:
+            markdown_parts.append(f"\n## Strategy\n{strategy}")
+
         if persona_data.get('what_theyre_looking_for'):
-            markdown_parts.append(f"\n## What They're Looking For\n{persona_data['what_theyre_looking_for']}")
-        
+            markdown_parts.append(f"\n## Looking For\n{persona_data['what_theyre_looking_for']}")
+
         if persona_data.get('engagement_style'):
             markdown_parts.append(f"\n## Engagement Style\n{persona_data['engagement_style']}")
-        
-        if persona_data.get('requirements'):
-            markdown_parts.append(f"\n## Requirements\n{persona_data['requirements']}")
-        
+
+        # NOTE: Removed "Requirements" section - it was redundant with "Looking For"
+
         if persona_data.get('offerings'):
             markdown_parts.append(f"\n## Offerings\n{persona_data['offerings']}")
-        
+
         return "\n\n".join(markdown_parts)
     
     def send_persona_ready_notification(self, user_id: str) -> Dict[str, Any]:

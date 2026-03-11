@@ -504,6 +504,100 @@ class LLMSlotExtractor:
         logger.info(f"BUG-042 FIX: Generated fallback with question: {question[:50]}...")
         return fallback
 
+    def extract_slots_from_resume(self, resume_text: str) -> Dict[str, Any]:
+        """
+        BUG-043 FIX: Pre-extract slots from resume text during upload.
+
+        This allows slots to be pre-filled BEFORE the first chat message,
+        so the onboarding can skip questions about information already in the resume.
+
+        Args:
+            resume_text: Extracted text content from the resume
+
+        Returns:
+            Dict with extracted slots: {slot_name: {"value": ..., "confidence": ..., "source": "resume"}}
+        """
+        if not resume_text or len(resume_text.strip()) < 50:
+            logger.info("BUG-043: Resume text too short for extraction, skipping")
+            return {}
+
+        # Truncate very long resumes to avoid context overflow
+        truncated = resume_text[:5000] if len(resume_text) > 5000 else resume_text
+
+        # Build specialized prompt for resume extraction
+        system_prompt = """You are analyzing a resume/CV to extract professional profile information.
+
+## Task
+Extract structured slot data from this resume. Focus on factual information that's explicitly stated.
+
+## Slots to Extract
+- user_type: Their primary role (Founder/Entrepreneur, Angel Investor, VC Partner, Corporate Executive, Mentor/Advisor, Service Provider)
+- industry_focus: Industries they work in (Technology/SaaS, Healthcare/Biotech, FinTech, E-commerce, AI/ML, CleanTech, EdTech, Consumer, Enterprise, Other)
+- experience_years: Years of experience (extract from dates or explicit mentions)
+- role_title: Current or most recent job title
+- company_name: Current or most recent company
+- geography: Regions mentioned (UK, US, Europe, Asia, etc.)
+- offerings: What they can offer based on their background (expertise, network, skills)
+
+## Rules
+1. ONLY extract information explicitly stated in the resume
+2. Do NOT infer requirements (those come from conversation, not resume)
+3. For offerings, summarize their key skills/expertise in 2-3 sentences
+4. Set confidence based on how explicit the information is (0.9+ for explicit, 0.7-0.9 for implied)
+
+## Response Format
+Return valid JSON:
+{
+    "extracted_slots": {
+        "slot_name": {
+            "value": "extracted value",
+            "confidence": 0.0-1.0,
+            "reasoning": "where in resume this was found"
+        }
+    },
+    "user_type_inference": "founder|investor|advisor|executive|service_provider|unknown"
+}
+
+CRITICAL: Only return the JSON object. No explanatory text."""
+
+        try:
+            logger.info(f"BUG-043: Extracting slots from resume ({len(truncated)} chars)")
+
+            response = self.client.messages.create(
+                model=self.extraction_model,
+                max_tokens=1000,
+                system=system_prompt,
+                messages=[{
+                    "role": "user",
+                    "content": f"Extract profile information from this resume:\n\n{truncated}"
+                }],
+                temperature=0.1  # Low temperature for factual extraction
+            )
+
+            result_text = response.content[0].text.strip()
+
+            # Parse JSON response
+            try:
+                # Try direct parse
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                # Try extracting JSON from response
+                result_text = self._extract_json_from_text(result_text)
+                result = json.loads(result_text)
+
+            extracted_slots = result.get("extracted_slots", {})
+
+            # Mark all slots as coming from resume
+            for slot_name, slot_data in extracted_slots.items():
+                slot_data["source"] = "resume"
+
+            logger.info(f"BUG-043: Extracted {len(extracted_slots)} slots from resume: {list(extracted_slots.keys())}")
+            return extracted_slots
+
+        except Exception as e:
+            logger.error(f"BUG-043: Failed to extract slots from resume: {e}")
+            return {}
+
     def _detect_covered_topics(self, conversation_history: List[Dict[str, str]]) -> List[str]:
         """
         Analyze conversation history to find which semantic topics have been asked.

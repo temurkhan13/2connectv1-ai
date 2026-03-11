@@ -812,6 +812,61 @@ async def upload_resume(
             )
             logger.info(f"ISSUE-1 FIX: Stored extracted resume text for session {session_id}")
 
+            # BUG-043 FIX: Pre-extract slots from resume to accelerate onboarding
+            # This allows the onboarding to skip questions about info already in resume
+            try:
+                from app.services.llm_slot_extractor import LLMSlotExtractor
+                import json as json_module
+
+                extractor = LLMSlotExtractor()
+                pre_extracted_slots = extractor.extract_slots_from_resume(extracted_text)
+
+                if pre_extracted_slots:
+                    # Store pre-extracted slots in Redis for the session
+                    redis_client.setex(
+                        f"resume_slots:{session_id}",
+                        3600,  # 1 hour TTL
+                        json_module.dumps(pre_extracted_slots)
+                    )
+                    logger.info(f"BUG-043 FIX: Pre-extracted {len(pre_extracted_slots)} slots from resume: {list(pre_extracted_slots.keys())}")
+
+                    # Also load them into the session context immediately
+                    from app.services.slot_extraction import ExtractedSlot, SlotStatus
+                    for slot_name, slot_data in pre_extracted_slots.items():
+                        context.slots[slot_name] = ExtractedSlot(
+                            name=slot_name,
+                            value=slot_data.get("value"),
+                            confidence=slot_data.get("confidence", 0.85),
+                            status=SlotStatus.FILLED,
+                            source_text="[from resume]",
+                            extracted_at=datetime.utcnow()
+                        )
+                    logger.info(f"BUG-043 FIX: Loaded {len(pre_extracted_slots)} slots into session context")
+
+                    # BUG-043: Also persist to Supabase for session resilience
+                    try:
+                        slots_to_save = [
+                            {
+                                "name": slot_name,
+                                "value": str(slot_data.get("value", "")),
+                                "confidence": slot_data.get("confidence", 0.85),
+                                "source_text": "[extracted from resume]",
+                                "extraction_method": "resume_llm",
+                                "status": "filled"
+                            }
+                            for slot_name, slot_data in pre_extracted_slots.items()
+                        ]
+                        saved_count = await supabase_onboarding_adapter.save_slots_batch(
+                            user_id=user_id,
+                            slots=slots_to_save
+                        )
+                        logger.info(f"BUG-043 FIX: Persisted {saved_count} resume-extracted slots to Supabase")
+                    except Exception as persist_error:
+                        logger.warning(f"BUG-043: Could not persist resume slots to Supabase: {persist_error}")
+            except Exception as e:
+                # Don't fail the upload if pre-extraction fails
+                logger.warning(f"BUG-043: Could not pre-extract slots from resume (non-fatal): {e}")
+
         logger.info(f"Resume uploaded for session {session_id}: {file.filename} ({len(contents)} bytes)")
 
         return ResumeUploadResponse(

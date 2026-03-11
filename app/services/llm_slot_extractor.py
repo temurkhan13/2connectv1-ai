@@ -528,6 +528,37 @@ class LLMSlotExtractor:
 
         return json_str
 
+    def _extract_json_from_text(self, text: str) -> str:
+        """
+        Extract JSON object from text that may contain preamble/postamble.
+
+        LLMs sometimes return JSON wrapped in explanatory text like:
+        "Here is the extracted data:\n{...}\nLet me know if..."
+
+        This method finds and extracts just the JSON portion.
+        """
+        json_start = text.find("{")
+        if json_start == -1:
+            raise ValueError("No JSON object found in text")
+
+        # Find matching closing brace
+        brace_count = 0
+        json_end = -1
+        for i, char in enumerate(text[json_start:], start=json_start):
+            if char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    json_end = i + 1
+                    break
+
+        if json_end == -1:
+            # JSON was truncated, try to repair
+            return self._repair_truncated_json(text[json_start:])
+
+        return text[json_start:json_end]
+
     def _generate_fallback_response(self, raw_text: str, covered_topics: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         BUG-042 FIX: Generate a fallback JSON response when LLM returns non-JSON.

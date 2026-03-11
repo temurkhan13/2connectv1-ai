@@ -723,6 +723,8 @@ class ResumeUploadResponse(BaseModel):
     success: bool
     message: str
     filename: str
+    ai_acknowledgment: Optional[str] = None  # Personalized message acknowledging CV content
+    extracted_slots: Optional[Dict[str, Any]] = None  # What was pre-extracted from CV
 
 
 @router.post("/upload-resume", response_model=ResumeUploadResponse)
@@ -814,6 +816,7 @@ async def upload_resume(
 
             # BUG-043 FIX: Pre-extract slots from resume to accelerate onboarding
             # This allows the onboarding to skip questions about info already in resume
+            pre_extracted_slots = {}  # Initialize outside try block
             try:
                 from app.services.llm_slot_extractor import LLMSlotExtractor
                 import json as json_module
@@ -869,10 +872,43 @@ async def upload_resume(
 
         logger.info(f"Resume uploaded for session {session_id}: {file.filename} ({len(contents)} bytes)")
 
+        # Generate AI acknowledgment message based on what was extracted
+        ai_acknowledgment = None
+        extracted_slots_response = None
+        if pre_extracted_slots:
+            # Build personalized acknowledgment
+            user_type = pre_extracted_slots.get("user_type", {}).get("value")
+            industry = pre_extracted_slots.get("industry_focus", {}).get("value")
+            offerings = pre_extracted_slots.get("offerings", {}).get("value")
+
+            ack_parts = ["Thanks for sharing your CV!"]
+            if user_type:
+                ack_parts.append(f"I can see you're a {user_type}")
+            if industry:
+                ack_parts.append(f"with experience in {industry}")
+            if offerings:
+                # Truncate offerings to first sentence
+                first_sentence = offerings.split('.')[0] if '.' in offerings else offerings[:100]
+                ack_parts.append(f"— {first_sentence}.")
+
+            if len(ack_parts) > 1:
+                ai_acknowledgment = " ".join(ack_parts)
+            else:
+                ai_acknowledgment = "Thanks for sharing your CV! I've noted your background and will tailor my questions accordingly."
+
+            # Simplify slots for response (just name: value)
+            extracted_slots_response = {
+                name: data.get("value")
+                for name, data in pre_extracted_slots.items()
+                if data.get("value")
+            }
+
         return ResumeUploadResponse(
             success=True,
             message="Resume uploaded successfully" + (f" - extracted {len(extracted_text)} characters" if extracted_text else ""),
-            filename=file.filename
+            filename=file.filename,
+            ai_acknowledgment=ai_acknowledgment,
+            extracted_slots=extracted_slots_response
         )
     except Exception as e:
         logger.error(f"Failed to store resume: {e}")

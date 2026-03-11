@@ -1715,15 +1715,17 @@ Your response MUST be parseable JSON. Begin with {{ now."""
             truncated_resume = resume_context[:3000] if len(resume_context) > 3000 else resume_context
             resume_context_text = f"""
 ## 📄 USER'S RESUME (Background Context)
-The user has uploaded a resume. Use this background to:
-1. SKIP questions about information already clear from resume (e.g., industry, experience level)
-2. Infer their OFFERINGS (what they can provide) from their background
-3. Focus questions on what's MISSING (requirements, specific goals, what they're seeking)
+The user has uploaded a resume/CV. Use this background to:
+1. **ACKNOWLEDGE IT FIRST** — Your follow_up_question MUST start by briefly acknowledging you've seen their background (e.g., "I see from your CV that you have experience in [X]..." or "Your background in [Y] is impressive...")
+2. SKIP questions about information already clear from resume (e.g., industry, experience level)
+3. Infer their OFFERINGS (what they can provide) from their background
+4. Focus questions on what's MISSING (requirements, specific goals, what they're seeking)
 
 Resume Summary:
 {truncated_resume}
 
-IMPORTANT: DO NOT ask about information clearly stated in the resume above.
+CRITICAL: Your follow_up_question MUST acknowledge the resume in the first sentence, then ask about what's NOT in the resume (their goals, what they're seeking, who they want to connect with).
+DO NOT ask about information clearly stated in the resume above.
 """
 
         # Filter to target slots if specified

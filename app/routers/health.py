@@ -261,22 +261,22 @@ async def get_system_health():
         }
         issues.append("Redis connection failed")
 
-    # 7. DynamoDB
+    # 7. User Profiles (Supabase - migrated from DynamoDB Mar 2026)
     try:
         from app.adapters.supabase_profiles import UserProfile
         count = 0
         for _ in UserProfile.scan(limit=1):
             count += 1
-        health["services"]["components"]["dynamodb"] = {
+        health["services"]["components"]["user_profiles"] = {
             "status": "healthy",
-            "detail": "AWS DynamoDB active"
+            "detail": "Supabase profiles active"
         }
     except Exception as e:
-        health["services"]["components"]["dynamodb"] = {
+        health["services"]["components"]["user_profiles"] = {
             "status": "error",
             "detail": str(e)[:50]
         }
-        issues.append("DynamoDB connection failed")
+        issues.append("User profiles connection failed")
 
     # ===== ONBOARDING COMPONENTS =====
 
@@ -865,7 +865,7 @@ async def get_matching_diagnostics():
             # TODO: Add dealbreakers field to persona if not present
 
             # BUG-033 FIX: Use pre-fetched user matches instead of individual get_user_matches() calls
-            dynamo_matches = []
+            cached_matches = []
             try:
                 stored = all_user_matches.get(user_id, {'requirements_matches': [], 'offerings_matches': []})
                 if stored:
@@ -889,7 +889,7 @@ async def get_matching_diagnostics():
                         # Generate match reason based on personas
                         match_reason = _generate_match_reason(persona_data, matched_persona)
 
-                        dynamo_matches.append({
+                        cached_matches.append({
                             "user_id": matched_uid,
                             "matched_user_name": matched_user.get("name", "Unknown"),
                             "matched_archetype": matched_persona.get("archetype"),
@@ -982,8 +982,8 @@ async def get_matching_diagnostics():
                 "matches": {
                     "backend_count": match_info.get(user_id, {}).get("count", 0),
                     "backend_matches": match_info.get(user_id, {}).get("matches", [])[:5],
-                    "dynamo_matches": dynamo_matches[:5],
-                    "bidirectional_scores": dynamo_matches  # Same data, includes forward/reverse
+                    "cached_matches": cached_matches[:5],
+                    "bidirectional_scores": cached_matches  # Same data, includes forward/reverse
                 },
 
                 # Persona summary
@@ -1128,7 +1128,7 @@ async def wiring_audit():
             cursor.close()
             conn.close()
 
-            # Check each completed user for DynamoDB profile
+            # Check each completed user for user profile
             broken_users = []
             from app.adapters.supabase_profiles import UserProfile
 
@@ -1236,7 +1236,7 @@ async def wiring_audit():
         audit["pipeline_status"]["embeddings"] = {"status": "ERROR", "error": str(e)[:100]}
         audit["issues"].append(f"Embedding check error: {str(e)[:100]}")
 
-    # ===== CHECK 3: INTENT CLASSIFICATION (from DynamoDB persona) =====
+    # ===== CHECK 3: INTENT CLASSIFICATION (from user profile persona) =====
     try:
         from app.adapters.supabase_profiles import UserProfile
 
@@ -1263,9 +1263,9 @@ async def wiring_audit():
         else:
             audit["pipeline_status"]["intent_classification"] = {
                 "status": "BROKEN",
-                "error": "No persona found in DynamoDB"
+                "error": "No persona found in database"
             }
-            audit["issues"].append("Latest user has no persona in DynamoDB")
+            audit["issues"].append("Latest user has no persona in database")
 
     except Exception as e:
         audit["pipeline_status"]["intent_classification"] = {"status": "ERROR", "error": str(e)[:100]}
@@ -1372,11 +1372,11 @@ async def recover_broken_user(user_id: str):
     BUG-027 FIX: Recovery endpoint for broken users.
 
     Re-triggers profile creation for users who have onboarding_status=completed
-    but no DynamoDB profile or persona.
+    but no user profile or persona.
 
     This endpoint:
-    1. Fetches slots from Supabase (backup storage)
-    2. Creates DynamoDB profile from slots
+    1. Fetches slots from Supabase onboarding_answers
+    2. Creates user profile from slots
     3. Triggers persona generation pipeline
     4. Returns success/failure status
     """
@@ -1408,10 +1408,10 @@ async def recover_broken_user(user_id: str):
             elif existing_profile:
                 result["steps"].append("User has profile but no persona - will regenerate")
         except UserProfile.DoesNotExist:
-            result["steps"].append("User has no DynamoDB profile - will create")
+            result["steps"].append("User has no profile - will create")
 
     except Exception as e:
-        result["errors"].append(f"DynamoDB check failed: {str(e)}")
+        result["errors"].append(f"Profile check failed: {str(e)}")
 
     # Step 2: Fetch slots from Supabase
     supabase = SupabaseOnboardingAdapter()
@@ -1485,7 +1485,7 @@ async def recover_broken_user(user_id: str):
 
     result["steps"].append(f"Converted {len(questions)} slots to Q&A format")
 
-    # Step 4: Create/update DynamoDB profile
+    # Step 4: Create/update user profile
     try:
         profile = UserProfile(
             user_id=user_id,
@@ -1494,10 +1494,10 @@ async def recover_broken_user(user_id: str):
             updated_at=datetime.utcnow().isoformat()
         )
         profile.save()
-        result["steps"].append("Created DynamoDB profile")
+        result["steps"].append("Created user profile")
 
     except Exception as e:
-        result["errors"].append(f"DynamoDB save failed: {str(e)}")
+        result["errors"].append(f"Profile save failed: {str(e)}")
         return result
 
     # Step 5: Trigger persona generation pipeline

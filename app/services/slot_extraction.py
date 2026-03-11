@@ -528,6 +528,353 @@ class SlotSchema:
         ),
     ]
 
+    # Advisor/Consultant-specific slots (for those OFFERING advisory services)
+    ADVISOR_SLOTS = [
+        SlotDefinition(
+            name="advisory_type",
+            display_name="Advisory Type",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What type of advisory do you offer?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Strategic Advisory",
+                "Technical Advisory",
+                "Operational Advisory",
+                "Board Member",
+                "Fractional Executive",
+                "Industry Expert"
+            ],
+            extract_keywords=["strategic", "technical", "operational", "board", "fractional", "cto", "cfo", "cmo", "advisor"]
+        ),
+        SlotDefinition(
+            name="expertise_domains",
+            display_name="Expertise Areas",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What are your areas of expertise?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Product & Strategy",
+                "Growth & Marketing",
+                "Sales & BD",
+                "Engineering & Tech",
+                "Finance & Fundraising",
+                "Operations & HR",
+                "Legal & Compliance",
+                "Industry-Specific"
+            ],
+            extract_keywords=["product", "growth", "marketing", "sales", "engineering", "finance", "fundraising", "operations", "legal", "compliance"]
+        ),
+        SlotDefinition(
+            name="preferred_company_stage",
+            display_name="Preferred Company Stages",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What company stages do you prefer to advise?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Pre-seed", "Seed", "Series A", "Series B", "Series C+", "Growth", "Any Stage"
+            ],
+            extract_keywords=["pre-seed", "seed", "series", "growth", "early", "late", "stage"]
+        ),
+        SlotDefinition(
+            name="compensation_model",
+            display_name="Compensation Model",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="How do you prefer to be compensated?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Equity only",
+                "Cash only",
+                "Hybrid (Cash + Equity)",
+                "Pro-bono / Give-back",
+                "Negotiable"
+            ],
+            extract_keywords=["equity", "cash", "fee", "retainer", "pro-bono", "free", "paid", "compensation"]
+        ),
+        SlotDefinition(
+            name="time_commitment",
+            display_name="Time Commitment",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="How much time can you commit per month?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "1-5 hours/month",
+                "5-10 hours/month",
+                "10-20 hours/month",
+                "20-40 hours/month",
+                "40+ hours/month (Fractional)"
+            ],
+            extract_keywords=["hours", "time", "commitment", "availability", "fractional", "part-time"]
+        ),
+        SlotDefinition(
+            name="advisory_track_record",
+            display_name="Advisory Track Record",
+            slot_type=SlotType.TEXT,
+            description="How many companies have you advised?",
+            required=False,
+            depends_on=["user_type"],
+            extract_keywords=["advised", "companies", "startups", "portfolio", "experience", "track record"]
+        ),
+    ]
+
+    # Job Seeker/Candidate-specific slots (mirrors HIRING_SLOTS for matching)
+    JOB_SEEKER_SLOTS = [
+        SlotDefinition(
+            name="target_role",
+            display_name="Target Role",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What roles are you looking for?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Engineering",
+                "Product Management",
+                "Design/UX",
+                "Marketing",
+                "Sales",
+                "Operations",
+                "Finance",
+                "HR/People",
+                "Legal",
+                "Executive/C-Suite"
+            ],
+            extract_keywords=["engineer", "product", "design", "marketing", "sales", "operations", "finance", "hr", "legal", "executive", "role"]
+        ),
+        SlotDefinition(
+            name="desired_seniority",
+            display_name="Desired Seniority",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="What seniority level are you targeting?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Entry Level",
+                "Mid Level",
+                "Senior",
+                "Lead",
+                "Manager",
+                "Director",
+                "VP",
+                "C-Level"
+            ],
+            extract_keywords=["entry", "junior", "mid", "senior", "lead", "manager", "director", "vp", "chief", "executive"]
+        ),
+        SlotDefinition(
+            name="salary_expectation",
+            display_name="Salary Expectation",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="What's your expected compensation range?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Under £50K",
+                "£50K - £80K",
+                "£80K - £120K",
+                "£120K - £180K",
+                "£180K - £250K",
+                "£250K+",
+                "Equity-focused",
+                "Negotiable"
+            ],
+            extract_keywords=["salary", "compensation", "pay", "package", "equity", "stock", "options"]
+        ),
+        SlotDefinition(
+            name="work_preference",
+            display_name="Work Preference",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="What's your preferred work arrangement?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Remote only",
+                "Hybrid",
+                "On-site",
+                "Flexible"
+            ],
+            extract_keywords=["remote", "hybrid", "onsite", "office", "wfh", "flexible", "location"]
+        ),
+        SlotDefinition(
+            name="availability",
+            display_name="Availability",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="When can you start a new role?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Immediately",
+                "2 weeks notice",
+                "1 month notice",
+                "3 months notice",
+                "Passive - open to opportunities"
+            ],
+            extract_keywords=["immediately", "available", "notice", "start", "when", "ready"]
+        ),
+        SlotDefinition(
+            name="company_size_preference",
+            display_name="Company Size Preference",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What company sizes interest you?",
+            required=False,
+            depends_on=["user_type"],
+            options=[
+                "Early startup (<20)",
+                "Startup (20-50)",
+                "Scaleup (50-200)",
+                "Mid-size (200-1000)",
+                "Enterprise (1000+)",
+                "Any size"
+            ],
+            extract_keywords=["startup", "scaleup", "enterprise", "small", "large", "size", "team"]
+        ),
+    ]
+
+    # Partnership-specific slots (for Business Partnership objective)
+    PARTNERSHIP_SLOTS = [
+        SlotDefinition(
+            name="partnership_type",
+            display_name="Partnership Type",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What type of partnership are you seeking?",
+            required=True,
+            depends_on=["primary_goal"],
+            options=[
+                "Distribution Partnership",
+                "Technology Partnership",
+                "Strategic Alliance",
+                "Joint Venture",
+                "Reseller/Channel Partner",
+                "Co-marketing",
+                "Integration Partner"
+            ],
+            extract_keywords=["distribution", "technology", "strategic", "alliance", "joint", "venture", "reseller", "channel", "integration"]
+        ),
+        SlotDefinition(
+            name="resource_contribution",
+            display_name="What You Bring",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What resources can you contribute to a partnership?",
+            required=True,
+            depends_on=["primary_goal"],
+            options=[
+                "Capital/Investment",
+                "Distribution/Channels",
+                "Technology/Product",
+                "Network/Relationships",
+                "Brand/Marketing",
+                "Operational Expertise",
+                "Industry Knowledge"
+            ],
+            extract_keywords=["capital", "distribution", "technology", "network", "brand", "expertise", "bring", "contribute", "offer"]
+        ),
+        SlotDefinition(
+            name="partnership_duration",
+            display_name="Partnership Duration",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="What partnership duration are you considering?",
+            required=False,
+            depends_on=["primary_goal"],
+            options=[
+                "Project-based (short-term)",
+                "1 year",
+                "Multi-year",
+                "Open-ended/Ongoing",
+                "Flexible"
+            ],
+            extract_keywords=["project", "year", "ongoing", "long-term", "short-term", "duration"]
+        ),
+        SlotDefinition(
+            name="partner_size_preference",
+            display_name="Ideal Partner Size",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What size companies are you looking to partner with?",
+            required=False,
+            depends_on=["primary_goal"],
+            options=[
+                "Startups",
+                "Scaleups",
+                "Mid-market",
+                "Enterprise",
+                "Any size"
+            ],
+            extract_keywords=["startup", "scaleup", "mid-market", "enterprise", "size", "company"]
+        ),
+    ]
+
+    # Service Provider-specific slots (for consultants, agencies, professionals)
+    SERVICE_PROVIDER_SLOTS = [
+        SlotDefinition(
+            name="service_type",
+            display_name="Service Type",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What type of services do you offer?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Consulting",
+                "Training/Coaching",
+                "Implementation",
+                "Managed Services",
+                "Outsourcing",
+                "Agency Services",
+                "Speaking/Thought Leadership"
+            ],
+            extract_keywords=["consulting", "training", "coaching", "implementation", "managed", "outsourcing", "agency", "speaking"]
+        ),
+        SlotDefinition(
+            name="pricing_model",
+            display_name="Pricing Model",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="How do you typically price your services?",
+            required=True,
+            depends_on=["user_type"],
+            options=[
+                "Hourly rate",
+                "Project-based",
+                "Retainer",
+                "Revenue share",
+                "Value-based",
+                "Custom/Negotiable"
+            ],
+            extract_keywords=["hourly", "project", "retainer", "revenue", "share", "value", "pricing", "rate", "fee"]
+        ),
+        SlotDefinition(
+            name="engagement_duration",
+            display_name="Typical Engagement Duration",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="How long are your typical engagements?",
+            required=False,
+            depends_on=["user_type"],
+            options=[
+                "Short-term (<1 month)",
+                "Medium (1-6 months)",
+                "Long-term (6+ months)",
+                "Ongoing retainer",
+                "Varies by project"
+            ],
+            extract_keywords=["short", "medium", "long", "ongoing", "retainer", "duration", "engagement"]
+        ),
+        SlotDefinition(
+            name="client_size_preference",
+            display_name="Ideal Client Size",
+            slot_type=SlotType.MULTI_SELECT,
+            description="What size clients do you prefer working with?",
+            required=False,
+            depends_on=["user_type"],
+            options=[
+                "Startups",
+                "SMBs",
+                "Mid-market",
+                "Enterprise",
+                "Any size"
+            ],
+            extract_keywords=["startup", "smb", "mid-market", "enterprise", "client", "size"]
+        ),
+    ]
+
     @classmethod
     def get_all_slots(cls) -> List[SlotDefinition]:
         """Get all slot definitions."""
@@ -538,6 +885,10 @@ class SlotSchema:
             cls.HIRING_SLOTS +
             cls.MENTORSHIP_SLOTS +
             cls.COFOUNDER_SLOTS +
+            cls.ADVISOR_SLOTS +
+            cls.JOB_SEEKER_SLOTS +
+            cls.PARTNERSHIP_SLOTS +
+            cls.SERVICE_PROVIDER_SLOTS +
             cls.OPTIONAL_SLOTS
         )
 
@@ -545,13 +896,20 @@ class SlotSchema:
     def get_slots_for_user_type(cls, user_type: str) -> List[SlotDefinition]:
         """Get relevant slots based on user type (legacy method)."""
         slots = list(cls.CORE_SLOTS)
+        user_type_lower = user_type.lower() if user_type else ""
 
-        if "investor" in user_type.lower():
+        if "investor" in user_type_lower:
             slots.extend(cls.INVESTOR_SLOTS)
-        elif "founder" in user_type.lower() or "entrepreneur" in user_type.lower():
+        elif "founder" in user_type_lower or "entrepreneur" in user_type_lower:
             slots.extend(cls.FOUNDER_SLOTS)
-        elif "recruiter" in user_type.lower() or "hiring" in user_type.lower():
+        elif "recruiter" in user_type_lower or "hiring" in user_type_lower:
             slots.extend(cls.HIRING_SLOTS)
+        elif "advisor" in user_type_lower or "consultant" in user_type_lower:
+            slots.extend(cls.ADVISOR_SLOTS)
+        elif "job seeker" in user_type_lower or "candidate" in user_type_lower:
+            slots.extend(cls.JOB_SEEKER_SLOTS)
+        elif "industry professional" in user_type_lower:
+            slots.extend(cls.SERVICE_PROVIDER_SLOTS)
 
         slots.extend(cls.OPTIONAL_SLOTS)
         return slots
@@ -595,20 +953,22 @@ class SlotSchema:
             "fundraising": cls.FOUNDER_SLOTS,
             "looking to invest": cls.INVESTOR_SLOTS,
             "investing": cls.INVESTOR_SLOTS,
-            # Hiring flow
+            # Hiring flow - EMPLOYER side
             "hiring talent": cls.HIRING_SLOTS,
             "hiring": cls.HIRING_SLOTS,
-            # Mentorship flow
+            # Mentorship flow - MENTEE side (seeking help)
             "seeking advisor/mentor": cls.MENTORSHIP_SLOTS,
             "mentorship": cls.MENTORSHIP_SLOTS,
-            "offering advisory services": cls.MENTORSHIP_SLOTS,
+            # Advisory flow - ADVISOR side (offering help)
+            "offering advisory services": cls.ADVISOR_SLOTS,
+            "advisory": cls.ADVISOR_SLOTS,
             # Cofounder flow
             "finding co-founder": cls.COFOUNDER_SLOTS,
             "cofounder": cls.COFOUNDER_SLOTS,
-            # Partnership uses engagement_style from OPTIONAL_SLOTS
-            "business partnership": [],
-            "partnership": [],
-            # Networking is minimal
+            # Partnership flow
+            "business partnership": cls.PARTNERSHIP_SLOTS,
+            "partnership": cls.PARTNERSHIP_SLOTS,
+            # Networking is minimal (may get slots from user_type routing below)
             "networking": [],
         }
 
@@ -657,6 +1017,26 @@ class SlotSchema:
                             slots.append(opt_slot)
                             seen_names.add(opt_name)
                 break
+
+        # Secondary routing: user_type can override or supplement objective-based slots
+        # This handles cases where user_type is more specific than objective
+        user_type_lower = (user_type or "").lower()
+
+        # Job Seeker/Candidate always gets JOB_SEEKER_SLOTS regardless of objective
+        # (they might select "Hiring Talent" meaning they want to BE hired)
+        if "job seeker" in user_type_lower or "candidate" in user_type_lower:
+            for slot in cls.JOB_SEEKER_SLOTS:
+                if slot.name not in seen_names:
+                    slots.append(slot)
+                    seen_names.add(slot.name)
+
+        # Industry Professional with networking/partnership objectives gets SERVICE_PROVIDER_SLOTS
+        if "industry professional" in user_type_lower:
+            if "networking" in objective_lower or not objective_slot_mapping.get(objective_lower):
+                for slot in cls.SERVICE_PROVIDER_SLOTS:
+                    if slot.name not in seen_names:
+                        slots.append(slot)
+                        seen_names.add(slot.name)
 
         return slots
 

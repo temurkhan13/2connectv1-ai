@@ -613,7 +613,7 @@ class SlotSchema:
         SlotDefinition(
             name="advisory_track_record",
             display_name="Advisory Track Record",
-            slot_type=SlotType.TEXT,
+            slot_type=SlotType.FREE_TEXT,
             description="How many companies have you advised?",
             required=False,
             depends_on=["user_type"],

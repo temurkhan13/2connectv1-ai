@@ -135,7 +135,11 @@ SLOT_DEFINITIONS = {
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
         "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services"],
-        "extraction_hint": "Match their stated intention to one of these goals"
+        "extraction_hint": "MULTI-GOAL HANDLING: If user mentions MULTIPLE goals, pick the ONE that appears FIRST or is most emphasized. "
+                          "Priority order when ambiguous: 1) Raise Funding (if mentioned), 2) Find Co-founder, 3) Explore Partnerships, 4) Seek Mentorship. "
+                          "Example: 'connect with investors AND sales leaders AND founders' → 'Raise Funding' (investors = fundraising). "
+                          "Example: 'find a technical co-founder AND mentors' → 'Find Co-founder' (co-founder mentioned first). "
+                          "ALWAYS extract something - never leave blank if ANY goal-related intent is mentioned."
     },
     "industry_focus": {
         "description": "Industries or sectors the user focuses on",

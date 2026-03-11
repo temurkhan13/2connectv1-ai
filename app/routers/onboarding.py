@@ -616,13 +616,13 @@ async def chat(request: ChatMessageRequest):
                         logger.info(f"BUG-002 FIX: Using progressive_disclosure question: {ai_response[:50]}...")
                     else:
                         # No more questions from progressive_disclosure - use fallback
-                        ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
+                        ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
                 else:
                     # LLM question is valid - use it
                     ai_response = llm_result.follow_up_question
             else:
                 # Fallback to template-based response
-                ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [])
+                ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
 
         # Add assistant turn
         # BUG-008 FIX: Await async add_turn
@@ -1231,6 +1231,41 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _detect_multiple_goals(user_message: str) -> List[str]:
+    """
+    Detect multiple goal signals in user's message.
+
+    Returns a list of detected goal categories. If 2+ are detected,
+    the system should ask a direct prioritization question.
+    """
+    message_lower = user_message.lower()
+    detected_goals = []
+
+    # Goal patterns - each tuple is (keywords, friendly_label)
+    goal_patterns = [
+        (["investor", "invest", "funding", "raise", "series", "vc", "venture capital", "angel"],
+         "connecting with investors"),
+        (["co-founder", "cofounder", "partner", "founding team", "technical partner"],
+         "finding a co-founder"),
+        (["mentor", "advisor", "advice", "guidance", "learn from"],
+         "finding mentors"),
+        (["sales", "customer", "client", "enterprise", "b2b", "go-to-market", "gtm"],
+         "finding customers or sales help"),
+        (["founder", "startup founder", "entrepreneur", "peer", "community"],
+         "connecting with other founders"),
+        (["partnership", "strategic partner", "collaborate", "collaboration"],
+         "exploring partnerships"),
+        (["hire", "hiring", "recruit", "talent", "engineer", "developer", "team member"],
+         "hiring talent"),
+    ]
+
+    for keywords, label in goal_patterns:
+        if any(kw in message_lower for kw in keywords):
+            detected_goals.append(label)
+
+    return detected_goals
+
+
 def _generate_greeting(objective: Optional[str] = None) -> str:
     """Generate a greeting based on objective."""
     if objective:
@@ -1250,7 +1285,8 @@ def _generate_greeting(objective: Optional[str] = None) -> str:
 def _generate_contextual_response(
     context,
     newly_extracted: Dict[str, Any],
-    slot_names: List[str]
+    slot_names: List[str],
+    user_message: str = ""
 ) -> str:
     """
     Generate a contextual response based on extracted slots.
@@ -1259,6 +1295,7 @@ def _generate_contextual_response(
     - Default mode is INDIRECT - follow user's natural thread
     - Never feel like a questionnaire
     - Only use direct questions when truly necessary
+    - EXCEPTION: When user mentions MULTIPLE goals, ask direct prioritization question
     """
     # Check what slots are already filled vs still needed
     filled_slots = []
@@ -1271,6 +1308,19 @@ def _generate_contextual_response(
             filled_slots.append(slot_name)
         else:
             missing_slots.append(slot_name)
+
+    # MULTI-GOAL DETECTION: If primary_goal is missing but user mentioned multiple goals,
+    # ask a DIRECT prioritization question instead of vague indirect prompts
+    if "primary_goal" in missing_slots and user_message:
+        goal_signals = _detect_multiple_goals(user_message)
+        if len(goal_signals) >= 2:
+            # User mentioned 2+ different goals - ask for prioritization
+            goals_list = ", ".join(goal_signals[:-1]) + " and " + goal_signals[-1]
+            logger.info(f"MULTI-GOAL: Detected {len(goal_signals)} goals: {goal_signals}")
+            return (
+                f"I can see you have several goals - {goals_list}. "
+                "If you had to pick ONE primary focus for 2Connect right now, which would be most valuable for you?"
+            )
 
     # INDIRECT follow-up questions - conversational, not form-like
     indirect_prompts = {

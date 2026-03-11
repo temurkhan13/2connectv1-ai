@@ -253,7 +253,18 @@ SEMANTIC_TOPIC_CLUSTERS = {
     "stage": ["stage", "stages", "phase", "level", "round", "seed", "series",
               "pre-seed", "growth", "early-stage", "late-stage"],
     "industry": ["industry", "industries", "sector", "sectors", "space", "field",
-                 "domain", "vertical", "market", "niche", "focus area"]
+                 "domain", "vertical", "market", "niche", "focus area"],
+    # BUG-034 FIX: Added target_clients cluster to prevent duplicate questions about customer type
+    "target_clients": ["customer", "customers", "client", "clients", "company", "companies",
+                       "organization", "organizations", "segment", "segments", "market",
+                       "who you work with", "who do you work with", "types of companies",
+                       "kinds of companies", "target", "targets", "serve", "serving",
+                       "ideal customer", "ideal client", "customer profile", "client profile",
+                       "love working with", "enjoy working with", "best clients"],
+    # BUG-035 FIX: Added target_company_size cluster for company size questions
+    "target_company_size": ["employees", "employee count", "team size", "company size",
+                            "headcount", "staff", "50-200", "100-500", "small", "medium",
+                            "enterprise", "startup", "scaleup", "smb", "mid-market"]
 }
 
 

@@ -302,9 +302,18 @@ class ResumeService:
                     raise ValueError("No text extracted from the resume")
 
                 # Store extracted text in DynamoDB
-                user_profile.resume_text.text = text
-                user_profile.resume_text.extracted_at = datetime.utcnow()
-                user_profile.resume_text.extraction_method = f"{extraction_method} (conversational_upload)"
+                # BUG-032 FIX: Initialize resume_text if None to prevent AttributeError
+                if user_profile.resume_text is None:
+                    user_profile.resume_text = {}
+                # Handle both dict and object-style access
+                if isinstance(user_profile.resume_text, dict):
+                    user_profile.resume_text["text"] = text
+                    user_profile.resume_text["extracted_at"] = datetime.utcnow().isoformat()
+                    user_profile.resume_text["extraction_method"] = f"{extraction_method} (conversational_upload)"
+                else:
+                    user_profile.resume_text.text = text
+                    user_profile.resume_text.extracted_at = datetime.utcnow()
+                    user_profile.resume_text.extraction_method = f"{extraction_method} (conversational_upload)"
                 user_profile.processing_status = 'completed'
                 user_profile.persona_status = 'pending'
                 user_profile.save()
@@ -482,9 +491,18 @@ class ResumeService:
                     raise ValueError("No text extracted from the resume.")
 
                 # Store extracted text in DynamoDB
-                user_profile.resume_text.text = text
-                user_profile.resume_text.extracted_at = datetime.utcnow()
-                user_profile.resume_text.extraction_method = extraction_method
+                # BUG-032 FIX: Initialize resume_text if None to prevent AttributeError
+                if user_profile.resume_text is None:
+                    user_profile.resume_text = {}
+                # Handle both dict and object-style access
+                if isinstance(user_profile.resume_text, dict):
+                    user_profile.resume_text["text"] = text
+                    user_profile.resume_text["extracted_at"] = datetime.utcnow().isoformat()
+                    user_profile.resume_text["extraction_method"] = extraction_method
+                else:
+                    user_profile.resume_text.text = text
+                    user_profile.resume_text.extracted_at = datetime.utcnow()
+                    user_profile.resume_text.extraction_method = extraction_method
                 user_profile.processing_status = 'completed'
                 user_profile.persona_status = 'pending'
                 user_profile.save()

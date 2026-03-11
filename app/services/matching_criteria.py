@@ -20,6 +20,7 @@ class ConnectionType(str, Enum):
     PARTNER_PARTNER = "partner_partner"
     RECRUITER_CANDIDATE = "recruiter_candidate"
     SALES_BIZDEV = "sales_bizdev"
+    CONSULTANT_CLIENT = "consultant_client"  # BUG-033 FIX: Added for service providers seeking clients
     GENERAL_NETWORKING = "general_networking"
 
 
@@ -381,6 +382,77 @@ PARTNER_PARTNER_CRITERIA = ConnectionCriteria(
 
 
 # ============================================================================
+# CONSULTANT ↔ CLIENT CRITERIA
+# BUG-033 FIX: Added for service providers/consultants seeking clients
+# ============================================================================
+CONSULTANT_CLIENT_CRITERIA = ConnectionCriteria(
+    connection_type=ConnectionType.CONSULTANT_CLIENT,
+    display_name="Consultant ↔ Client",
+    side_a_wants=[  # What Consultant wants
+        "Companies needing their expertise",
+        "Decision-makers (CTOs, CEOs, Ops leads)",
+        "Clear project scope or ongoing retainer",
+        "Fair compensation and terms",
+        "Referral partnerships with adjacent consultants",
+        "Companies at right stage (not too early, not too late)",
+    ],
+    side_b_wants=[  # What Client wants
+        "Domain expertise and track record",
+        "Flexible engagement (no full-time overhead)",
+        "Clear deliverables and timeline",
+        "Network access and introductions",
+        "Strategic guidance not just execution",
+        "Cultural fit and communication style",
+    ],
+    criteria=[
+        MatchingCriterion(
+            name="expertise_match",
+            weight=0.30,
+            description="Consultant's expertise matches client's needs",
+            keywords_positive=["consulting", "advisory", "expertise", "specialist", "expert"],
+            field_to_check="offerings"
+        ),
+        MatchingCriterion(
+            name="industry_alignment",
+            weight=0.20,
+            description="Consultant has relevant industry experience",
+            keywords_positive=["industry", "sector", "vertical", "domain"],
+            field_to_check="industry"
+        ),
+        MatchingCriterion(
+            name="company_stage_fit",
+            weight=0.15,
+            description="Target company stage matches consultant's sweet spot",
+            keywords_positive=["startup", "scaleup", "enterprise", "smb", "mid-market"],
+            field_to_check="stage"
+        ),
+        MatchingCriterion(
+            name="company_size_fit",
+            weight=0.15,
+            description="Target company size matches consultant's focus",
+            keywords_positive=["employees", "team size", "headcount", "50-200", "100-500"],
+            field_to_check="target_company_size"
+        ),
+        MatchingCriterion(
+            name="engagement_style",
+            weight=0.10,
+            description="Engagement style compatibility (retainer vs project)",
+            keywords_positive=["project", "retainer", "ongoing", "one-time", "advisory"],
+            field_to_check="engagement_style"
+        ),
+        MatchingCriterion(
+            name="geography_match",
+            weight=0.10,
+            description="Geographic or remote work compatibility",
+            keywords_positive=["remote", "on-site", "hybrid", "local"],
+            field_to_check="geography"
+        ),
+    ],
+    complementary_pair=("service_provider", "service_seeker")
+)
+
+
+# ============================================================================
 # GENERAL NETWORKING CRITERIA
 # ============================================================================
 GENERAL_NETWORKING_CRITERIA = ConnectionCriteria(
@@ -446,6 +518,7 @@ MATCHING_CRITERIA_REGISTRY: Dict[ConnectionType, ConnectionCriteria] = {
     ConnectionType.MENTOR_MENTEE: MENTOR_MENTEE_CRITERIA,
     ConnectionType.RECRUITER_CANDIDATE: RECRUITER_CANDIDATE_CRITERIA,
     ConnectionType.PARTNER_PARTNER: PARTNER_PARTNER_CRITERIA,
+    ConnectionType.CONSULTANT_CLIENT: CONSULTANT_CLIENT_CRITERIA,  # BUG-033 FIX
     ConnectionType.GENERAL_NETWORKING: GENERAL_NETWORKING_CRITERIA,
 }
 

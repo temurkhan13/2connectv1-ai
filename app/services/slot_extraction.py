@@ -276,6 +276,26 @@ class SlotSchema:
             max_value=50,
             extract_keywords=["years", "experience", "been doing", "since"]
         ),
+        # BUG-035 FIX: Added target_company_size for consultants/service providers
+        # This captures the SIZE of companies they want to work with (their clients)
+        # Different from team_size which is their OWN company's employee count
+        SlotDefinition(
+            name="target_company_size",
+            display_name="Target Company Size",
+            slot_type=SlotType.SINGLE_SELECT,
+            description="Size of companies you want to work with (by employee count). NOT your own team size.",
+            required=False,
+            options=[
+                "1-10 employees (Micro)",
+                "11-50 employees (Small)",
+                "51-200 employees (Medium)",
+                "201-500 employees (Mid-market)",
+                "501-1000 employees (Large)",
+                "1000+ employees (Enterprise)"
+            ],
+            extract_keywords=["employees", "company size", "companies with", "50-200", "100-500",
+                            "startups", "scaleups", "enterprises", "smb", "mid-market", "headcount"]
+        ),
     ]
 
     # ========================================================================

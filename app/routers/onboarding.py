@@ -673,7 +673,7 @@ async def chat(request: ChatMessageRequest):
         # Even if user signals completion, don't allow it until 4+ MV dimensions are filled
         mv_override_reason = None
         if is_complete:
-            can_complete, reason = progressive_disclosure.can_skip_to_completion(session_id)
+            can_complete, reason = progressive_disclosure.can_complete_onboarding(session_id)
             if not can_complete:
                 logger.info(f"Session {session_id}: Overriding completion - MV coverage insufficient: {reason}")
                 is_complete = False

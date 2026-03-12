@@ -135,11 +135,16 @@ SLOT_DEFINITIONS = {
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
-        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services"],
-        "extraction_hint": "MULTI-GOAL HANDLING: If user mentions MULTIPLE goals, pick the ONE that appears FIRST or is most emphasized. "
-                          "Priority order when ambiguous: 1) Raise Funding (if mentioned), 2) Find Co-founder, 3) Explore Partnerships, 4) Seek Mentorship. "
-                          "Example: 'connect with investors AND sales leaders AND founders' → 'Raise Funding' (investors = fundraising). "
-                          "Example: 'find a technical co-founder AND mentors' → 'Find Co-founder' (co-founder mentioned first). "
+        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking"],
+        "extraction_hint": "KEYWORD-TO-GOAL MAPPING (extract on first match): "
+                          "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
+                          "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
+                          "• 'mentor', 'advice', 'guidance', 'learn from' → 'Seek Mentorship'. "
+                          "• 'partnership', 'collaborate', 'strategic alliance', 'joint venture' → 'Explore Partnerships'. "
+                          "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
+                          "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
+                          "• 'network', 'connections', 'meet people', 'expand my network' → 'Seek Networking'. "
+                          "CRITICAL: If user says 'I need a technical co-founder' or 'looking for someone to build with', extract 'Find Co-founder' IMMEDIATELY. "
                           "ALWAYS extract something - never leave blank if ANY goal-related intent is mentioned."
     },
     "industry_focus": {

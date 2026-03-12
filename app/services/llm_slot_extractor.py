@@ -2395,6 +2395,71 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # Question generation is handled by separate LLMQuestionGenerator service
 
         # =========================================================================
+        # BUG-090 FIX: FORCE primary_goal AS MANDATORY FIRST EXTRACTION
+        # =========================================================================
+        # Without primary_goal, we can't activate objective-specific focus slots.
+        # This is the most critical slot - MUST be extracted before others.
+        # If LLM didn't extract it, infer from message content or extracted slots.
+        # =========================================================================
+        primary_goal_known = "primary_goal" in already_filled or "primary_goal" in extracted_slots
+
+        if not primary_goal_known:
+            inferred_goal = None
+
+            # Method 1: Infer from extracted slot types
+            hiring_slots = {"role_type", "seniority_level", "remote_preference", "compensation_range", "hiring_timeline"}
+            cofounder_slots = {"skills_have", "skills_need", "commitment_level", "equity_expectations"}
+            job_search_slots = {"target_role", "desired_seniority", "salary_expectation", "work_preference", "availability"}
+            investing_slots = {"check_size", "portfolio_size", "investment_thesis"}
+            fundraising_slots = {"funding_need", "funding_range"}
+            mentorship_slots = {"mentorship_areas", "mentorship_format", "mentorship_commitment"}
+
+            extracted_keys = set(extracted_slots.keys())
+
+            if extracted_keys & hiring_slots:
+                inferred_goal = "HIRING"
+            elif extracted_keys & cofounder_slots:
+                inferred_goal = "COFOUNDER"
+            elif extracted_keys & job_search_slots:
+                inferred_goal = "JOB_SEARCH"
+            elif extracted_keys & investing_slots:
+                inferred_goal = "INVESTING"
+            elif extracted_keys & fundraising_slots:
+                inferred_goal = "FUNDRAISING"
+            elif extracted_keys & mentorship_slots:
+                inferred_goal = "MENTORSHIP"
+
+            # Method 2: Infer from message content (keywords)
+            if not inferred_goal and message:
+                message_lower = message.lower()
+                if any(kw in message_lower for kw in ["hire", "hiring", "recruit", "looking to fill"]):
+                    inferred_goal = "HIRING"
+                elif any(kw in message_lower for kw in ["co-founder", "cofounder", "looking for a partner"]):
+                    inferred_goal = "COFOUNDER"
+                elif any(kw in message_lower for kw in ["looking for a job", "job search", "seeking a role", "career move"]):
+                    inferred_goal = "JOB_SEARCH"
+                elif any(kw in message_lower for kw in ["raise funding", "fundraising", "series a", "seeking investment"]):
+                    inferred_goal = "FUNDRAISING"
+                elif any(kw in message_lower for kw in ["looking to invest", "angel invest", "write checks"]):
+                    inferred_goal = "INVESTING"
+                elif any(kw in message_lower for kw in ["mentor", "mentorship", "guidance"]):
+                    inferred_goal = "MENTORSHIP"
+                elif any(kw in message_lower for kw in ["partnership", "collaborate", "strategic partner"]):
+                    inferred_goal = "PARTNERSHIP"
+
+            if inferred_goal:
+                # Add primary_goal to extracted_slots
+                extracted_slots["primary_goal"] = ExtractedSlot(
+                    value=inferred_goal,
+                    confidence=0.90,
+                    reasoning=f"BUG-090: Inferred from message content and extracted slots"
+                )
+                logger.info(f"[BUG-090] Inferred primary_goal: {inferred_goal}")
+        # =========================================================================
+        # END BUG-090 FIX
+        # =========================================================================
+
+        # =========================================================================
         # BUG-088 FIX: ENFORCE MAX 3 SLOTS PER TURN (CODE-LEVEL, NOT PROMPT)
         # =========================================================================
         # The LLM ignores prompt instructions to limit extraction. We MUST enforce
@@ -2455,10 +2520,18 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             # Default priority if no objective-specific order
             if not priority_slots:
                 priority_slots = [
-                    "user_type", "primary_goal", "industry_focus", "geography",
+                    "primary_goal", "user_type", "industry_focus", "geography",
                     "role_type", "seniority_level", "company_stage", "stage_preference",
                     "funding_need", "check_size", "skills_have", "skills_need"
                 ]
+
+            # BUG-090 FIX: ALWAYS prioritize primary_goal if not already filled
+            # Even with objective-specific slots, primary_goal must come first
+            if "primary_goal" not in already_filled:
+                if "primary_goal" in priority_slots:
+                    priority_slots.remove("primary_goal")
+                priority_slots = ["primary_goal"] + list(priority_slots)
+                logger.info(f"[BUG-090] Prioritizing primary_goal as first slot")
 
             # Select top 3 slots by priority order
             limited_slots = {}

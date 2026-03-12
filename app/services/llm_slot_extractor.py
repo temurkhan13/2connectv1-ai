@@ -117,13 +117,17 @@ class LLMExtractedSlot:
 
 @dataclass
 class LLMExtractionResult:
-    """Result of LLM slot extraction."""
+    """Result of LLM slot extraction.
+
+    BUG-071 FIX: follow_up_question is now optional (default empty).
+    Question generation is handled by separate LLMQuestionGenerator service.
+    """
     extracted_slots: Dict[str, LLMExtractedSlot]
     user_type_inference: str  # "founder", "investor", "advisor", etc.
-    follow_up_question: str  # Contextual next question
     missing_slots: List[str]  # What's still needed
     understanding_summary: str  # Brief summary of what LLM understood
     is_off_topic: bool  # True if user asked off-topic/general knowledge question
+    follow_up_question: str = ""  # DEPRECATED: Now handled by LLMQuestionGenerator
 
 
 # Slot definitions for the LLM prompt
@@ -1705,40 +1709,9 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                 # If we get here, parsing succeeded - process the result
                 result = self._parse_llm_response(result_data, already_filled)
 
-                # BUG-002 FIX: Check if LLM still generated a repetitive question
-                # If so, auto-replace with a diversified question
-                if result.follow_up_question and self._is_question_repetitive(result.follow_up_question, covered_topics):
-                    logger.warning(f"LLM generated repetitive question, auto-diversifying...")
-                    diversified = self._get_diversified_question(covered_topics, result.missing_slots)
-                    result = LLMExtractionResult(
-                        extracted_slots=result.extracted_slots,
-                        user_type_inference=result.user_type_inference,
-                        follow_up_question=diversified,  # Replace with non-repetitive question
-                        missing_slots=result.missing_slots,
-                        understanding_summary=result.understanding_summary,
-                        is_off_topic=result.is_off_topic
-                    )
-
-                # Step 2: Enhance follow-up with Sonnet for higher quality personalization
-                # Only if we have slots extracted and not off-topic
-                if result.extracted_slots and not result.is_off_topic and result.missing_slots:
-                    enhanced_followup = self._generate_personalized_followup(
-                        user_message=user_message,
-                        extracted_slots=result.extracted_slots,
-                        missing_slots=result.missing_slots,
-                        user_type=result.user_type_inference,
-                        session_id=session_id,
-                        conversation_history=conversation_history  # CRITICAL: Pass history to prevent duplicates
-                    )
-                    if enhanced_followup:
-                        result = LLMExtractionResult(
-                            extracted_slots=result.extracted_slots,
-                            user_type_inference=result.user_type_inference,
-                            follow_up_question=enhanced_followup,
-                            missing_slots=result.missing_slots,
-                            understanding_summary=result.understanding_summary,
-                            is_off_topic=result.is_off_topic
-                        )
+                # BUG-071 FIX: Removed follow_up_question generation from extraction
+                # Question generation is now handled by separate LLMQuestionGenerator service
+                # This provides clean separation of concerns and allows parallel execution
 
                 return result
 
@@ -2063,54 +2036,10 @@ Return valid JSON:
     }},
     "user_type_inference": "founder|investor|advisor|executive|service_provider|unknown",
     "understanding_summary": "INTERNAL ONLY - your analysis notes including implicit signals detected",
-    "missing_important_slots": ["REQUIRED slots first: primary_goal, requirements, offerings, user_type, industry_focus, stage_preference, geography"],
-    "follow_up_question": "Open-ended question designed to fill multiple missing slots"
+    "missing_important_slots": ["REQUIRED slots first: primary_goal, requirements, offerings, user_type, industry_focus, stage_preference, geography"]
 }}
 
-## follow_up_question Guidelines
-
-Your follow-up MUST:
-1. **Start with warm acknowledgment** that references SPECIFIC details they shared (not generic "Thanks for sharing!")
-2. **Use VARIED openers** — rotate between: "That's fascinating", "What a smart move", "That stands out", "That's impressive", "Interesting approach" — NEVER repeat the same opener twice
-3. **Connect to their unique story** — don't ask generic questions, ask questions that flow from THEIR narrative
-4. **Be open-ended** to invite rich responses
-5. **Never be form-like** — no "What is your X?" or "Tell me about your Y"
-
-**PERSONALIZATION TEMPLATE:**
-"[Warm acknowledgment referencing their specific detail] — [genuine curiosity phrase]. [Question that flows naturally from their story]"
-
-**EXAMPLE:**
-User: "I left my corporate job to build an AI tool for hospitals"
-GOOD: "That's a bold leap — leaving corporate to tackle healthcare AI. Those hospital sales cycles can be brutal. What made you confident enough to make that jump?"
-BAD: "Thanks for sharing! What are your goals?"
-
-## 🚫 FORBIDDEN SEMANTIC PATTERNS (CRITICAL)
-
-These question topics are ALL THE SAME - if you asked ANY one, do NOT ask another:
-- goals / objectives / priorities / aspirations / ambitions / vision
-- achievements / accomplishments / success / hopes / dreams
-- challenges / obstacles / blockers / struggles / difficulties
-- skills / expertise / experience / strengths / capabilities / superpowers
-- needs / requirements / support / help / gaps / looking for
-
-If user already answered about "goals", do NOT ask about "priorities" or "aspirations" - they're the same thing!
-
-## 🔄 "I ALREADY ANSWERED" HANDLING (CRITICAL)
-
-If user says ANY of these:
-- "I already answered"
-- "I told you"
-- "As I mentioned"
-- "I said before"
-- "Same as above"
-- [Repeats previous answer]
-
-Then you MUST:
-1. Set extracted_slots to {{}} (nothing new to extract from repeat)
-2. Ask about a COMPLETELY DIFFERENT topic (switch from goals→geography, or skills→stage preference)
-3. Acknowledge briefly if natural ("Got it!" then new topic)
-
-NEVER ask a variation of the same question after user signals repetition.
+NOTE: DO NOT include follow_up_question - question generation is handled by a separate dedicated service.
 
 ## 🔧 USER CORRECTION HANDLING (CRITICAL)
 
@@ -2384,17 +2313,16 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
                 reasoning=reasoning
             )
 
-        # Clean follow-up question - remove third-person summaries
-        raw_follow_up = response_data.get("follow_up_question", "")
-        clean_follow_up = self._clean_follow_up_question(raw_follow_up)
+        # BUG-071 FIX: follow_up_question is no longer extracted here
+        # Question generation is handled by separate LLMQuestionGenerator service
 
         return LLMExtractionResult(
             extracted_slots=extracted_slots,
             user_type_inference=response_data.get("user_type_inference", "unknown"),
-            follow_up_question=clean_follow_up,
             missing_slots=response_data.get("missing_important_slots", []),
             understanding_summary=response_data.get("understanding_summary", ""),
             is_off_topic=response_data.get("is_off_topic", False)
+            # follow_up_question defaults to "" - now handled by LLMQuestionGenerator
         )
 
     def _clean_follow_up_question(self, text: str) -> str:

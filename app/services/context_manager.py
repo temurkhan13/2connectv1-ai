@@ -27,6 +27,7 @@ from app.services.slot_extraction import (
     SlotSchema, ExtractedSlot
 )
 from app.services.llm_slot_extractor import LLMSlotExtractor, LLMExtractionResult
+from app.services.llm_question_generator import get_question_generator
 from app.adapters.supabase_onboarding import supabase_onboarding_adapter
 
 logger = logging.getLogger(__name__)
@@ -134,7 +135,8 @@ class ContextManager:
 
     def __init__(self, slot_extractor: Optional[SlotExtractor] = None):
         self.slot_extractor = slot_extractor or SlotExtractor()
-        self.llm_extractor = LLMSlotExtractor()  # LLM-based extraction
+        self.llm_extractor = LLMSlotExtractor()  # LLM-based extraction (ONLY extraction)
+        self.question_generator = get_question_generator()  # BUG-071: Dedicated question generator
         self.schema = SlotSchema()
 
         # Session storage (in production, use Redis or DB)
@@ -442,8 +444,37 @@ class ContextManager:
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")
 
+            # BUG-071 FIX: Generate follow-up question using DEDICATED question generator
+            # This separates extraction (Sonnet #1) from question generation (Sonnet #2)
+            follow_up_question = None
+            if not llm_result.is_off_topic and llm_result.missing_slots:
+                try:
+                    follow_up_question = self.question_generator.generate_followup_question(
+                        user_message=content,
+                        extracted_slots={k: {"value": v.value, "confidence": v.confidence} for k, v in llm_result.extracted_slots.items()},
+                        all_filled_slots=already_filled,
+                        missing_slots=llm_result.missing_slots,
+                        user_type=llm_result.user_type_inference,
+                        session_id=context.session_id,
+                        conversation_history=conversation_history
+                    )
+                    logger.info(f"[QuestionGenerator] Generated follow-up: {follow_up_question[:80] if follow_up_question else 'None'}...")
+                except Exception as qe:
+                    logger.warning(f"[QuestionGenerator] Failed to generate question: {qe}")
+                    follow_up_question = None
+
+            # Create updated result with generated question
+            llm_result_with_question = LLMExtractionResult(
+                extracted_slots=llm_result.extracted_slots,
+                user_type_inference=llm_result.user_type_inference,
+                missing_slots=llm_result.missing_slots,
+                understanding_summary=llm_result.understanding_summary,
+                is_off_topic=llm_result.is_off_topic,
+                follow_up_question=follow_up_question or ""
+            )
+
             # Store LLM result for response generation (CRITICAL for question generation)
-            self._llm_responses[context.session_id] = llm_result
+            self._llm_responses[context.session_id] = llm_result_with_question
 
             # P0 FIX: ALWAYS persist slots to Supabase (even on cache hit)
             # This ensures dashboard shows correct slot count and enables regeneration

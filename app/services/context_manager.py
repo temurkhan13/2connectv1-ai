@@ -482,12 +482,18 @@ class ContextManager:
                     follow_up_question = None
 
             # Create updated result with generated question AND calculated missing slots
+            # BUG-092 FIX: If user wants to finish, skip question generation
+            if llm_result.is_completion_signal:
+                logger.info(f"[BUG-092] User signaled completion - skipping follow-up question")
+                follow_up_question = ""
+
             llm_result_with_question = LLMExtractionResult(
                 extracted_slots=llm_result.extracted_slots,
                 user_type_inference=llm_result.user_type_inference,
                 missing_slots=actual_missing_slots,  # BUG-087: Use calculated, not LLM's opinion
                 understanding_summary=llm_result.understanding_summary,
                 is_off_topic=llm_result.is_off_topic,
+                is_completion_signal=llm_result.is_completion_signal,  # BUG-092: Propagate signal
                 follow_up_question=follow_up_question or ""
             )
 

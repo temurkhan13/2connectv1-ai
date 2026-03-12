@@ -150,12 +150,17 @@ class LLMExtractionResult:
 
     BUG-071 FIX: follow_up_question is now optional (default empty).
     Question generation is handled by separate LLMQuestionGenerator service.
+
+    BUG-092 FIX: Added is_completion_signal - LLM detects if user wants to finish.
+    Previously used dumb substring matching ("done" in message) which caused
+    false positives like "done Africa deals" blocking extraction.
     """
     extracted_slots: Dict[str, LLMExtractedSlot]
     user_type_inference: str  # "founder", "investor", "advisor", etc.
     missing_slots: List[str]  # What's still needed
     understanding_summary: str  # Brief summary of what LLM understood
     is_off_topic: bool  # True if user asked off-topic/general knowledge question
+    is_completion_signal: bool = False  # BUG-092: True if user explicitly wants to finish onboarding
     follow_up_question: str = ""  # DEPRECATED: Now handled by LLMQuestionGenerator
 
 
@@ -683,8 +688,11 @@ class LLMSlotExtractor:
         Returns:
             Dict with extracted slots: {slot_name: {"value": ..., "confidence": ..., "source": "resume"}}
         """
-        if not resume_text or len(resume_text.strip()) < 50:
-            logger.info("BUG-043: Resume text too short for extraction, skipping")
+        # BUG-096 FIX: Reduced minimum from 50 to 10 chars
+        # Previously: Short resume text like "CEO at TechCorp" (15 chars) was skipped entirely
+        # Now: Process anything with meaningful content - LLM can extract value from short text
+        if not resume_text or len(resume_text.strip()) < 10:
+            logger.info("BUG-096: Resume text too short for extraction (<10 chars), skipping")
             return {}
 
         # Truncate very long resumes to avoid context overflow
@@ -1328,29 +1336,16 @@ You MUST acknowledge the correction and show you NOW understand correctly.
                 if dim in ["engagement_style", "dealbreakers"]
             ]
 
+            # BUG-095 FIX: Removed forced question injection that bypassed LLM
+            # Previously: After Q4, code forced hardcoded questions for "critical" dimensions
+            # Problem: Bypassed Sonnet's contextual understanding, caused awkward transitions
+            # Now: Let LLM generate ALL follow-up questions - it has full context
+            # The missing_mv_dimensions are still passed to LLM prompt for guidance
             if total_questions >= 4 and critical_missing:
-                forced = self._get_forced_dimension_question(
-                    missing_dimensions=critical_missing,
-                    blacklisted_topics=blacklisted_topics,
-                    question_count=total_questions
+                logger.info(
+                    f"[{session_id}] BUG-095: Critical dimensions {critical_missing} still missing after Q{total_questions}, "
+                    f"but letting LLM generate contextual question instead of forcing hardcoded one"
                 )
-
-                if forced:
-                    forced_question, forced_dimension = forced
-                    logger.info(
-                        f"[{session_id}] PRE-LLM FORCE: After {total_questions} questions, "
-                        f"forcing '{forced_dimension}' question (skipping LLM): "
-                        f"'{forced_question[:60]}...'"
-                    )
-
-                    # Still record patterns for consistency
-                    if session_id and session_id in self._session_patterns:
-                        opener = self._detect_opener(forced_question)
-                        structure = self._detect_structure(forced_question)
-                        self._session_patterns[session_id]['openers'].append(opener)
-                        self._session_patterns[session_id]['structures'].append(structure)
-
-                    return forced_question
 
             prompt = f"""Based on what this {user_type} just shared, generate ONE warm, personalized follow-up question.
 
@@ -1539,18 +1534,11 @@ Return ONLY the follow-up question, nothing else."""
         if resume_context:
             logger.info(f"ISSUE-1 FIX: Using resume context ({len(resume_context)} chars) for slot extraction")
 
-        # BUG-001 FIX: Check for completion intent BEFORE calling LLM
-        # If user signals they're done, return early with empty follow_up_question
-        if self._user_wants_to_finish(user_message, already_filled):
-            logger.info(f"User completion signal detected in message: '{user_message[:50]}...'")
-            return LLMExtractionResult(
-                extracted_slots={},
-                user_type_inference=already_filled.get("user_type", "unknown"),
-                follow_up_question="",  # Empty = no more questions
-                missing_slots=[],
-                understanding_summary="User signaled completion",
-                is_off_topic=False
-            )
+        # BUG-092 FIX: Removed dumb substring-based completion detection
+        # Previously: _user_wants_to_finish() checked if "done" was in message
+        # Problem: "done Africa deals" triggered false positive, blocked extraction
+        # Fix: Let Sonnet detect completion intent - it understands context
+        # Completion detection now happens via LLM response field: is_completion_signal
 
         # BUG-002 FIX: Detect which semantic topics have already been asked
         # This prevents GPT-4o-mini from asking "goals" vs "objectives" vs "priorities"
@@ -1857,16 +1845,18 @@ CRITICAL: Your follow_up_question must NEVER ask for information listed above. O
                 keywords = SEMANTIC_TOPIC_CLUSTERS.get(topic, [])
                 forbidden_keywords.extend(keywords[:5])  # Top 5 keywords per topic
 
+            # BUG-093 FIX: Softened language - aggressive wording made Sonnet overly cautious
+            # Previously: "ABSOLUTELY FORBIDDEN" / "you will be penalized" scared LLM into avoiding valid topics
+            # Now: Gentle guidance that lets Sonnet make intelligent decisions
             covered_topics_text = f"""
-## 🚨 ABSOLUTELY FORBIDDEN TOPICS - ALREADY ASKED
-The following topics have ALREADY been discussed. Your follow_up_question MUST NOT contain ANY of these words or concepts:
+## Already Discussed Topics
+We've already covered these areas, so please focus your next question on something new:
 
-FORBIDDEN WORDS: {', '.join(forbidden_keywords[:20])}
+Already covered: {', '.join(covered_topics)}
 
-COVERED TOPICS: {', '.join(covered_topics)}
+Good alternative topics to explore: {', '.join(list(set(SEMANTIC_TOPIC_CLUSTERS.keys()) - set(covered_topics))[:8])}
 
-If you ask about ANY of these topics, you will be penalized. Ask about something COMPLETELY DIFFERENT.
-Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()) - set(covered_topics))}
+Note: It's fine to briefly reference covered topics for context, just don't make them the main focus of your question.
 """
 
         # Determine which REQUIRED slots are still missing
@@ -2105,6 +2095,7 @@ In understanding_summary, note: "User also mentioned $180k+ compensation, remote
 Return valid JSON:
 {{
     "is_off_topic": false,
+    "is_completion_signal": false,
     "extracted_slots": {{
         "slot_name": {{
             "value": "extracted value",
@@ -2116,6 +2107,20 @@ Return valid JSON:
     "understanding_summary": "INTERNAL ONLY - your analysis notes including implicit signals detected",
     "missing_important_slots": ["REQUIRED slots first: primary_goal, requirements, offerings, user_type, industry_focus, stage_preference, geography"]
 }}
+
+## 🏁 COMPLETION SIGNAL DETECTION (BUG-092 FIX)
+
+Set "is_completion_signal": true ONLY if user EXPLICITLY wants to end onboarding:
+- "I'm done" / "that's all" / "let's see my matches" / "I'm ready to start matching"
+- "no more questions" / "that covers it" / "wrap it up"
+
+Set "is_completion_signal": false for:
+- Normal conversation providing information
+- "done" as past tense: "I've done 10 deals" / "done Africa deals" ← NOT completion
+- "finished" as past tense: "I finished my MBA" ← NOT completion
+- Any message that contains substantive information to extract
+
+CRITICAL: "done" in context like "I've done X" or "who've done Y" is PAST TENSE, not completion!
 
 NOTE: DO NOT include follow_up_question - question generation is handled by a separate dedicated service.
 
@@ -2429,23 +2434,12 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             elif extracted_keys & mentorship_slots:
                 inferred_goal = "MENTORSHIP"
 
-            # Method 2: Infer from message content (keywords)
-            if not inferred_goal and message:
-                message_lower = message.lower()
-                if any(kw in message_lower for kw in ["hire", "hiring", "recruit", "looking to fill"]):
-                    inferred_goal = "HIRING"
-                elif any(kw in message_lower for kw in ["co-founder", "cofounder", "looking for a partner"]):
-                    inferred_goal = "COFOUNDER"
-                elif any(kw in message_lower for kw in ["looking for a job", "job search", "seeking a role", "career move"]):
-                    inferred_goal = "JOB_SEARCH"
-                elif any(kw in message_lower for kw in ["raise funding", "fundraising", "series a", "seeking investment"]):
-                    inferred_goal = "FUNDRAISING"
-                elif any(kw in message_lower for kw in ["looking to invest", "angel invest", "write checks"]):
-                    inferred_goal = "INVESTING"
-                elif any(kw in message_lower for kw in ["mentor", "mentorship", "guidance"]):
-                    inferred_goal = "MENTORSHIP"
-                elif any(kw in message_lower for kw in ["partnership", "collaborate", "strategic partner"]):
-                    inferred_goal = "PARTNERSHIP"
+            # BUG-094 FIX: Removed keyword-based inference (Method 2)
+            # Previously: Substring matching like 'if "hire" in message_lower' caused false positives
+            # Same bug class as BUG-092 ("done" in "done Africa deals")
+            # Example: "I hired a great team" would incorrectly infer HIRING goal
+            # Now: Only use Method 1 (slot-based inference) - let LLM extract primary_goal properly
+            # The LLM prompt already asks for primary_goal extraction with full context understanding
 
             if inferred_goal:
                 # Add primary_goal to extracted_slots
@@ -2573,12 +2567,18 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # END BUG-088 FIX
         # =========================================================================
 
+        # BUG-092 FIX: Parse completion signal from LLM (replaces dumb substring matching)
+        is_completion = response_data.get("is_completion_signal", False)
+        if is_completion:
+            logger.info(f"[BUG-092] LLM detected completion signal (user wants to finish)")
+
         return LLMExtractionResult(
             extracted_slots=extracted_slots,
             user_type_inference=response_data.get("user_type_inference", "unknown"),
             missing_slots=response_data.get("missing_important_slots", []),
             understanding_summary=response_data.get("understanding_summary", ""),
-            is_off_topic=response_data.get("is_off_topic", False)
+            is_off_topic=response_data.get("is_off_topic", False),
+            is_completion_signal=is_completion  # BUG-092: LLM decides, not regex
             # follow_up_question defaults to "" - now handled by LLMQuestionGenerator
         )
 

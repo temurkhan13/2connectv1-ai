@@ -236,8 +236,10 @@ Be straightforward about misalignments. Finding the right fit matters more than 
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-089 FIX: Added hiring-specific slots (seniority, remote, compensation)
         onboarding_focus_slots=[
-            "role_type", "team_size", "industry_focus", "geography", "engagement_style"
+            "role_type", "seniority_level", "remote_preference", "compensation_range",
+            "industry_focus", "geography", "team_size"
         ],
         match_weight_overrides={
             "skills_alignment": 0.30,
@@ -362,8 +364,10 @@ Good mentorship relationships are built on mutual respect and clear expectations
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-089 FIX: Added mentorship-specific slots (areas, format, commitment)
         onboarding_focus_slots=[
-            "primary_goal", "industry_focus", "experience_years", "engagement_style"
+            "mentorship_areas", "mentorship_format", "mentorship_commitment",
+            "industry_focus", "experience_years", "engagement_style"
         ],
         match_weight_overrides={
             "expertise_alignment": 0.35,
@@ -426,8 +430,10 @@ Co-founder relationships are like marriages. Be thorough in exploring compatibil
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-089 FIX: Added cofounder-specific slots (skills, commitment, equity)
         onboarding_focus_slots=[
-            "primary_goal", "industry_focus", "company_stage", "engagement_style", "experience_years"
+            "skills_have", "skills_need", "commitment_level", "equity_expectations",
+            "industry_focus", "company_stage", "geography"
         ],
         match_weight_overrides={
             "skills_complement": 0.25,

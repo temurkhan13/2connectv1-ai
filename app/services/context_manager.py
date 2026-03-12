@@ -1009,7 +1009,14 @@ class ContextManager:
         Detect if user explicitly signals they want to finish onboarding.
 
         Phrases like "done", "that's all", "let's start matching", "no more", etc.
+
+        BUG-100 FIX: Use word boundary regex instead of substring matching.
+        Previously: "done" in "I've done diligence" → TRUE (false positive)
+        Now: Uses regex word boundaries to match whole phrases only.
+        Same fix as BUG-092 and BUG-099.
         """
+        import re
+
         # BUG-053 FIX: Never consider completion on first 2 user messages
         # Prevents false positives like "I'm ready to build" matching "I'm ready"
         user_turn_count = sum(1 for t in context.turns if t.turn_type == TurnType.USER)
@@ -1022,6 +1029,8 @@ class ContextManager:
             if t.turn_type == TurnType.USER
         ]
 
+        # BUG-100: Completion phrases - these should be matched as complete phrases
+        # using word boundaries, not as substrings
         completion_phrases = [
             "done", "that's all", "that's everything", "lets start", "let's start",
             "start matching", "see my matches", "ready to match", "no more",
@@ -1032,15 +1041,18 @@ class ContextManager:
 
         for turn in recent_user_turns:
             content_lower = turn.content.lower().strip()
-            # Check for completion phrases
+            # BUG-100 FIX: Use word boundary regex instead of substring 'in'
             for phrase in completion_phrases:
-                if phrase in content_lower:
+                # Escape special regex chars and add word boundaries
+                pattern = r'\b' + re.escape(phrase) + r'\b'
+                if re.search(pattern, content_lower):
                     # Also verify we have minimum viable profile (at least 3 slots)
                     filled_slots = [
                         name for name, slot in context.slots.items()
                         if slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]
                     ]
                     if len(filled_slots) >= 3:
+                        logger.info(f"BUG-100: Completion phrase '{phrase}' matched in user message")
                         return True
 
         return False

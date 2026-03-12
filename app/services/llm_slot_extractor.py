@@ -2644,6 +2644,11 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         BUG-001 FIX: This prevents the LLM from generating follow-up questions
         when the user explicitly signals they're done.
 
+        BUG-101 FIX: Use word boundary regex instead of substring matching.
+        Previously: "done" in "I've done diligence" → TRUE (false positive)
+        Now: Uses regex word boundaries to match whole phrases only.
+        Same fix as BUG-092, BUG-099, and BUG-100.
+
         Args:
             message: User's message
             already_filled: Already collected slots (need minimum for valid profile)
@@ -2651,8 +2656,11 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         Returns:
             True if user wants to finish and has enough data
         """
+        import re
+
         # Completion phrases that indicate user wants to finish
         # BUG-037 FIX: Added "wrap up" and variations to prevent wrap-up loop
+        # BUG-101: These are now matched with word boundaries
         completion_phrases = [
             "done", "that's all", "that's everything", "i'm done", "im done",
             "show me my matches", "find my matches", "i'm ready", "im ready",
@@ -2666,8 +2674,14 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
 
         msg_lower = message.lower().strip()
 
-        # Check if message contains completion signal
-        has_completion_signal = any(phrase in msg_lower for phrase in completion_phrases)
+        # BUG-101 FIX: Use word boundary regex instead of substring 'in'
+        has_completion_signal = False
+        for phrase in completion_phrases:
+            pattern = r'\b' + re.escape(phrase) + r'\b'
+            if re.search(pattern, msg_lower):
+                logger.info(f"BUG-101: Completion phrase '{phrase}' matched in user message")
+                has_completion_signal = True
+                break
 
         if not has_completion_signal:
             return False

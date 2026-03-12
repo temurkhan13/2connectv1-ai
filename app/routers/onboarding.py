@@ -1614,11 +1614,17 @@ def _generate_contextual_response(
             "What gets you excited about an opportunity?",
             "Tell me about the kinds of bets you like to make.",
         ],
-        # HIRING slots
+        # HIRING slots (employer perspective - see JOB_SEARCH for candidate perspective)
         "role_type": [
             "What kind of role are you looking to fill?",
             "Tell me about the position you're hiring for.",
             "What does your ideal candidate look like?",
+        ],
+        # BUG-077: JOB_SEARCH role_type (candidate perspective) - key with user_type suffix
+        "role_type__job_seeker": [
+            "What type of role are you looking for?",
+            "Tell me about your ideal next position.",
+            "What kind of opportunity excites you most?",
         ],
         "team_size": [
             "How big is your team right now?",
@@ -1683,13 +1689,35 @@ def _generate_contextual_response(
 
     import random
 
+    # BUG-077: Helper to get context-aware prompt key
+    # Some slots (like role_type) have different meanings for different user types
+    def _get_prompt_key(slot: str, ctx) -> str:
+        """Get context-aware prompt key for ambiguous slots."""
+        if slot == "role_type":
+            # Check if user is a job seeker (candidate) vs hiring (employer)
+            user_type_slot = ctx.slots.get("user_type")
+            primary_goal_slot = ctx.slots.get("primary_goal")
+            user_type = user_type_slot.value if user_type_slot else ""
+            primary_goal = primary_goal_slot.value if primary_goal_slot else ""
+
+            is_job_seeker = (
+                "job seeker" in (user_type or "").lower() or
+                "candidate" in (user_type or "").lower() or
+                "find new job" in (primary_goal or "").lower() or
+                "job" in (primary_goal or "").lower()
+            )
+            if is_job_seeker:
+                return "role_type__job_seeker"
+        return slot
+
     if not newly_extracted:
         # No new slots extracted - guide naturally
         if len(filled_slots) >= 3:
             if missing_slots:
                 # Pick a random indirect prompt for the first missing slot
                 slot = missing_slots[0]
-                prompts = indirect_prompts.get(slot, [f"Tell me more about your {slot.replace('_', ' ')}."])
+                prompt_key = _get_prompt_key(slot, context)
+                prompts = indirect_prompts.get(prompt_key, indirect_prompts.get(slot, [f"Tell me more about your {slot.replace('_', ' ')}."]))
                 return random.choice(prompts)
             else:
                 return "This is really helpful context. Anything else you'd like to share, or shall we wrap up?"
@@ -1704,7 +1732,8 @@ def _generate_contextual_response(
     if missing_slots:
         # Pick a random indirect prompt for the first missing slot
         slot = missing_slots[0]
-        prompts = indirect_prompts.get(slot, [f"Tell me more about your {slot.replace('_', ' ')}."])
+        prompt_key = _get_prompt_key(slot, context)
+        prompts = indirect_prompts.get(prompt_key, indirect_prompts.get(slot, [f"Tell me more about your {slot.replace('_', ' ')}."]))
         return random.choice(prompts)
 
     # All core slots filled - wrap up conversationally

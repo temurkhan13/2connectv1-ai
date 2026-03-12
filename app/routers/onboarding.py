@@ -718,7 +718,7 @@ async def chat(request: ChatMessageRequest):
             if mv_question:
                 # BUG-045 FIX: Only add encouragement if actually near completion
                 # Previously hardcoded "Almost there!" at all progress levels
-                progress_info = progressive_disclosure.get_progress(session_id)
+                progress_info = progressive_disclosure.get_progress_summary(session_id)
                 progress_pct = progress_info.get("progress_percent", 0) if progress_info else 0
 
                 if 85 <= progress_pct <= 95:

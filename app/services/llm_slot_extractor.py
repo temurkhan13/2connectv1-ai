@@ -60,12 +60,18 @@ MENTORSHIP_SPECIFIC_SLOTS = {"mentorship_areas", "mentorship_format", "mentorshi
 # Plus skills_have from COFOUNDER (what skills the candidate brings)
 JOB_SEARCH_SPECIFIC_SLOTS = {"role_type", "seniority_level", "remote_preference", "compensation_range", "skills_have"}
 
+# BUG-075: Slots specific to SERVICES objective (service providers)
+SERVICES_SPECIFIC_SLOTS = {"service_type", "engagement_style", "budget_range"}
+
 # Map primary_goal values to specific slot sets
 OBJECTIVE_SLOT_MAPPING = {
     "hiring": HIRING_SPECIFIC_SLOTS,
+    "hire talent": HIRING_SPECIFIC_SLOTS,  # BUG-075: Added explicit option
     "find co-founder": COFOUNDER_SPECIFIC_SLOTS,
     "seek mentorship": MENTORSHIP_SPECIFIC_SLOTS,
     "find new job": JOB_SEARCH_SPECIFIC_SLOTS,  # BUG-074: Job seekers get job-related slots
+    "offer services": SERVICES_SPECIFIC_SLOTS,  # BUG-075: Service providers
+    "launch product": set(),  # BUG-075: Product launch uses general slots
 }
 
 
@@ -94,7 +100,10 @@ def filter_slots_by_objective(slot_definitions: Dict, primary_goal: Optional[str
     # BUG-074 FIX: Job seekers ALSO need hiring-related slots (role_type, seniority, compensation)
     # "Find New Job" users should get these slots exposed
     is_job_seeker = "job" in goal_lower or "career" in goal_lower or "employment" in goal_lower
-    is_hiring = "hiring" in goal_lower or "recruit" in goal_lower
+    # BUG-075 FIX: Include "hire" and "talent" for Hire Talent goal
+    is_hiring = "hiring" in goal_lower or "recruit" in goal_lower or "hire" in goal_lower or "talent" in goal_lower
+    # BUG-075: Detect service providers
+    is_service_provider = "service" in goal_lower or "consult" in goal_lower or "agency" in goal_lower or "freelance" in goal_lower
 
     # If NOT hiring AND NOT job seeking, exclude hiring-specific slots
     if not is_hiring and not is_job_seeker:
@@ -112,6 +121,10 @@ def filter_slots_by_objective(slot_definitions: Dict, primary_goal: Optional[str
     # If NOT seeking mentorship, exclude mentorship slots
     if "mentor" not in goal_lower:
         slots_to_exclude.update(MENTORSHIP_SPECIFIC_SLOTS)
+
+    # BUG-075: If NOT offering services, exclude service-specific slots
+    if not is_service_provider:
+        slots_to_exclude.update(SERVICES_SPECIFIC_SLOTS)
 
     # Filter out excluded slots
     filtered = {k: v for k, v in slot_definitions.items() if k not in slots_to_exclude}
@@ -155,7 +168,7 @@ SLOT_DEFINITIONS = {
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
-        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking"],
+        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
         "extraction_hint": "KEYWORD-TO-GOAL MAPPING (extract on first match): "
                           "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
                           "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
@@ -164,6 +177,9 @@ SLOT_DEFINITIONS = {
                           "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
                           "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
                           "• 'network', 'connections', 'meet people', 'expand my network' → 'Seek Networking'. "
+                          "• 'hiring', 'recruit', 'build team', 'need talent', 'looking for developers', 'need engineers' → 'Hire Talent'. "
+                          "• 'launch', 'go-to-market', 'GTM', 'product launch', 'market entry', 'release product' → 'Launch Product'. "
+                          "• 'services', 'consulting', 'agency', 'freelance', 'offer expertise', 'provide services' → 'Offer Services'. "
                           "CRITICAL: If user says 'I need a technical co-founder' or 'looking for someone to build with', extract 'Find Co-founder' IMMEDIATELY. "
                           "ALWAYS extract something - never leave blank if ANY goal-related intent is mentioned."
     },
@@ -322,6 +338,18 @@ SLOT_DEFINITIONS = {
         "description": "Hours per month available for mentorship",
         "options": ["1-2 hours/month", "3-5 hours/month", "5-10 hours/month", "10+ hours/month", "Flexible"],
         "extraction_hint": "Extract time commitment: 'few hours a month' → 3-5 hours/month"
+    },
+    # BUG-075: SERVICE PROVIDER-specific slots
+    "service_type": {
+        "description": "Type of services offered",
+        "type": "multi_select",
+        "options": ["Marketing/Growth", "Engineering/Development", "Design/UX", "Legal/Compliance", "Finance/Accounting", "HR/Recruiting", "Strategy/Consulting", "Sales/BD", "Operations", "Other"],
+        "extraction_hint": "Map services: 'marketing agency' → Marketing/Growth, 'dev shop' → Engineering/Development, 'legal firm' → Legal/Compliance, 'fractional CFO' → Finance/Accounting"
+    },
+    "budget_range": {
+        "description": "Budget or pricing expectations for services",
+        "type": "text",
+        "extraction_hint": "Extract pricing: 'retainer $5K/month', 'project-based $10K-$50K', 'hourly $150-$300/hr', 'equity-based', 'flexible budget'"
     }
 }
 

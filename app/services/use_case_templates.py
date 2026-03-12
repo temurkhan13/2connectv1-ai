@@ -29,6 +29,7 @@ class ObjectiveType(str, Enum):
     PRODUCT_LAUNCH = "product_launch"
     NETWORKING = "networking"
     JOB_SEARCH = "job_search"  # BUG-074: Added for job seekers/candidates
+    SERVICES = "services"  # BUG-075: Added for service providers
 
 
 class VerdictLevel(str, Enum):
@@ -629,6 +630,73 @@ Good matches happen when both sides see mutual benefit. Help the candidate showc
             "culture_alignment": 0.10
         }
     ),
+
+    # BUG-075: Added SERVICES template for service providers
+    ObjectiveType.SERVICES: UseCaseTemplate(
+        objective=ObjectiveType.SERVICES,
+        display_name="Offering Services",
+        description="Service providers offering expertise to startups and growing companies",
+        system_prompt="""You are an expert AI facilitating a conversation between a service provider and a potential startup client.
+
+Your role is to:
+1. Help both parties understand if there's a good service fit
+2. Explore the service provider's expertise, track record, and offerings
+3. Understand the startup's needs, budget, and timeline
+4. Identify alignment on scope, pricing, and working style
+
+Focus areas for this conversation:
+- Service offerings and areas of expertise
+- Relevant experience with similar companies/stages
+- Pricing model and typical engagement structure
+- Availability and capacity
+- Communication and working style
+- Success metrics and deliverables
+
+Good matches happen when the provider's expertise directly addresses the startup's needs at a fair price point.""",
+        success_criteria=[
+            "Service offering matches startup needs",
+            "Budget expectations align",
+            "Timeline and availability work",
+            "Relevant industry/stage experience",
+            "Working style compatibility",
+            "Clear deliverables and success metrics"
+        ],
+        key_questions=[
+            "What services do you specialize in?",
+            "What types of companies do you typically work with?",
+            "What's your typical engagement model and pricing?",
+            "What results have you achieved for similar clients?",
+            "How do you prefer to work with clients?",
+            "What's your current availability and capacity?"
+        ],
+        verdict_criteria={
+            VerdictLevel.STRONG_MATCH.value: [
+                "service_fit", "budget_align", "experience_match", "availability"
+            ],
+            VerdictLevel.GOOD_MATCH.value: [
+                "service_fit", "experience_match", "availability"
+            ],
+            VerdictLevel.POTENTIAL_MATCH.value: [
+                "service_fit", "availability"
+            ],
+            VerdictLevel.WEAK_MATCH.value: [
+                "service_fit"
+            ],
+            VerdictLevel.NO_MATCH.value: []
+        },
+        onboarding_focus_slots=[
+            "service_type", "industry_focus", "stage_preference", "geography",
+            "engagement_style", "budget_range"
+        ],
+        match_weight_overrides={
+            "service_alignment": 0.30,
+            "industry_fit": 0.20,
+            "stage_fit": 0.15,
+            "budget_fit": 0.15,
+            "experience_level": 0.10,
+            "geography_proximity": 0.10
+        }
+    ),
 }
 
 
@@ -694,6 +762,16 @@ def get_template(objective: str) -> UseCaseTemplate:
         "looking for role": ObjectiveType.JOB_SEARCH,
         "new opportunity": ObjectiveType.JOB_SEARCH,
         "job seeker": ObjectiveType.JOB_SEARCH,
+        # BUG-075: Service provider keywords
+        "service": ObjectiveType.SERVICES,
+        "services": ObjectiveType.SERVICES,
+        "consultant": ObjectiveType.SERVICES,
+        "consulting": ObjectiveType.SERVICES,
+        "agency": ObjectiveType.SERVICES,
+        "freelance": ObjectiveType.SERVICES,
+        "offer services": ObjectiveType.SERVICES,
+        "service provider": ObjectiveType.SERVICES,
+        "provide services": ObjectiveType.SERVICES,
     }
 
     for keyword, obj_type in keyword_mapping.items():

@@ -910,6 +910,12 @@ class ContextManager:
 
         Phrases like "done", "that's all", "let's start matching", "no more", etc.
         """
+        # BUG-053 FIX: Never consider completion on first 2 user messages
+        # Prevents false positives like "I'm ready to build" matching "I'm ready"
+        user_turn_count = sum(1 for t in context.turns if t.turn_type == TurnType.USER)
+        if user_turn_count < 3:
+            return False
+
         # Only check recent user turns
         recent_user_turns = [
             t for t in context.turns[-4:]

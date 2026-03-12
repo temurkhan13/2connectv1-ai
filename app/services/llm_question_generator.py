@@ -20,6 +20,34 @@ from anthropic import Anthropic
 
 logger = logging.getLogger(__name__)
 
+# BUG-076: Human-readable slot names for fallback questions
+# Prevents grammatically broken questions like "Tell me about your skills have"
+SLOT_DISPLAY_NAMES = {
+    # Job seeker slots
+    "skills_have": "skills and expertise",
+    "role_type": "target role",
+    "seniority_level": "seniority level",
+    "remote_preference": "remote work preferences",
+    "compensation_range": "compensation expectations",
+    # Founder/investor slots
+    "funding_need": "funding requirements",
+    "company_stage": "company stage",
+    "check_size": "typical check size",
+    "investment_thesis": "investment thesis",
+    "stage_preference": "preferred company stage",
+    # Common slots
+    "industry_focus": "industry focus",
+    "primary_goal": "primary goals",
+    "geography": "location preferences",
+    "team_size": "team size",
+    "experience_years": "years of experience",
+    "engagement_style": "working style",
+    "budget_range": "budget",
+    "service_type": "services you offer",
+    "offerings": "what you can offer",
+    "requirements": "what you're looking for",
+}
+
 
 class LLMQuestionGenerator:
     """
@@ -169,9 +197,15 @@ Return ONLY the question. No preamble, no explanation."""
 
         except Exception as e:
             logger.error(f"[QuestionGenerator] Failed to generate question: {e}")
-            # Return a safe fallback
+            # Return a safe fallback with human-readable slot name
             if missing_slots:
-                return f"Could you tell me more about your {missing_slots[0].replace('_', ' ')}?"
+                slot = missing_slots[0]
+                # Use mapped name or gracefully convert snake_case
+                display_name = SLOT_DISPLAY_NAMES.get(
+                    slot,
+                    slot.replace('_', ' ')  # Fallback: just replace underscores
+                )
+                return f"Could you tell me more about your {display_name}?"
             return "What else would be helpful for me to know about what you're looking for?"
 
     def clear_session_patterns(self, session_id: str) -> None:

@@ -1647,6 +1647,38 @@ def _generate_contextual_response(
             "Tell me about your strengths and what you offer.",
             "What value do you typically provide to connections?",
         ],
+        # BUG-076: JOB_SEARCH slots (for job seekers/candidates)
+        "skills_have": [
+            "What are your core skills and areas of expertise?",
+            "Tell me about what you're really good at.",
+            "What would you say are your strongest capabilities?",
+        ],
+        "seniority_level": [
+            "What level of role are you targeting?",
+            "Tell me about the seniority level you're looking for.",
+            "Are you looking for a senior position, or something different?",
+        ],
+        "remote_preference": [
+            "What's your ideal work setup - remote, hybrid, or in-office?",
+            "How do you prefer to work location-wise?",
+            "Tell me about your flexibility on remote vs. in-person work.",
+        ],
+        "compensation_range": [
+            "What compensation range are you targeting?",
+            "Tell me about your salary expectations.",
+            "What are you looking for in terms of total compensation?",
+        ],
+        # BUG-076: SERVICES slots (for service providers)
+        "service_type": [
+            "What services do you specialize in?",
+            "Tell me about your core service offerings.",
+            "What kind of work do you do for clients?",
+        ],
+        "budget_range": [
+            "What's your typical budget for this kind of work?",
+            "Tell me about your pricing or engagement model.",
+            "How do you usually structure your engagements?",
+        ],
     }
 
     import random

@@ -1899,6 +1899,8 @@ Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()
                 objective = "product_launch"
 
         # Get objective-specific focus slots from use_case_templates.py
+        # BUG-088 FIX: These slots define the PRIORITY ORDER for progressive disclosure
+        focus_slots = []
         if objective:
             try:
                 focus_slots = get_onboarding_slots(objective)
@@ -1909,6 +1911,17 @@ Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()
                 logger.debug(f"Added objective-specific slots for '{objective}': {focus_slots}")
             except Exception as e:
                 logger.warning(f"Could not get onboarding slots for objective '{objective}': {e}")
+
+        # BUG-088 FIX: Build priority slots text for progressive disclosure
+        # This tells the LLM the ORDER in which to extract slots (max 3 per turn)
+        if focus_slots:
+            # Filter to only slots not yet filled
+            remaining_priority = [s for s in focus_slots if s not in already_filled]
+            priority_slots_text = f"Extract in this order (first 3 that apply): {', '.join(remaining_priority[:6])}"
+        else:
+            # Fallback: use required_slots order
+            remaining_priority = [s for s in required_slots if s not in already_filled]
+            priority_slots_text = f"Extract in this order (first 3 that apply): {', '.join(remaining_priority[:6])}"
 
         missing_required = [s for s in required_slots if s not in already_filled]
 
@@ -2040,19 +2053,40 @@ When analyzing user responses, look for:
 1. **Explicit statements**: Direct mentions ("I'm raising $2M", "I'm a CTO")
 2. **Implicit signals**: What they DON'T say, their word choices, tone
 3. **Contextual inference**: "Looking for investors" = FOUNDER (not investor)
-4. **Multi-slot extraction**: One sentence may fill 3-4 slots
 
-EXAMPLE ANALYSIS:
-User: "I left my corporate job last year to build an AI tool for hospitals. We have 3 pilot customers and are looking to raise our seed round."
+## 🎯 PROGRESSIVE DISCLOSURE (CRITICAL - BUG-088 FIX)
 
-Extract ALL of these:
-- user_type: "Founder/Entrepreneur" (building a company)
-- industry_focus: ["Healthcare/Biotech", "AI/ML"] (AI for hospitals)
-- company_stage: "MVP" (has pilot customers)
-- stage_preference: "Seed" (raising seed round)
-- primary_goal: "Raise Funding" (looking to raise)
-- experience_years: infer "1+ years" (left job last year)
-- team_size: infer "1-3" (small team implied)
+**MAXIMUM 3 SLOTS PER TURN** — This creates natural conversation flow.
+
+Even if user provides information for 10 slots, you MUST:
+1. Extract ONLY the TOP 3 most important slots (in priority order below)
+2. ACKNOWLEDGE other information naturally ("I noticed you mentioned...")
+3. Leave remaining slots for follow-up questions
+
+**PRIORITY ORDER FOR EXTRACTION:**
+{priority_slots_text}
+
+**EXAMPLE - CORRECT BEHAVIOR:**
+User: "I'm a senior PM with 8 years experience, looking for $180k+ remote fintech roles. I have skills in Agile, SQL, and stakeholder management."
+
+This message contains 6+ possible slots. Extract ONLY TOP 3:
+✅ EXTRACT (top 3 priority):
+- role_type: "Product Manager" (senior PM)
+- seniority_level: "Senior" (senior PM)
+- industry_focus: ["FinTech"] (fintech roles)
+
+❌ DO NOT EXTRACT YET (will get in next turns):
+- compensation_range: $180k+ (acknowledged but not extracted)
+- remote_preference: Remote (acknowledged but not extracted)
+- skills_have: Agile, SQL, stakeholder management (acknowledged but not extracted)
+
+In understanding_summary, note: "User also mentioned $180k+ compensation, remote preference, and skills (Agile, SQL, stakeholder management) - will confirm in follow-up"
+
+**WHY THIS MATTERS:**
+- Creates natural conversation (not form-filling)
+- Ensures we ASK personalized questions about remaining slots
+- Builds rapport through multi-turn dialogue
+- User feels heard (we acknowledge) but conversation continues
 
 ## Critical Rules
 1. ALWAYS reference specific details from user's message to show you were listening (DO mirror their words with enthusiasm)

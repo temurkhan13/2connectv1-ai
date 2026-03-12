@@ -444,17 +444,35 @@ class ContextManager:
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")
 
-            # BUG-071 FIX: Generate follow-up question using DEDICATED question generator
-            # This separates extraction (Sonnet #1) from question generation (Sonnet #2)
+            # BUG-087 FIX: Calculate missing slots PROGRAMMATICALLY instead of trusting LLM
+            # The LLM only sees current turn, not session requirements - can't know what's truly missing.
+            from app.services.use_case_templates import get_onboarding_slots
+
+            # Determine objective from user_type inference
+            user_type = llm_result.user_type_inference or "unknown"
+            objective = self._map_user_type_to_objective(user_type)
+
+            # Get required slots for this objective
+            required_slots = get_onboarding_slots(objective)
+            logger.info(f"[BUG-087] Objective '{objective}' requires slots: {required_slots}")
+
+            # Calculate what's ACTUALLY missing (required - already_filled - just_extracted)
+            all_filled_now = set(already_filled.keys()) | set(llm_result.extracted_slots.keys())
+            actual_missing_slots = [s for s in required_slots if s not in all_filled_now]
+            logger.info(f"[BUG-087] Actually missing: {actual_missing_slots} (filled: {list(all_filled_now)})")
+
+            # BUG-087 FIX: ALWAYS generate follow-up question using DEDICATED question generator
+            # Previously gated on llm_result.missing_slots being non-empty, but that was unreliable.
             follow_up_question = None
-            if not llm_result.is_off_topic and llm_result.missing_slots:
+            if not llm_result.is_off_topic:
                 try:
+                    # ALWAYS call question generator - pass calculated missing slots, not LLM's opinion
                     follow_up_question = self.question_generator.generate_followup_question(
                         user_message=content,
                         extracted_slots={k: {"value": v.value, "confidence": v.confidence} for k, v in llm_result.extracted_slots.items()},
                         all_filled_slots=already_filled,
-                        missing_slots=llm_result.missing_slots,
-                        user_type=llm_result.user_type_inference,
+                        missing_slots=actual_missing_slots if actual_missing_slots else ["engagement"],  # Fallback for engagement questions
+                        user_type=user_type,
                         session_id=context.session_id,
                         conversation_history=conversation_history
                     )
@@ -463,11 +481,11 @@ class ContextManager:
                     logger.warning(f"[QuestionGenerator] Failed to generate question: {qe}")
                     follow_up_question = None
 
-            # Create updated result with generated question
+            # Create updated result with generated question AND calculated missing slots
             llm_result_with_question = LLMExtractionResult(
                 extracted_slots=llm_result.extracted_slots,
                 user_type_inference=llm_result.user_type_inference,
-                missing_slots=llm_result.missing_slots,
+                missing_slots=actual_missing_slots,  # BUG-087: Use calculated, not LLM's opinion
                 understanding_summary=llm_result.understanding_summary,
                 is_off_topic=llm_result.is_off_topic,
                 follow_up_question=follow_up_question or ""
@@ -616,6 +634,51 @@ class ContextManager:
     def get_llm_response(self, session_id: str) -> Optional[LLMExtractionResult]:
         """Get the latest LLM extraction result for response generation."""
         return self._llm_responses.get(session_id)
+
+    def _map_user_type_to_objective(self, user_type: str) -> str:
+        """
+        BUG-087 FIX: Map user_type to objective for getting required slots.
+
+        Uses same mapping as onboarding.py _get_core_slot_names() (BUG-085 FIX).
+        This ensures consistent objective detection across the system.
+
+        Args:
+            user_type: User type from LLM inference (founder, investor, job_seeker, etc.)
+
+        Returns:
+            Objective string matching ObjectiveType enum values
+        """
+        user_type_lower = (user_type or "").lower().strip()
+
+        # BUG-085 FIX: Correct mappings (same as onboarding.py)
+        type_to_objective = {
+            "founder": "fundraising",
+            "entrepreneur": "fundraising",
+            "investor": "investing",
+            "angel_investor": "investing",
+            "vc_partner": "investing",
+            "job_seeker": "job_search",
+            "candidate": "job_search",
+            "advisor": "mentorship",
+            "mentor": "mentorship",
+            "recruiter": "hiring",
+            "service_provider": "services",
+            "consultant": "services",
+            "executive": "job_search",  # Executives looking for opportunities
+        }
+
+        # Try exact match first
+        if user_type_lower in type_to_objective:
+            return type_to_objective[user_type_lower]
+
+        # Try partial match (e.g., "job_seeker/candidate" contains "job_seeker")
+        for key, objective in type_to_objective.items():
+            if key in user_type_lower:
+                return objective
+
+        # Default to networking for unknown types
+        logger.warning(f"[BUG-087] Unknown user_type '{user_type}', defaulting to 'networking'")
+        return "networking"
 
     def _get_phase_slots(
         self,

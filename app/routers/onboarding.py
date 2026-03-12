@@ -1458,6 +1458,65 @@ def _generate_greeting(objective: Optional[str] = None) -> str:
     )
 
 
+def _get_core_slot_names(context) -> List[str]:
+    """
+    BUG-048 FIX: Get objective-specific core slot names instead of hardcoded list.
+
+    Returns onboarding_focus_slots from use_case_templates based on user's primary_goal.
+    Falls back to default slots if primary_goal not yet extracted.
+
+    This ensures progress calculation and follow-up questions are tailored to the
+    user's actual objective (e.g., investor slots for investors, founder slots for founders).
+    """
+    # Default slots (used when we don't know the user's goal yet)
+    default_slots = ["primary_goal", "user_type", "industry_focus"]
+
+    # Try to get primary_goal from context
+    primary_goal_slot = context.slots.get("primary_goal")
+    if primary_goal_slot and primary_goal_slot.value:
+        objective = primary_goal_slot.value
+        # Get objective-specific slots from use_case_templates
+        focus_slots = get_onboarding_slots(objective)
+        logger.debug(f"BUG-048: Using {len(focus_slots)} focus slots for objective '{objective}': {focus_slots}")
+        # Always ensure primary_goal and user_type are included (they're foundational)
+        core_slots = list(focus_slots)
+        for foundational in ["primary_goal", "user_type"]:
+            if foundational not in core_slots:
+                core_slots.insert(0, foundational)
+        return core_slots
+
+    # Fallback: check user_type to infer objective
+    user_type_slot = context.slots.get("user_type")
+    if user_type_slot and user_type_slot.value:
+        user_type = user_type_slot.value.lower()
+        # Map user_type to likely objective
+        type_to_objective = {
+            "founder": "fundraising",
+            "entrepreneur": "fundraising",
+            "investor": "investing",
+            "angel_investor": "investing",
+            "vc_partner": "investing",
+            "job_seeker": "networking",
+            "advisor": "mentorship",
+            "mentor": "mentorship",
+            "recruiter": "hiring",
+            "service_provider": "partnership",
+        }
+        for keyword, objective in type_to_objective.items():
+            if keyword in user_type:
+                focus_slots = get_onboarding_slots(objective)
+                logger.debug(f"BUG-048: Inferred objective '{objective}' from user_type '{user_type}'")
+                core_slots = list(focus_slots)
+                for foundational in ["primary_goal", "user_type"]:
+                    if foundational not in core_slots:
+                        core_slots.insert(0, foundational)
+                return core_slots
+
+    # No objective known yet - use minimal default
+    logger.debug(f"BUG-048: Using default slots (no objective known yet): {default_slots}")
+    return default_slots
+
+
 def _generate_contextual_response(
     context,
     newly_extracted: Dict[str, Any],
@@ -1476,7 +1535,8 @@ def _generate_contextual_response(
     # Check what slots are already filled vs still needed
     filled_slots = []
     missing_slots = []
-    core_slot_names = ["primary_goal", "user_type", "industry_focus", "stage_preference", "funding_need"]
+    # BUG-048 FIX: Use dynamic core slots based on user's objective
+    core_slot_names = _get_core_slot_names(context)
 
     for slot_name in core_slot_names:
         slot = context.slots.get(slot_name)
@@ -1499,7 +1559,9 @@ def _generate_contextual_response(
             )
 
     # INDIRECT follow-up questions - conversational, not form-like
+    # BUG-048 FIX: Added prompts for all objective-specific slots
     indirect_prompts = {
+        # Universal slots
         "primary_goal": [
             "Tell me more about what success looks like for you here.",
             "What would make your time on 2Connect worthwhile for you?",
@@ -1515,15 +1577,75 @@ def _generate_contextual_response(
             "Tell me about the areas you're most passionate about.",
             "What industries do you find yourself drawn to?",
         ],
+        "geography": [
+            "Where are you based? Does location matter for your connections?",
+            "Are you looking to connect with people in a specific region?",
+            "Tell me about your geographic preferences.",
+        ],
+        # FUNDRAISING slots (for founders seeking investment)
+        "funding_need": [
+            "How are you thinking about your next chapter financially?",
+            "What resources would help you get to the next milestone?",
+            "Tell me about your growth plans.",
+        ],
+        "company_stage": [
+            "Where are you in your journey right now?",
+            "Tell me about where your company is today.",
+            "What stage would you say you're at?",
+        ],
+        "timeline": [
+            "What does your timeline look like?",
+            "When are you hoping to have this sorted?",
+            "Is there any time pressure I should know about?",
+        ],
+        # INVESTING slots (for investors)
+        "check_size": [
+            "What size investments do you typically make?",
+            "Tell me about your typical deal size.",
+            "What's your comfort zone when it comes to check sizes?",
+        ],
         "stage_preference": [
             "Where on this journey are you most comfortable working?",
             "What kind of companies do you love working with?",
             "Tell me about the stage of companies you find most interesting.",
         ],
-        "funding_need": [
-            "How are you thinking about your next chapter financially?",
-            "What resources would help you get to the next milestone?",
-            "Tell me about your growth plans.",
+        "investment_thesis": [
+            "What's your investment philosophy?",
+            "What gets you excited about an opportunity?",
+            "Tell me about the kinds of bets you like to make.",
+        ],
+        # HIRING slots
+        "role_type": [
+            "What kind of role are you looking to fill?",
+            "Tell me about the position you're hiring for.",
+            "What does your ideal candidate look like?",
+        ],
+        "team_size": [
+            "How big is your team right now?",
+            "Tell me about your current team setup.",
+            "Where does this role fit in your organization?",
+        ],
+        # MENTORSHIP/COFOUNDER/PARTNERSHIP slots
+        "engagement_style": [
+            "How do you prefer to work with people?",
+            "Tell me about your ideal working relationship.",
+            "What does collaboration look like for you?",
+        ],
+        "experience_years": [
+            "How long have you been in this space?",
+            "Tell me about your experience level.",
+            "What's your background in this area?",
+        ],
+        # PRODUCT_LAUNCH slots
+        "requirements": [
+            "What do you need most right now?",
+            "Tell me about what would be most helpful.",
+            "What kind of support are you looking for?",
+        ],
+        "offerings": [
+            "What can you bring to the table?",
+            "Tell me about your strengths and what you offer.",
+            "What value do you typically provide to connections?",
         ],
     }
 

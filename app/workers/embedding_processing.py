@@ -4,6 +4,7 @@ Celery worker for embedding generation tasks.
 from celery import current_app
 from app.core.celery import celery_app
 from app.services.embedding_service import embedding_service
+from app.services.multi_vector_embedding_service import multi_vector_service
 from app.services.matching_service import matching_service
 from app.adapters.supabase_profiles import UserProfile, UserMatches, NotifiedMatchPairs
 from app.services.notification_service import NotificationService
@@ -12,6 +13,50 @@ import uuid
 import os
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_objective_from_profile(user_profile: UserProfile) -> str:
+    """
+    Extract primary_goal/objective from profile for objective-specific embeddings.
+
+    Aligns with ObjectiveTypes from use_case_templates.py:
+    - fundraising, investing, hiring, partnership
+    - mentorship, cofounder, product_launch, networking
+
+    Checks multiple sources in priority order:
+    1. Extracted primary_goal slot value
+    2. Raw questions mentioning goal/objective
+    3. Fallback to user_type if no objective found
+    """
+    # Try to get primary_goal from raw_questions first (most reliable)
+    if user_profile.profile and user_profile.profile.raw_questions:
+        for q in user_profile.profile.raw_questions:
+            q_dict = q.as_dict() if hasattr(q, 'as_dict') else q
+            code = q_dict.get('code', '').lower()
+            # Check for primary_goal slot
+            if 'primary_goal' in code or 'objective' in code or 'goal' in code:
+                answer = q_dict.get('answer', '')
+                if answer:
+                    return answer.strip().lower()
+
+    # Fallback: Try user_type which may indicate objective
+    if user_profile.profile and user_profile.profile.raw_questions:
+        for q in user_profile.profile.raw_questions:
+            q_dict = q.as_dict() if hasattr(q, 'as_dict') else q
+            code = q_dict.get('code', '').lower()
+            if 'user_type' in code:
+                answer = q_dict.get('answer', '')
+                if answer:
+                    # Map user_type to likely objective
+                    answer_lower = answer.strip().lower()
+                    if 'founder' in answer_lower or 'entrepreneur' in answer_lower:
+                        return 'fundraising'
+                    if 'investor' in answer_lower or 'angel' in answer_lower or 'vc' in answer_lower:
+                        return 'investing'
+                    return answer_lower
+
+    # Default to None (will use universal dimensions only)
+    return None
 
 
 @celery_app.task(bind=True, name='generate_embeddings')
@@ -71,15 +116,36 @@ def generate_embeddings_task(self, user_id: str):
         cleared_pairs = NotifiedMatchPairs.clear_user_pairs(user_id)
         logger.info(f"Cleared old data: matches removed, {cleared_pairs} notified pairs removed")
         
+        # Extract objective for objective-specific embeddings
+        objective = _extract_objective_from_profile(user_profile)
+        logger.info(f"User {user_id} objective for embeddings: {objective or 'universal'}")
+
         # Generate and store embeddings using hybrid service (SentenceTransformers + pgvector)
         logger.info(f"Generating embeddings for user {user_id} using hybrid service")
-        
+
         success = embedding_service.store_user_embeddings(
             user_id=user_id,
             requirements=requirements or "",
             offerings=offerings or ""
         )
-        
+
+        # Generate multi-vector embeddings with objective-specific dimensions
+        if success:
+            try:
+                logger.info(f"Generating multi-vector embeddings for user {user_id} (objective: {objective})")
+                mv_result = multi_vector_service.generate_multi_vector_embeddings(
+                    user_id=user_id,
+                    requirements_text=requirements or "",
+                    offerings_text=offerings or "",
+                    store_in_db=True,
+                    user_type=objective  # user_type param accepts objective for backward compat
+                )
+                dim_count = len(mv_result.get('dimensions', {}))
+                logger.info(f"Generated {dim_count} multi-vector dimension embeddings for user {user_id}")
+            except Exception as mv_error:
+                # Don't fail the task if multi-vector fails - basic embeddings are still good
+                logger.warning(f"Multi-vector embedding generation failed for user {user_id}: {mv_error}")
+
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")
             

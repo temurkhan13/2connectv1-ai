@@ -633,7 +633,7 @@ Extract structured slot data from this resume. Focus on factual information that
 ## Universal Slots (Extract for Everyone)
 - user_type: Their primary role (Founder/Entrepreneur, Angel Investor, VC Partner, Corporate Executive, Mentor/Advisor, Service Provider)
 - industry_focus: Industries they work in (Technology/SaaS, Healthcare/Biotech, FinTech, E-commerce, AI/ML, CleanTech, EdTech, Consumer, Enterprise, Other)
-- experience_years: Years of experience IN CURRENT ROLE. For career changers (e.g., "former athlete turned investor"), use time since transition.
+- experience_years: TOTAL years of professional experience. Calculate from earliest relevant position to present (e.g., work history spanning 2015-2026 = 11 years).
 - role_title: Current or most recent job title
 - company_name: Current or most recent company
 - geography: Regions mentioned (UK, US, Europe, Asia, etc.)
@@ -656,7 +656,7 @@ Extract structured slot data from this resume. Focus on factual information that
 2. For requirements, look for "Looking for", "Seeking", "Want to connect with" sections
 3. For offerings, summarize their key skills/expertise in 2-3 sentences
 4. Set confidence based on how explicit the information is (0.9+ for explicit, 0.7-0.9 for implied)
-5. For career changers, experience_years should reflect current role, not prior career
+5. For career changers, experience_years should reflect TOTAL professional experience across all roles
 
 ## Response Format
 Return valid JSON:

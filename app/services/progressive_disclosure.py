@@ -677,18 +677,42 @@ class ProgressiveDisclosure:
 
         This prevents asking "Which regions?" after asking "Where are you based?"
         since both map to the "geography" topic cluster.
+
+        BUG-098 FIX: Use filled slots to determine covered topics instead of keyword matching.
+        Previously: Scanned assistant question text for keywords like "market" → marked "industry" as covered
+        Problem: "market research" would incorrectly mark industry as covered
+        Now: If a slot is filled, its corresponding topic cluster is covered
         """
         covered = set()
 
-        # Check all assistant questions (what we asked)
-        for turn in context.turns:
-            if turn.turn_type.value == "assistant":
-                content = turn.content.lower()
+        # BUG-098: Map filled slots to their topic clusters
+        # This is more reliable than keyword matching against question text
+        SLOT_TO_TOPIC = {
+            "primary_goal": "goal",
+            "user_type": "role",
+            "industry_focus": "industry",
+            "geography": "geography",
+            "stage_preference": "stage",
+            "company_stage": "stage",
+            "investment_stage": "stage",
+            "check_size": "investment",
+            "funding_need": "investment",
+            "timeline": "timeline",
+            "experience_years": "experience",
+            "engagement_style": "engagement",
+            "requirements": "requirements",
+            "offerings": "offerings",
+            "dealbreakers": "dealbreakers",
+            "team_size": "team",
+            "skills_have": "skills",
+            "role_type": "role_type",
+        }
 
-                # Check each topic cluster
-                for topic_name, keywords in SEMANTIC_TOPIC_CLUSTERS.items():
-                    if any(kw in content for kw in keywords):
-                        covered.add(topic_name)
+        for slot_name, slot in context.slots.items():
+            if slot and hasattr(slot, 'value') and slot.value:
+                topic = SLOT_TO_TOPIC.get(slot_name)
+                if topic:
+                    covered.add(topic)
 
         return list(covered)
 

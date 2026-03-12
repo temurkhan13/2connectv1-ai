@@ -65,64 +65,11 @@ context_manager = ContextManager(slot_extractor)
 progressive_disclosure = ProgressiveDisclosure(context_manager)
 
 
-# BUG-002 FIX: Slot-to-keyword mapping for hard filtering LLM questions
-# This prevents LLM from asking about topics that already have filled slots
-SLOT_QUESTION_KEYWORDS = {
-    "primary_goal": ["goal", "objective", "looking for", "hoping to", "trying to", "want to achieve", "aim", "target"],
-    "user_type": ["role", "describe yourself", "what do you do", "who are you", "your background", "professional"],
-    "industry_focus": ["industry", "sector", "vertical", "market", "field", "domain", "space"],
-    "stage_preference": ["stage", "seed", "series", "pre-seed", "early-stage", "growth", "maturity", "company stage"],
-    "geography": ["geography", "location", "region", "country", "market focus", "based in", "where", "uk", "us", "europe"],
-    "engagement_style": ["engagement", "collaborate", "work together", "partnership", "involvement", "hands-on", "passive"],
-    "investment_range": ["invest", "investment", "ticket size", "check size", "capital", "funding amount", "how much"],
-    "funding_range": ["raise", "raising", "funding", "investment needed", "capital required", "how much funding"],
-    "team_size": ["team", "employees", "people", "headcount", "staff", "how many people"],
-    "requirements": ["need", "looking for", "require", "want from", "seeking", "help with", "support"],
-    "offerings": ["offer", "provide", "bring", "contribute", "expertise", "can help with", "value add"],
-    "dealbreakers": ["dealbreaker", "won't work", "no-go", "avoid", "not interested in", "red flag"],
-    "specialization": ["specialize", "specialization", "expertise", "focus area", "niche", "strength"],
-    "target_clients": ["clients", "customers", "who do you serve", "target market", "who do you work with"],
-    "years_experience": ["experience", "years", "how long", "background", "track record"],
-}
-
-
-def _question_covers_filled_slot(question: str, slots: Dict[str, Any]) -> Optional[str]:
-    """
-    BUG-002 FIX: Check if an LLM-generated question covers an already-filled slot.
-
-    Args:
-        question: The LLM-generated follow-up question
-        slots: Dict of slot_name -> ExtractedSlot objects
-
-    Returns:
-        The name of the filled slot that the question covers, or None if no overlap.
-    """
-    if not question:
-        return None
-
-    question_lower = question.lower()
-
-    # Get filled slot names
-    filled_slots = set()
-    for slot_name, slot in slots.items():
-        if hasattr(slot, 'status'):
-            if slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
-                filled_slots.add(slot_name)
-        elif isinstance(slot, dict) and slot.get('status') in ['filled', 'confirmed']:
-            filled_slots.add(slot_name)
-
-    if not filled_slots:
-        return None
-
-    # Check if question contains keywords for any filled slot
-    for slot_name in filled_slots:
-        keywords = SLOT_QUESTION_KEYWORDS.get(slot_name, [])
-        for keyword in keywords:
-            if keyword in question_lower:
-                logger.info(f"BUG-002 FIX: LLM question '{question[:50]}...' covers filled slot '{slot_name}' (keyword: '{keyword}')")
-                return slot_name
-
-    return None
+# BUG-097: DEAD CODE REMOVED
+# Previously: SLOT_QUESTION_KEYWORDS and _question_covers_filled_slot() used keyword matching
+# to detect if LLM questions covered filled slots, then replaced with fallback questions.
+# Problem: "market" in "shapes the market" incorrectly triggered industry_focus replacement
+# Fix: Removed entirely - trust Sonnet to ask appropriate questions (it has filled slots in prompt)
 
 
 def _get_unfilled_critical_slots(slots: Dict[str, Any], user_type: Optional[str] = None) -> List[str]:
@@ -728,31 +675,17 @@ async def chat(request: ChatMessageRequest):
                 else:
                     ai_response = mv_question  # No prefix at low progress
             elif llm_result and llm_result.follow_up_question:
-                # BUG-002 FIX: Hard filter - check if LLM question covers an already-filled slot
-                # LLMs are unreliable at following negative constraints ("DO NOT ASK AGAIN")
-                # so we enforce the constraint here in code
-                covered_slot = _question_covers_filled_slot(llm_result.follow_up_question, context.slots)
-
-                if covered_slot:
-                    # LLM asked about a filled slot - replace with progressive_disclosure question
-                    logger.info(f"BUG-002 FIX: Replacing LLM question (covers '{covered_slot}') with progressive_disclosure question")
-                    batch = progressive_disclosure.get_next_batch(session_id)
-                    if batch and batch.questions:
-                        # Use the first question from progressive_disclosure (already filtered for filled slots)
-                        ai_response = batch.questions[0].question_text
-                        logger.info(f"BUG-002 FIX: Using progressive_disclosure question: {ai_response[:50]}...")
-                    else:
-                        # No more questions from progressive_disclosure - try critical slot fallback
-                        user_type_slot = context.slots.get("user_type")
-                        user_type = str(user_type_slot.value) if user_type_slot and hasattr(user_type_slot, 'value') else None
-                        critical_question = _get_critical_slot_question(context.slots, user_type)
-                        if critical_question:
-                            ai_response = critical_question
-                        else:
-                            ai_response = _generate_contextual_response(context, newly_extracted, turn.extracted_slots if turn else [], request.message)
-                else:
-                    # LLM question is valid - use it
-                    ai_response = llm_result.follow_up_question
+                # BUG-097 FIX: Removed BUG-002 keyword-based question filtering
+                # Previously: Crude substring matching detected "market" in "shapes the market"
+                # and assumed question covered industry_focus (already filled), replacing good LLM questions
+                # Example: "That focus on iteration speed and lived experience sounds like it shapes the stage..."
+                # was replaced with generic "What are you hoping to find through 2Connect?"
+                #
+                # Same bug class as BUG-092/094 - dumb keyword matching overriding smart LLM decisions
+                # The LLM prompt already tells Sonnet which slots are filled - trust it to ask appropriately
+                # If LLM occasionally asks about filled slots, users can handle it naturally
+                ai_response = llm_result.follow_up_question
+                logger.info(f"BUG-097: Using LLM question directly (trusting Sonnet): {ai_response[:50]}...")
             else:
                 # Fallback to template-based response - but first check for unfilled critical slots
                 user_type_slot = context.slots.get("user_type")
@@ -1413,31 +1346,42 @@ def _detect_multiple_goals(user_message: str) -> List[str]:
 
     Returns a list of detected goal categories. If 2+ are detected,
     the system should ask a direct prioritization question.
+
+    BUG-099 FIX: Use word boundary matching instead of substring matching.
+    Previously: "invest" matched in "investigated" → false positive
+    Now: Use regex word boundaries to match whole words only
     """
+    import re
     message_lower = user_message.lower()
     detected_goals = []
 
     # Goal patterns - each tuple is (keywords, friendly_label)
+    # BUG-099: Keywords are now matched as whole words using regex \b boundaries
     goal_patterns = [
-        (["investor", "invest", "funding", "raise", "series", "vc", "venture capital", "angel"],
+        (["investor", "investors", "invest", "funding", "raise", "raising", "series a", "series b", "vc", "venture capital", "angel"],
          "connecting with investors"),
-        (["co-founder", "cofounder", "partner", "founding team", "technical partner"],
+        (["co-founder", "cofounder", "cofounders", "founding team", "technical partner"],
          "finding a co-founder"),
-        (["mentor", "advisor", "advice", "guidance", "learn from"],
+        (["mentor", "mentors", "mentorship", "advisor", "advisors", "guidance", "learn from"],
          "finding mentors"),
-        (["sales", "customer", "client", "enterprise", "b2b", "go-to-market", "gtm"],
+        (["sales", "customers", "clients", "enterprise sales", "b2b", "go-to-market", "gtm"],
          "finding customers or sales help"),
-        (["founder", "startup founder", "entrepreneur", "peer", "community"],
+        (["fellow founder", "startup founder", "other founders", "founder community", "peer founders"],
          "connecting with other founders"),
         (["partnership", "strategic partner", "collaborate", "collaboration"],
          "exploring partnerships"),
-        (["hire", "hiring", "recruit", "talent", "engineer", "developer", "team member"],
+        (["hiring", "recruit", "recruiting", "talent", "team member", "team members"],
          "hiring talent"),
     ]
 
     for keywords, label in goal_patterns:
-        if any(kw in message_lower for kw in keywords):
-            detected_goals.append(label)
+        # BUG-099: Use word boundary regex instead of substring 'in'
+        for kw in keywords:
+            # Escape special regex chars and add word boundaries
+            pattern = r'\b' + re.escape(kw) + r'\b'
+            if re.search(pattern, message_lower):
+                detected_goals.append(label)
+                break  # Only add each label once
 
     return detected_goals
 

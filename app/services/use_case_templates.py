@@ -762,6 +762,10 @@ def get_template(objective: str) -> UseCaseTemplate:
         "looking for role": ObjectiveType.JOB_SEARCH,
         "new opportunity": ObjectiveType.JOB_SEARCH,
         "job seeker": ObjectiveType.JOB_SEARCH,
+        # BUG-079: Archetype "Experienced Executive Candidate" was not mapping to JOB_SEARCH
+        "candidate": ObjectiveType.JOB_SEARCH,
+        "executive candidate": ObjectiveType.JOB_SEARCH,
+        "looking for opportunities": ObjectiveType.JOB_SEARCH,
         # BUG-075: Service provider keywords
         "service": ObjectiveType.SERVICES,
         "services": ObjectiveType.SERVICES,

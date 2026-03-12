@@ -858,6 +858,11 @@ async def get_matching_diagnostics():
                 intent = "MENTOR_MENTEE"
             elif "cofounder" in archetype:
                 intent = "COFOUNDER"
+            # BUG-079 FIX: Add job seeker/candidate intent mapping
+            elif "candidate" in archetype or "job seeker" in archetype or "job" in user_type:
+                intent = "JOB_SEARCH"
+            elif "service" in archetype or "consultant" in archetype:
+                intent = "SERVICES"
             else:
                 intent = "NETWORKING"
 
@@ -1005,7 +1010,8 @@ async def get_matching_diagnostics():
                 "with_matches": len([u for u in users if u["matches"]["backend_count"] > 0]),
                 "intent_breakdown": {
                     intent: len([u for u in users if u["intent_classification"]["inferred_intent"] == intent])
-                    for intent in ["INVESTOR_FOUNDER", "FOUNDER_INVESTOR", "MENTOR_MENTEE", "COFOUNDER", "NETWORKING", "unknown"]
+                    # BUG-079 FIX: Added JOB_SEARCH and SERVICES intents
+                    for intent in ["INVESTOR_FOUNDER", "FOUNDER_INVESTOR", "MENTOR_MENTEE", "COFOUNDER", "JOB_SEARCH", "SERVICES", "NETWORKING", "unknown"]
                 }
             }
         }

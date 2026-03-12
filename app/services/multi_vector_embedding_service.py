@@ -361,6 +361,75 @@ PRODUCT_LAUNCH_DIMENSIONS = {
 # Focus slots: primary_goal, industry_focus, user_type, geography
 NETWORKING_DIMENSIONS = {}  # Uses universal dimensions
 
+# 9. JOB_SEARCH - Job seekers/candidates (BUG-086 FIX)
+# Focus slots: role_type, seniority_level, industry_focus, remote_preference, compensation_range, skills_have, geography
+JOB_SEARCH_DIMENSIONS = {
+    EmbeddingDimension.ROLE_TYPE: DimensionConfig(
+        name="Target Role",
+        weight=1.5,
+        keywords=[
+            "role", "position", "job", "title", "engineer", "designer", "manager",
+            "developer", "analyst", "specialist", "director", "vp", "head of",
+            "senior", "junior", "lead", "principal", "staff", "looking for role"
+        ],
+        extraction_prompt="Extract the type of role the candidate is seeking."
+    ),
+    EmbeddingDimension.SKILLS: DimensionConfig(
+        name="Skills & Experience",
+        weight=1.4,
+        keywords=[
+            "skills", "experience", "expertise", "proficient", "years", "background",
+            "python", "javascript", "react", "aws", "data", "product", "growth",
+            "marketing", "sales", "operations", "finance", "worked at", "built"
+        ],
+        extraction_prompt="Extract the candidate's skills and relevant experience."
+    ),
+    EmbeddingDimension.COMPENSATION: DimensionConfig(
+        name="Compensation Expectations",
+        weight=1.3,
+        keywords=[
+            "salary", "compensation", "pay", "equity", "stock", "options", "bonus",
+            "benefits", "package", "range", "expecting", "k", "per year", "total comp"
+        ],
+        extraction_prompt="Extract compensation expectations and requirements."
+    ),
+}
+
+# 10. SERVICES - Service providers (BUG-086 FIX)
+# Focus slots: service_type, industry_focus, stage_preference, geography, engagement_style, budget_range
+SERVICES_DIMENSIONS = {
+    EmbeddingDimension.EXPERTISE: DimensionConfig(
+        name="Service Expertise",
+        weight=1.5,
+        keywords=[
+            "service", "services", "offer", "provide", "specialize", "expertise",
+            "consulting", "advisory", "fractional", "outsourced", "agency",
+            "development", "design", "marketing", "sales", "legal", "finance", "hr"
+        ],
+        extraction_prompt="Extract the services and expertise offered."
+    ),
+    EmbeddingDimension.ENGAGEMENT: DimensionConfig(
+        name="Engagement Model",
+        weight=1.3,
+        keywords=[
+            "engagement", "retainer", "project", "hourly", "monthly", "contract",
+            "fractional", "part-time", "full-time", "advisory", "consulting",
+            "per month", "per project", "ongoing", "one-time"
+        ],
+        extraction_prompt="Extract the typical engagement model and pricing structure."
+    ),
+    EmbeddingDimension.PORTFOLIO: DimensionConfig(
+        name="Client Portfolio",
+        weight=1.2,
+        keywords=[
+            "clients", "worked with", "portfolio", "customers", "companies",
+            "startups", "enterprises", "seed", "series", "industries", "sectors",
+            "results", "outcomes", "delivered", "helped"
+        ],
+        extraction_prompt="Extract client types and past results."
+    ),
+}
+
 # =============================================================================
 # OBJECTIVE TO DIMENSIONS MAPPING
 # Matches ObjectiveType enum values from use_case_templates.py
@@ -376,6 +445,8 @@ OBJECTIVE_DIMENSION_MAPPING = {
     "cofounder": COFOUNDER_DIMENSIONS,
     "product_launch": PRODUCT_LAUNCH_DIMENSIONS,
     "networking": NETWORKING_DIMENSIONS,
+    "job_search": JOB_SEARCH_DIMENSIONS,  # BUG-086 FIX: Added
+    "services": SERVICES_DIMENSIONS,       # BUG-086 FIX: Added
 
     # Common keyword aliases for fuzzy matching
     "seeking investment": FUNDRAISING_DIMENSIONS,
@@ -415,6 +486,24 @@ OBJECTIVE_DIMENSION_MAPPING = {
     "network": NETWORKING_DIMENSIONS,
     "connect": NETWORKING_DIMENSIONS,
     "general networking": NETWORKING_DIMENSIONS,
+
+    # BUG-086 FIX: Job search aliases
+    "job": JOB_SEARCH_DIMENSIONS,
+    "job seeker": JOB_SEARCH_DIMENSIONS,
+    "candidate": JOB_SEARCH_DIMENSIONS,
+    "find new job": JOB_SEARCH_DIMENSIONS,
+    "looking for role": JOB_SEARCH_DIMENSIONS,
+    "career": JOB_SEARCH_DIMENSIONS,
+    "new opportunity": JOB_SEARCH_DIMENSIONS,
+
+    # BUG-086 FIX: Services aliases
+    "service": SERVICES_DIMENSIONS,
+    "service provider": SERVICES_DIMENSIONS,
+    "consultant": SERVICES_DIMENSIONS,
+    "consulting": SERVICES_DIMENSIONS,
+    "offer services": SERVICES_DIMENSIONS,
+    "agency": SERVICES_DIMENSIONS,
+    "freelance": SERVICES_DIMENSIONS,
 }
 
 

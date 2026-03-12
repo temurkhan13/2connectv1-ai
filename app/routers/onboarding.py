@@ -1490,17 +1490,22 @@ def _get_core_slot_names(context) -> List[str]:
     if user_type_slot and user_type_slot.value:
         user_type = user_type_slot.value.lower()
         # Map user_type to likely objective
+        # BUG-085 FIX: Correct objective mappings for job_seeker and service_provider
+        # Previously: job_seeker -> networking (WRONG), service_provider -> partnership (WRONG)
+        # Now: job_seeker -> job_search, service_provider -> services
         type_to_objective = {
             "founder": "fundraising",
             "entrepreneur": "fundraising",
             "investor": "investing",
             "angel_investor": "investing",
             "vc_partner": "investing",
-            "job_seeker": "networking",
+            "job_seeker": "job_search",  # BUG-085 FIX: Was "networking"
+            "candidate": "job_search",   # BUG-085: Added for "Job Seeker/Candidate" user_type
             "advisor": "mentorship",
             "mentor": "mentorship",
             "recruiter": "hiring",
-            "service_provider": "partnership",
+            "service_provider": "services",  # BUG-085 FIX: Was "partnership"
+            "consultant": "services",    # BUG-085: Added for consultant user_type
         }
         for keyword, objective in type_to_objective.items():
             if keyword in user_type:

@@ -151,7 +151,18 @@ SLOT_DEFINITIONS = {
         "description": "Industries or sectors the user focuses on",
         "type": "multi_select",
         "options": ["Technology/SaaS", "Healthcare/Biotech", "FinTech", "E-commerce", "AI/ML", "CleanTech", "EdTech", "Consumer", "Enterprise", "Other"],
-        "extraction_hint": "Can select multiple. Infer from company description or stated interests."
+        "extraction_hint": "KEYWORD-TO-INDUSTRY MAPPING (extract ALL that match): "
+                          "• 'SaaS', 'software', 'platform', 'app', 'tool', 'B2B SaaS', 'API' → 'Technology/SaaS'. "
+                          "• 'health', 'medical', 'hospital', 'biotech', 'pharma', 'healthcare' → 'Healthcare/Biotech'. "
+                          "• 'fintech', 'financial', 'payments', 'banking', 'crypto', 'defi', 'money' → 'FinTech'. "
+                          "• 'ecommerce', 'retail', 'shopping', 'marketplace', 'DTC', 'direct-to-consumer' → 'E-commerce'. "
+                          "• 'AI', 'ML', 'machine learning', 'artificial intelligence', 'GPT', 'LLM' → 'AI/ML'. "
+                          "• 'clean', 'green', 'sustainability', 'climate', 'energy', 'solar' → 'CleanTech'. "
+                          "• 'education', 'learning', 'edtech', 'school', 'training', 'courses' → 'EdTech'. "
+                          "• 'consumer', 'B2C', 'social', 'lifestyle', 'entertainment' → 'Consumer'. "
+                          "• 'enterprise', 'B2B', 'corporate', 'business tools', 'remote teams', 'collaboration' → 'Enterprise'. "
+                          "CRITICAL: Can select MULTIPLE industries. 'B2B SaaS' = ['Technology/SaaS', 'Enterprise']. "
+                          "ALWAYS extract at least one industry if ANY business context is mentioned."
     },
     "stage_preference": {
         "description": "Company stage they work with or are at",
@@ -360,9 +371,10 @@ class LLMSlotExtractor:
     def __init__(self):
         # P0 FIX: Don't initialize client at startup - lazy load to ensure runtime access to API key
         self._client = None
-        # Use Claude 3 Haiku for fast extraction (3-5x faster than Sonnet)
-        # Note: Claude 3.5 Haiku returns 404 - may not be available yet
-        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-3-haiku-20240307")
+        # BUG-070 FIX: Switch from Haiku to Sonnet for slot extraction
+        # Haiku was failing to extract slots properly (industry_focus, primary_goal)
+        # Cost increase: ~$0.001/turn → ~$0.015/turn (worth it for quality)
+        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-sonnet-4-5-20250929")
         # Use Claude Sonnet 4.5 for personalized follow-up questions (higher quality)
         self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", "claude-sonnet-4-5-20250929")
         # For backwards compatibility
@@ -1799,6 +1811,9 @@ DO NOT ask about information clearly stated in the resume above.
         slot_descriptions = []
         for name, definition in remaining_slots.items():
             desc = f"- {name}: {definition['description']}"
+            # BUG-064 FIX: Tell LLM about multi_select types so it returns arrays
+            if definition.get('type') == 'multi_select':
+                desc += f"\n  TYPE: multi_select (return as array, e.g., [\"Option1\", \"Option2\"])"
             if 'options' in definition:
                 desc += f"\n  Options: {', '.join(definition['options'])}"
             if 'extraction_hint' in definition:

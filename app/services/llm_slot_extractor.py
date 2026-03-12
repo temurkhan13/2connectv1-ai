@@ -2394,6 +2394,112 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # BUG-071 FIX: follow_up_question is no longer extracted here
         # Question generation is handled by separate LLMQuestionGenerator service
 
+        # =========================================================================
+        # BUG-088 FIX: ENFORCE MAX 3 SLOTS PER TURN (CODE-LEVEL, NOT PROMPT)
+        # =========================================================================
+        # The LLM ignores prompt instructions to limit extraction. We MUST enforce
+        # this in code to guarantee progressive disclosure and natural conversation.
+        # =========================================================================
+        MAX_SLOTS_PER_TURN = 3
+
+        if len(extracted_slots) > MAX_SLOTS_PER_TURN:
+            # Determine objective from already_filled OR just-extracted primary_goal
+            objective = None
+            primary_goal = already_filled.get("primary_goal", "")
+
+            # Check if primary_goal was just extracted
+            if "primary_goal" in extracted_slots:
+                primary_goal = extracted_slots["primary_goal"].value
+
+            # Also check user_type for objective inference
+            user_type = already_filled.get("user_type", "")
+            if "user_type" in extracted_slots:
+                user_type = extracted_slots["user_type"].value
+
+            # Map to objective (same logic as _build_system_prompt)
+            if primary_goal:
+                goal_lower = str(primary_goal).lower()
+                if "co-founder" in goal_lower or "cofounder" in goal_lower:
+                    objective = "cofounder"
+                elif "fund" in goal_lower or "raise" in goal_lower or "invest" in goal_lower:
+                    objective = "fundraising"
+                elif "job" in goal_lower or "career" in goal_lower or "role" in goal_lower:
+                    objective = "job_search"
+                elif "service" in goal_lower or "consult" in goal_lower:
+                    objective = "services"
+                elif "mentor" in goal_lower:
+                    objective = "mentorship"
+                elif "partner" in goal_lower:
+                    objective = "partnership"
+                elif "hire" in goal_lower or "recruit" in goal_lower or "talent" in goal_lower:
+                    objective = "hiring"
+
+            # Fallback to user_type mapping
+            if not objective and user_type:
+                type_lower = str(user_type).lower()
+                if "founder" in type_lower or "entrepreneur" in type_lower:
+                    objective = "fundraising"
+                elif "investor" in type_lower:
+                    objective = "investing"
+                elif "job" in type_lower or "candidate" in type_lower:
+                    objective = "job_search"
+                elif "service" in type_lower:
+                    objective = "services"
+
+            # Get priority order for this objective
+            try:
+                priority_slots = get_onboarding_slots(objective) if objective else []
+            except Exception:
+                priority_slots = []
+
+            # Default priority if no objective-specific order
+            if not priority_slots:
+                priority_slots = [
+                    "user_type", "primary_goal", "industry_focus", "geography",
+                    "role_type", "seniority_level", "company_stage", "stage_preference",
+                    "funding_need", "check_size", "skills_have", "skills_need"
+                ]
+
+            # Select top 3 slots by priority order
+            limited_slots = {}
+            slots_added = 0
+            acknowledged_slots = []
+
+            # First pass: add slots that are in priority order
+            for priority_slot in priority_slots:
+                if priority_slot in extracted_slots and slots_added < MAX_SLOTS_PER_TURN:
+                    limited_slots[priority_slot] = extracted_slots[priority_slot]
+                    slots_added += 1
+                elif priority_slot in extracted_slots:
+                    acknowledged_slots.append(priority_slot)
+
+            # Second pass: add remaining slots if we haven't hit limit
+            for slot_name in extracted_slots:
+                if slot_name not in limited_slots:
+                    if slots_added < MAX_SLOTS_PER_TURN:
+                        limited_slots[slot_name] = extracted_slots[slot_name]
+                        slots_added += 1
+                    else:
+                        if slot_name not in acknowledged_slots:
+                            acknowledged_slots.append(slot_name)
+
+            logger.info(
+                f"[BUG-088] Limited extraction from {len(extracted_slots)} to {len(limited_slots)} slots. "
+                f"Extracted: {list(limited_slots.keys())}. "
+                f"Acknowledged for next turn: {acknowledged_slots}"
+            )
+
+            # Update understanding_summary to note acknowledged info
+            original_summary = response_data.get("understanding_summary", "")
+            if acknowledged_slots:
+                ack_note = f" [Acknowledged but deferred: {', '.join(acknowledged_slots)}]"
+                response_data["understanding_summary"] = original_summary + ack_note
+
+            extracted_slots = limited_slots
+        # =========================================================================
+        # END BUG-088 FIX
+        # =========================================================================
+
         return LLMExtractionResult(
             extracted_slots=extracted_slots,
             user_type_inference=response_data.get("user_type_inference", "unknown"),

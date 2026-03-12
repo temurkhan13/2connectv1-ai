@@ -28,6 +28,7 @@ class ObjectiveType(str, Enum):
     COFOUNDER = "cofounder"
     PRODUCT_LAUNCH = "product_launch"
     NETWORKING = "networking"
+    JOB_SEARCH = "job_search"  # BUG-074: Added for job seekers/candidates
 
 
 class VerdictLevel(str, Enum):
@@ -561,6 +562,73 @@ Good networking is about genuine connection, not transactions. Help create an au
             "experience_level": 0.10
         }
     ),
+
+    # BUG-074: Added JOB_SEARCH template for job seekers/candidates
+    ObjectiveType.JOB_SEARCH: UseCaseTemplate(
+        objective=ObjectiveType.JOB_SEARCH,
+        display_name="Finding a Job",
+        description="Professionals seeking new career opportunities at startups or growth companies",
+        system_prompt="""You are an expert AI facilitating a conversation between a job seeker and a potential employer or hiring contact.
+
+Your role is to:
+1. Help both parties understand if there's a good role fit
+2. Explore the candidate's skills, experience, and career aspirations
+3. Understand the company's needs, culture, and growth opportunities
+4. Identify alignment on compensation, location, and working style
+
+Focus areas for this conversation:
+- Skills and experience alignment with available roles
+- Career goals and growth trajectory
+- Compensation expectations and benefits
+- Location, remote work, and flexibility preferences
+- Culture fit and working style
+- Timeline and availability
+
+Good matches happen when both sides see mutual benefit. Help the candidate showcase their value while finding the right opportunity.""",
+        success_criteria=[
+            "Skills match role requirements",
+            "Experience level is appropriate",
+            "Compensation expectations align",
+            "Location/remote preferences work",
+            "Culture and values fit",
+            "Growth trajectory aligns with opportunity"
+        ],
+        key_questions=[
+            "What type of role are you looking for?",
+            "What industries or company stages interest you most?",
+            "What's your ideal work arrangement (remote, hybrid, in-office)?",
+            "What compensation range are you targeting?",
+            "What skills do you want to use or develop in your next role?",
+            "What's most important to you in a company culture?"
+        ],
+        verdict_criteria={
+            VerdictLevel.STRONG_MATCH.value: [
+                "skills_match", "experience_fit", "comp_align", "culture_fit"
+            ],
+            VerdictLevel.GOOD_MATCH.value: [
+                "skills_match", "experience_fit", "culture_fit"
+            ],
+            VerdictLevel.POTENTIAL_MATCH.value: [
+                "skills_match", "culture_fit"
+            ],
+            VerdictLevel.WEAK_MATCH.value: [
+                "skills_match"
+            ],
+            VerdictLevel.NO_MATCH.value: []
+        },
+        onboarding_focus_slots=[
+            "role_type", "seniority_level", "industry_focus", "remote_preference",
+            "compensation_range", "skills_have", "geography"
+        ],
+        match_weight_overrides={
+            "skills_alignment": 0.25,
+            "experience_level": 0.20,
+            "industry_fit": 0.20,
+            "compensation_fit": 0.15,
+            "location_fit": 0.10,
+            "culture_alignment": 0.10
+        }
+    ),
 }
 
 
@@ -617,6 +685,15 @@ def get_template(objective: str) -> UseCaseTemplate:
         "gtm": ObjectiveType.PRODUCT_LAUNCH,
         "network": ObjectiveType.NETWORKING,
         "connect": ObjectiveType.NETWORKING,
+        # BUG-074: Job seeker keywords
+        "job": ObjectiveType.JOB_SEARCH,
+        "career": ObjectiveType.JOB_SEARCH,
+        "employment": ObjectiveType.JOB_SEARCH,
+        "find new job": ObjectiveType.JOB_SEARCH,
+        "job search": ObjectiveType.JOB_SEARCH,
+        "looking for role": ObjectiveType.JOB_SEARCH,
+        "new opportunity": ObjectiveType.JOB_SEARCH,
+        "job seeker": ObjectiveType.JOB_SEARCH,
     }
 
     for keyword, obj_type in keyword_mapping.items():

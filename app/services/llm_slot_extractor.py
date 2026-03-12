@@ -55,11 +55,17 @@ COFOUNDER_SPECIFIC_SLOTS = {"skills_have", "skills_need", "commitment_level", "e
 # Slots specific to MENTORSHIP objective
 MENTORSHIP_SPECIFIC_SLOTS = {"mentorship_areas", "mentorship_format", "mentorship_commitment"}
 
+# BUG-074: Slots specific to JOB_SEARCH objective (candidates seeking jobs)
+# Reuses HIRING slots (role_type, seniority_level, remote_preference, compensation_range)
+# Plus skills_have from COFOUNDER (what skills the candidate brings)
+JOB_SEARCH_SPECIFIC_SLOTS = {"role_type", "seniority_level", "remote_preference", "compensation_range", "skills_have"}
+
 # Map primary_goal values to specific slot sets
 OBJECTIVE_SLOT_MAPPING = {
     "hiring": HIRING_SPECIFIC_SLOTS,
     "find co-founder": COFOUNDER_SPECIFIC_SLOTS,
     "seek mentorship": MENTORSHIP_SPECIFIC_SLOTS,
+    "find new job": JOB_SEARCH_SPECIFIC_SLOTS,  # BUG-074: Job seekers get job-related slots
 }
 
 
@@ -85,13 +91,23 @@ def filter_slots_by_objective(slot_definitions: Dict, primary_goal: Optional[str
     # Collect slots to EXCLUDE based on what's NOT the user's goal
     slots_to_exclude = set()
 
-    # If NOT hiring, exclude hiring-specific slots
-    if "hiring" not in goal_lower and "recruit" not in goal_lower:
+    # BUG-074 FIX: Job seekers ALSO need hiring-related slots (role_type, seniority, compensation)
+    # "Find New Job" users should get these slots exposed
+    is_job_seeker = "job" in goal_lower or "career" in goal_lower or "employment" in goal_lower
+    is_hiring = "hiring" in goal_lower or "recruit" in goal_lower
+
+    # If NOT hiring AND NOT job seeking, exclude hiring-specific slots
+    if not is_hiring and not is_job_seeker:
         slots_to_exclude.update(HIRING_SPECIFIC_SLOTS)
 
     # If NOT seeking co-founder, exclude co-founder slots
+    # BUT job seekers keep skills_have (what skills they bring)
     if "co-founder" not in goal_lower and "cofounder" not in goal_lower:
-        slots_to_exclude.update(COFOUNDER_SPECIFIC_SLOTS)
+        if is_job_seeker:
+            # Job seekers keep skills_have but not the rest
+            slots_to_exclude.update(COFOUNDER_SPECIFIC_SLOTS - {"skills_have"})
+        else:
+            slots_to_exclude.update(COFOUNDER_SPECIFIC_SLOTS)
 
     # If NOT seeking mentorship, exclude mentorship slots
     if "mentor" not in goal_lower:
@@ -134,8 +150,8 @@ class LLMExtractionResult:
 SLOT_DEFINITIONS = {
     "user_type": {
         "description": "The user's primary role in the startup ecosystem",
-        "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider"],
-        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups."
+        "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider", "Job Seeker/Candidate"],
+        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups. If user mentions 'looking for a job', 'new role', 'career change', 'find new job', 'next opportunity', classify as JOB SEEKER/CANDIDATE."
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",

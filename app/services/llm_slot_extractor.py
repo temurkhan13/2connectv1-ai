@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 from anthropic import Anthropic
+from app.services.use_case_templates import get_onboarding_slots
 
 logger = logging.getLogger(__name__)
 
@@ -1832,23 +1833,45 @@ Choose from UNCOVERED topics like: {', '.join(set(SEMANTIC_TOPIC_CLUSTERS.keys()
 """
 
         # Determine which REQUIRED slots are still missing
-        required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "stage_preference", "geography"]
+        required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "geography"]
 
-        # Add role-specific required slots based on user_type
+        # BUG-051 FIX: Use get_onboarding_slots() from use_case_templates.py instead of hardcoded slots
+        # This ensures LLM prompts match the same slots used by onboarding progress and embeddings
+        primary_goal = already_filled.get("primary_goal", "").lower() if already_filled.get("primary_goal") else ""
         user_type_value = already_filled.get("user_type", "").lower() if already_filled.get("user_type") else ""
 
-        if any(keyword in user_type_value for keyword in ["founder", "entrepreneur", "building", "startup"]):
-            # Founders need funding and team size for proper matching
-            required_slots.extend(["funding_range", "team_size"])
-        elif any(keyword in user_type_value for keyword in ["investor", "vc", "angel"]):
-            # Investors need investment range and focus
-            required_slots.extend(["investment_range", "investment_focus"])
-        elif any(keyword in user_type_value for keyword in ["advisor", "mentor", "consultant"]):
-            # Advisors need specialization and experience level
-            required_slots.extend(["specialization", "years_experience"])
-        elif any(keyword in user_type_value for keyword in ["service provider", "agency", "freelancer"]):
-            # Service providers need specialization and client types
-            required_slots.extend(["specialization", "target_clients"])
+        # Determine objective: prefer primary_goal, fallback to user_type mapping
+        objective = None
+        if primary_goal:
+            objective = primary_goal
+        elif user_type_value:
+            # Map user_type to objective (same as onboarding.py _get_core_slot_names)
+            if any(keyword in user_type_value for keyword in ["founder", "entrepreneur", "building", "startup"]):
+                objective = "fundraising"
+            elif any(keyword in user_type_value for keyword in ["investor", "vc", "angel"]):
+                objective = "investing"
+            elif any(keyword in user_type_value for keyword in ["advisor", "mentor", "consultant"]):
+                objective = "mentorship"
+            elif any(keyword in user_type_value for keyword in ["hiring", "recruiter", "hr"]):
+                objective = "hiring"
+            elif any(keyword in user_type_value for keyword in ["partner", "alliance", "collaboration"]):
+                objective = "partnership"
+            elif any(keyword in user_type_value for keyword in ["cofounder", "co-founder"]):
+                objective = "cofounder"
+            elif any(keyword in user_type_value for keyword in ["launch", "product", "gtm"]):
+                objective = "product_launch"
+
+        # Get objective-specific focus slots from use_case_templates.py
+        if objective:
+            try:
+                focus_slots = get_onboarding_slots(objective)
+                # Add focus slots that aren't already in required_slots
+                for slot in focus_slots:
+                    if slot not in required_slots:
+                        required_slots.append(slot)
+                logger.debug(f"Added objective-specific slots for '{objective}': {focus_slots}")
+            except Exception as e:
+                logger.warning(f"Could not get onboarding slots for objective '{objective}': {e}")
 
         missing_required = [s for s in required_slots if s not in already_filled]
 

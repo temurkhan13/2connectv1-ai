@@ -7,6 +7,9 @@ from app.services.embedding_service import embedding_service
 from app.services.multi_vector_embedding_service import multi_vector_service
 from app.services.matching_service import matching_service
 from app.adapters.supabase_profiles import UserProfile, UserMatches, NotifiedMatchPairs
+from app.adapters.supabase_onboarding import supabase_onboarding_adapter
+from app.adapters.postgresql import postgresql_adapter
+from app.services.use_case_templates import get_onboarding_slots, get_template
 from app.services.notification_service import NotificationService
 import logging
 import uuid
@@ -57,6 +60,98 @@ def _extract_objective_from_profile(user_profile: UserProfile) -> str:
 
     # Default to None (will use universal dimensions only)
     return None
+
+
+def _generate_focus_slot_embeddings(user_id: str, objective: str) -> int:
+    """
+    Generate embeddings for focus slots specific to the user's objective.
+
+    This creates direct embeddings from extracted slot VALUES (not narrative text),
+    enabling more precise matching on structured fields like check_size, funding_need, etc.
+
+    Args:
+        user_id: User identifier
+        objective: User's primary objective (e.g., "investing", "fundraising")
+
+    Returns:
+        Number of focus slot embeddings generated
+    """
+    if not objective:
+        logger.info(f"[FocusSlots] No objective for user {user_id}, skipping focus slot embeddings")
+        return 0
+
+    try:
+        # Get the focus slots for this objective's template
+        focus_slots = get_onboarding_slots(objective)
+        if not focus_slots:
+            logger.info(f"[FocusSlots] No focus slots defined for objective '{objective}'")
+            return 0
+
+        logger.info(f"[FocusSlots] Generating embeddings for {len(focus_slots)} focus slots (objective: {objective})")
+
+        # Get extracted slot values from Supabase
+        extracted_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
+        if not extracted_slots:
+            logger.warning(f"[FocusSlots] No extracted slots found for user {user_id}")
+            return 0
+
+        logger.info(f"[FocusSlots] Found {len(extracted_slots)} extracted slots for user {user_id}")
+
+        # Generate embedding for each focus slot that has a value
+        generated_count = 0
+        for slot_name in focus_slots:
+            slot_data = extracted_slots.get(slot_name)
+            if not slot_data:
+                continue
+
+            slot_value = slot_data.get("value")
+            if not slot_value:
+                continue
+
+            # Convert value to string if needed (handle lists, dicts)
+            if isinstance(slot_value, list):
+                text_value = ", ".join(str(v) for v in slot_value)
+            elif isinstance(slot_value, dict):
+                text_value = str(slot_value)
+            else:
+                text_value = str(slot_value)
+
+            # Skip empty values
+            if not text_value.strip():
+                continue
+
+            # Generate embedding for this slot value
+            embedding = embedding_service.generate_embedding(text_value)
+            if not embedding:
+                logger.warning(f"[FocusSlots] Failed to generate embedding for slot '{slot_name}'")
+                continue
+
+            # Store as focus_slot_{slot_name}
+            embedding_type = f"focus_slot_{slot_name}"
+            success = postgresql_adapter.store_embedding(
+                user_id=user_id,
+                embedding_type=embedding_type,
+                vector_data=embedding,
+                metadata={
+                    "slot_name": slot_name,
+                    "slot_value": text_value[:500],  # Truncate for metadata
+                    "objective": objective,
+                    "source": "extracted_slot"
+                }
+            )
+
+            if success:
+                generated_count += 1
+                logger.info(f"[FocusSlots] Stored {embedding_type} embedding for user {user_id[:8]}...")
+            else:
+                logger.warning(f"[FocusSlots] Failed to store {embedding_type} embedding")
+
+        logger.info(f"[FocusSlots] Generated {generated_count} focus slot embeddings for user {user_id}")
+        return generated_count
+
+    except Exception as e:
+        logger.error(f"[FocusSlots] Error generating focus slot embeddings for user {user_id}: {e}")
+        return 0
 
 
 @celery_app.task(bind=True, name='generate_embeddings')
@@ -145,6 +240,15 @@ def generate_embeddings_task(self, user_id: str):
             except Exception as mv_error:
                 # Don't fail the task if multi-vector fails - basic embeddings are still good
                 logger.warning(f"Multi-vector embedding generation failed for user {user_id}: {mv_error}")
+
+            # Generate focus slot embeddings (direct embeddings from extracted slot values)
+            try:
+                focus_slot_count = _generate_focus_slot_embeddings(user_id, objective)
+                if focus_slot_count > 0:
+                    logger.info(f"Generated {focus_slot_count} focus slot embeddings for user {user_id}")
+            except Exception as fs_error:
+                # Don't fail the task if focus slot embeddings fail
+                logger.warning(f"Focus slot embedding generation failed for user {user_id}: {fs_error}")
 
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")

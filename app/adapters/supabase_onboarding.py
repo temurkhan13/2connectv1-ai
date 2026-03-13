@@ -317,7 +317,7 @@ class SupabaseOnboardingAdapter:
 
     async def get_user_slots(self, user_id: str) -> Dict[str, Any]:
         """
-        Get all slots for a user.
+        Get all slots for a user (async version).
 
         Returns:
             Dict mapping slot_name -> {value, confidence, status, created_at}
@@ -348,6 +348,41 @@ class SupabaseOnboardingAdapter:
 
         except Exception as e:
             logger.error(f"Error fetching slots from Supabase: {e}")
+            return {}
+
+    def get_user_slots_sync(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get all slots for a user (synchronous version for Celery workers).
+
+        Returns:
+            Dict mapping slot_name -> {value, confidence, status, created_at}
+        """
+        if not self.enabled:
+            return {}
+
+        try:
+            url = f"{self.supabase_url}/rest/v1/onboarding_answers?user_id=eq.{user_id}&select=*"
+
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(url, headers=self._get_headers())
+
+                if response.status_code == 200:
+                    rows = response.json()
+                    return {
+                        row["slot_name"]: {
+                            "value": row["value"],
+                            "confidence": row["confidence"],
+                            "status": row["status"],
+                            "created_at": row["created_at"]
+                        }
+                        for row in rows
+                    }
+                else:
+                    logger.error(f"Failed to fetch slots (sync): {response.status_code}")
+                    return {}
+
+        except Exception as e:
+            logger.error(f"Error fetching slots from Supabase (sync): {e}")
             return {}
 
     async def get_user_slots_count(self, user_id: str) -> int:

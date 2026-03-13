@@ -249,7 +249,7 @@ SLOT_DEFINITIONS = {
     "requirements": {
         "description": "What the user NEEDS FROM others they meet on this platform - help, connections, resources they're seeking",
         "type": "text",
-        "extraction_hint": "REQUIREMENTS = What this user is ACTIVELY SEEKING from connections. Extract from stated goals/challenges: 'I need help with X' → requirement: X help/guidance; 'looking for investors' → requirement: investor introductions; 'want to expand to Europe' → requirement: European market access. CRITICAL DISTINCTION: Requirements are about GAPS TO FILL - what they DON'T have. Do NOT confuse with what they can offer. If user describes past achievements, that's offerings NOT requirements. CONCISE ONLY: 3-8 words max per item, semicolon-separated. Example: 'Series A investors; European distribution partners'"
+        "extraction_hint": "REQUIREMENTS = What this user is ACTIVELY SEEKING from connections. Extract from stated goals/challenges: 'I need help with X' → requirement: X help/guidance; 'looking for investors' → requirement: investor introductions; 'want to expand to Europe' → requirement: European market access. CRITICAL DISTINCTION: Requirements are about GAPS TO FILL - what they DON'T have. Do NOT confuse with what they can offer. If user describes past achievements, that's offerings NOT requirements. CONCISE ONLY: 3-8 words max per item, semicolon-separated. Example: 'Series A investors; European distribution partners'. BUG-102 FIX: Do NOT extract HOW they want to engage here - engagement preferences like 'hands-on', 'collaborative', 'warm intros', 'strategic advice', 'mentorship style' go to engagement_style slot instead."
     },
     "timeline": {
         "description": "Timeline for their goals",
@@ -359,8 +359,8 @@ SLOT_DEFINITIONS = {
     # BUG-099: Multi-vector dimension slots - CRITICAL for match quality
     "engagement_style": {
         "description": "How the user prefers to engage with connections - their preferred relationship style",
-        "options": ["Hands-on mentorship", "Strategic advice", "Introductions and network", "Purely financial", "Warm intros only", "Open to cold outreach", "Async first"],
-        "extraction_hint": "Extract relationship preferences: 'prefer warm intros' → 'Warm intros only', 'happy to take cold calls' → 'Open to cold outreach', 'want hands-on help' → 'Hands-on mentorship', 'just need connections' → 'Introductions and network'. CRITICAL: This is DIFFERENT from 'requirements' - engagement_style is HOW they want to connect, not WHAT they need."
+        "options": ["Hands-on mentorship", "Strategic advice", "Introductions and network", "Purely financial", "Warm intros only", "Open to cold outreach", "Async first", "Collaborative partnership", "Monthly check-ins", "Regular syncs"],
+        "extraction_hint": "BUG-102 FIX: PRIORITIZE THIS SLOT for relationship/engagement content. Extract HOW they want to work with connections: 'prefer warm intros' → 'Warm intros only'; 'happy to take cold calls' → 'Open to cold outreach'; 'want hands-on help' → 'Hands-on mentorship'; 'just need connections' → 'Introductions and network'; 'collaborative' → 'Collaborative partnership'; 'monthly check-ins' or 'regular syncs' → 'Monthly check-ins'. TRIGGER WORDS: hands-on, collaborative, strategic, mentorship, intros, check-ins, syncs, engagement style, working style, relationship. This captures HOW they want to engage, NOT what they need (requirements) or what they won't accept (dealbreakers)."
     },
     "dealbreakers": {
         "description": "What would make the user immediately pass on a connection - absolute non-starters",

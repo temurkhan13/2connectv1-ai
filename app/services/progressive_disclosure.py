@@ -50,6 +50,7 @@ MULTI_VECTOR_DIMENSIONS = {
         "weight": 0.20,
         "required": False,
         "slot_name": "stage_preference",
+        "alt_slot_names": ["company_stage"],  # BUG-098: Founders use company_stage, investors use stage_preference
         "description": "Company stage preference"
     },
     "geography": {
@@ -597,6 +598,15 @@ class ProgressiveDisclosure:
         for dim_name, dim_config in MULTI_VECTOR_DIMENSIONS.items():
             slot_name = dim_config["slot_name"]
             slot = context.slots.get(slot_name)
+
+            # BUG-098 FIX: Check alternative slot names (e.g., company_stage for founders)
+            if not slot or slot.status.value not in ["filled", "confirmed"]:
+                alt_slot_names = dim_config.get("alt_slot_names", [])
+                for alt_name in alt_slot_names:
+                    alt_slot = context.slots.get(alt_name)
+                    if alt_slot and alt_slot.status.value in ["filled", "confirmed"]:
+                        slot = alt_slot
+                        break
 
             if slot and slot.status.value in ["filled", "confirmed"]:
                 filled_count += 1

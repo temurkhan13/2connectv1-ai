@@ -355,6 +355,17 @@ SLOT_DEFINITIONS = {
         "description": "Budget or pricing expectations for services",
         "type": "text",
         "extraction_hint": "Extract pricing: 'retainer $5K/month', 'project-based $10K-$50K', 'hourly $150-$300/hr', 'equity-based', 'flexible budget'"
+    },
+    # BUG-099: Multi-vector dimension slots - CRITICAL for match quality
+    "engagement_style": {
+        "description": "How the user prefers to engage with connections - their preferred relationship style",
+        "options": ["Hands-on mentorship", "Strategic advice", "Introductions and network", "Purely financial", "Warm intros only", "Open to cold outreach", "Async first"],
+        "extraction_hint": "Extract relationship preferences: 'prefer warm intros' → 'Warm intros only', 'happy to take cold calls' → 'Open to cold outreach', 'want hands-on help' → 'Hands-on mentorship', 'just need connections' → 'Introductions and network'. CRITICAL: This is DIFFERENT from 'requirements' - engagement_style is HOW they want to connect, not WHAT they need."
+    },
+    "dealbreakers": {
+        "description": "What would make the user immediately pass on a connection - absolute non-starters",
+        "type": "text",
+        "extraction_hint": "Extract clear rejections and non-starters: 'not interested in generalist VCs' → 'generalist VCs', 'won't work with agencies' → 'agencies', 'no crypto' → 'crypto projects'. CRITICAL: This is DIFFERENT from 'requirements' - dealbreakers are EXCLUSIONS, things they actively avoid. CONCISE ONLY: 3-8 words max per item, semicolon-separated."
     }
 }
 

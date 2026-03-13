@@ -22,16 +22,57 @@ def _extract_objective_from_profile(user_profile: UserProfile) -> str:
     """
     Extract primary_goal/objective from profile for objective-specific embeddings.
 
+    BUG-092 FIX: Query Supabase onboarding_answers table for extracted slots,
+    not raw_questions (which contains question text, not slot names).
+
     Aligns with ObjectiveTypes from use_case_templates.py:
     - fundraising, investing, hiring, partnership
-    - mentorship, cofounder, product_launch, networking
+    - mentorship, cofounder, product_launch, networking, job_search
 
     Checks multiple sources in priority order:
-    1. Extracted primary_goal slot value
-    2. Raw questions mentioning goal/objective
-    3. Fallback to user_type if no objective found
+    1. Supabase extracted slots (primary_goal)
+    2. Raw questions (fallback for backwards compat)
+    3. user_type inference
     """
-    # Try to get primary_goal from raw_questions first (most reliable)
+    user_id = user_profile.user_id
+
+    # PRIORITY 1: Get from Supabase extracted slots (correct source)
+    # BUG-092 FIX: This is where extracted slot values actually live
+    try:
+        extracted_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
+        if extracted_slots and 'primary_goal' in extracted_slots:
+            goal_value = extracted_slots['primary_goal'].get('value', '')
+            if goal_value:
+                goal_lower = goal_value.lower()
+                logger.info(f"[Objective] Found primary_goal in Supabase: '{goal_value}'")
+
+                # Map to ObjectiveType enum values
+                if 'invest' in goal_lower:
+                    return 'investing'
+                if 'fund' in goal_lower or 'raise' in goal_lower or 'capital' in goal_lower:
+                    return 'fundraising'
+                if 'hire' in goal_lower or 'recruit' in goal_lower or 'talent' in goal_lower:
+                    return 'hiring'
+                if 'partner' in goal_lower:
+                    return 'partnership'
+                if 'mentor' in goal_lower:
+                    return 'mentorship'
+                if 'cofounder' in goal_lower or 'co-founder' in goal_lower:
+                    return 'cofounder'
+                if 'launch' in goal_lower or 'product' in goal_lower:
+                    return 'product_launch'
+                if 'network' in goal_lower or 'connect' in goal_lower:
+                    return 'networking'
+                if 'job' in goal_lower or 'career' in goal_lower or 'role' in goal_lower or 'position' in goal_lower:
+                    return 'job_search'
+
+                # If no keyword match, log and return as-is for potential future mapping
+                logger.info(f"[Objective] No keyword match for '{goal_value}', returning as-is")
+                return goal_lower
+    except Exception as e:
+        logger.warning(f"[Objective] Supabase query failed for user {user_id}: {e}")
+
+    # PRIORITY 2: Fallback to raw_questions (backwards compat)
     if user_profile.profile and user_profile.profile.raw_questions:
         for q in user_profile.profile.raw_questions:
             q_dict = q.as_dict() if hasattr(q, 'as_dict') else q
@@ -42,7 +83,7 @@ def _extract_objective_from_profile(user_profile: UserProfile) -> str:
                 if answer:
                     return answer.strip().lower()
 
-    # Fallback: Try user_type which may indicate objective
+    # PRIORITY 3: Try user_type which may indicate objective
     if user_profile.profile and user_profile.profile.raw_questions:
         for q in user_profile.profile.raw_questions:
             q_dict = q.as_dict() if hasattr(q, 'as_dict') else q
@@ -59,6 +100,7 @@ def _extract_objective_from_profile(user_profile: UserProfile) -> str:
                     return answer_lower
 
     # Default to None (will use universal dimensions only)
+    logger.info(f"[Objective] No objective found for user {user_id}, using universal")
     return None
 
 

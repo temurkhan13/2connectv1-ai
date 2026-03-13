@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # MULTI-VECTOR DIMENSIONS (Critical for Match Quality)
 # =============================================================================
 # These dimensions are used by multi_vector_matcher.py for high-quality matching.
-# Onboarding MUST collect at least 4/6 of these before allowing completion.
+# FIX D: Onboarding MUST collect ALL 6/6 of these before allowing completion.
 
 MULTI_VECTOR_DIMENSIONS = {
     "primary_goal": {
@@ -72,8 +72,9 @@ MULTI_VECTOR_DIMENSIONS = {
     }
 }
 
-# Minimum dimensions required before onboarding can complete
-MIN_MULTI_VECTOR_DIMENSIONS = 4
+# FIX D: Require ALL 6 multi-vector dimensions before completion
+# Changed from 4 to 6 - no shortcuts, full coverage required for quality matching
+MIN_MULTI_VECTOR_DIMENSIONS = 6
 
 
 class QuestionPriority(int, Enum):
@@ -613,7 +614,9 @@ class ProgressiveDisclosure:
 
     def can_complete_onboarding(self, session_id: str) -> Tuple[bool, str]:
         """
-        Check if onboarding can be completed based on multi-vector coverage.
+        Check if onboarding can be completed.
+
+        FIX D+E: Now checks BOTH multi-vector coverage AND focus slots.
 
         Returns:
             Tuple of (can_complete, reason_if_not)
@@ -622,6 +625,7 @@ class ProgressiveDisclosure:
         if not context:
             return False, "Session not found"
 
+        # FIX D: Check multi-vector coverage (now requires 6/6)
         filled, total, missing = self._check_multi_vector_coverage(context)
 
         if filled < MIN_MULTI_VECTOR_DIMENSIONS:
@@ -631,11 +635,92 @@ class ProgressiveDisclosure:
                 for dim in missing[:3]  # Top 3 missing
             ]
             reason = (
-                f"Need at least {MIN_MULTI_VECTOR_DIMENSIONS}/{total} dimensions for quality matching. "
+                f"Need all {MIN_MULTI_VECTOR_DIMENSIONS}/{total} dimensions for quality matching. "
                 f"Missing: {', '.join(missing_readable)}"
             )
             return False, reason
 
+        # FIX E: Check focus slots for user's objective
+        focus_check_passed, focus_reason = self._check_focus_slots_filled(context)
+        if not focus_check_passed:
+            return False, focus_reason
+
+        return True, ""
+
+    def _check_focus_slots_filled(self, context: ConversationContext) -> Tuple[bool, str]:
+        """
+        FIX E: Check if all objective-specific focus slots are filled.
+
+        Each objective (fundraising, hiring, job_search, etc.) has specific
+        focus slots defined in use_case_templates.py that must be filled
+        for quality matching.
+
+        Returns:
+            Tuple of (all_filled, reason_if_not)
+        """
+        from app.services.slot_extraction import SlotStatus
+
+        # Get user's objective from primary_goal or user_type
+        primary_goal_slot = context.slots.get("primary_goal")
+        user_type_slot = context.slots.get("user_type")
+
+        objective = None
+        if primary_goal_slot and primary_goal_slot.value:
+            objective = str(primary_goal_slot.value).lower()
+        elif user_type_slot and user_type_slot.value:
+            # Map user_type to objective
+            user_type = str(user_type_slot.value).lower()
+            type_to_objective = {
+                "founder": "fundraising",
+                "entrepreneur": "fundraising",
+                "investor": "investing",
+                "job_seeker": "job_search",
+                "candidate": "job_search",
+                "recruiter": "hiring",
+                "advisor": "mentorship",
+                "mentor": "mentorship",
+                "service_provider": "services",
+            }
+            for key, obj in type_to_objective.items():
+                if key in user_type:
+                    objective = obj
+                    break
+
+        if not objective:
+            # No objective detected yet - can't complete
+            return False, "Need to understand your primary goal first"
+
+        # Get focus slots for this objective
+        try:
+            from app.services.use_case_templates import TEMPLATES, ObjectiveType
+            objective_enum = ObjectiveType(objective)
+            template = TEMPLATES.get(objective_enum)
+            if template:
+                focus_slots = template.onboarding_focus_slots
+            else:
+                focus_slots = []
+        except (ValueError, KeyError):
+            # Unknown objective - use default check
+            focus_slots = []
+
+        if not focus_slots:
+            # No specific focus slots for this objective - pass
+            logger.info(f"FIX E: No focus slots defined for objective '{objective}'")
+            return True, ""
+
+        # Check which focus slots are missing
+        missing_focus = []
+        for slot_name in focus_slots:
+            slot = context.slots.get(slot_name)
+            if not slot or slot.status not in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
+                missing_focus.append(slot_name)
+
+        if missing_focus:
+            reason = f"Need more details for {objective}: {', '.join(missing_focus[:3])}"
+            logger.info(f"FIX E: Missing focus slots for '{objective}': {missing_focus}")
+            return False, reason
+
+        logger.info(f"FIX E: All {len(focus_slots)} focus slots filled for '{objective}'")
         return True, ""
 
     def get_multi_vector_status(self, session_id: str) -> Dict[str, Any]:

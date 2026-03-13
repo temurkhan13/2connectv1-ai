@@ -1008,52 +1008,21 @@ class ContextManager:
         """
         Detect if user explicitly signals they want to finish onboarding.
 
-        Phrases like "done", "that's all", "let's start matching", "no more", etc.
+        FIX A+C: Trust LLM only - removed all code-level phrase matching.
+        The LLM (via is_completion_signal) understands context and won't false-positive
+        on phrases like "I've done deals" or "done Africa work".
 
-        BUG-100 FIX: Use word boundary regex instead of substring matching.
-        Previously: "done" in "I've done diligence" → TRUE (false positive)
-        Now: Uses regex word boundaries to match whole phrases only.
-        Same fix as BUG-092 and BUG-099.
+        Previously: Regex phrase matching caused false positives.
+        Now: Delegates entirely to LLM's is_completion_signal detection.
         """
-        import re
+        # FIX A+C: Removed all phrase-based detection
+        # LLM comprehension handles completion detection via is_completion_signal
+        # This method now only checks if LLM flagged completion in the last extraction
 
-        # BUG-053 FIX: Never consider completion on first 2 user messages
-        # Prevents false positives like "I'm ready to build" matching "I'm ready"
-        user_turn_count = sum(1 for t in context.turns if t.turn_type == TurnType.USER)
-        if user_turn_count < 3:
-            return False
-
-        # Only check recent user turns
-        recent_user_turns = [
-            t for t in context.turns[-4:]
-            if t.turn_type == TurnType.USER
-        ]
-
-        # BUG-100: Completion phrases - these should be matched as complete phrases
-        # using word boundaries, not as substrings
-        completion_phrases = [
-            "done", "that's all", "that's everything", "lets start", "let's start",
-            "start matching", "see my matches", "ready to match", "no more",
-            "nothing else", "i'm ready", "im ready", "proceed", "move on",
-            "next page", "next step", "finish", "complete", "that covers",
-            "no, that", "no that", "no.", "nope"
-        ]
-
-        for turn in recent_user_turns:
-            content_lower = turn.content.lower().strip()
-            # BUG-100 FIX: Use word boundary regex instead of substring 'in'
-            for phrase in completion_phrases:
-                # Escape special regex chars and add word boundaries
-                pattern = r'\b' + re.escape(phrase) + r'\b'
-                if re.search(pattern, content_lower):
-                    # Also verify we have minimum viable profile (at least 3 slots)
-                    filled_slots = [
-                        name for name, slot in context.slots.items()
-                        if slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]
-                    ]
-                    if len(filled_slots) >= 3:
-                        logger.info(f"BUG-100: Completion phrase '{phrase}' matched in user message")
-                        return True
+        llm_result = self._llm_responses.get(context.session_id)
+        if llm_result and llm_result.is_completion_signal:
+            logger.info(f"FIX A+C: LLM detected completion signal for session {context.session_id}")
+            return True
 
         return False
 
@@ -1115,25 +1084,25 @@ class ContextManager:
             if slot and slot.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
                 filled_count += 1
 
-        # BUG-023 FIX: Strict completion requirements
-        # Changed from 80% threshold to 100% + minimum conversation turns
-        # Prevents premature completion after 1 comprehensive answer
+        # FIX B: Strict completion requirements with minimum 5 questions
+        # Changed from 3 turns to 5 turns to prevent premature completion
+        # Ensures user has been asked enough questions before completing
         if not required_slots:
             return False
 
         completion_ratio = filled_count / len(required_slots)
 
         # Requirement 1: ALL required slots must be filled (100%)
-        slots_complete = completion_ratio >= 1.0  # Changed from 0.8
+        slots_complete = completion_ratio >= 1.0
 
-        # Requirement 2: Minimum 3 conversation turns (user messages)
+        # FIX B: Minimum 5 conversation turns (user messages) - increased from 3
         user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
-        min_turns_met = user_turns >= 3
+        min_turns_met = user_turns >= 5  # FIX B: Changed from 3 to 5
 
         is_complete = slots_complete and min_turns_met
 
         if slots_complete and not min_turns_met:
-            logger.info(f"Session {context.session_id}: {filled_count}/{len(required_slots)} slots filled (100%) but only {user_turns}/3 turns - continuing conversation")
+            logger.info(f"Session {context.session_id}: {filled_count}/{len(required_slots)} slots filled (100%) but only {user_turns}/5 turns - FIX B: need 5 minimum")
         elif is_complete:
             logger.info(f"Session auto-complete: {filled_count}/{len(required_slots)} required slots filled (100%), {user_turns} user turns")
 

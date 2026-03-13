@@ -110,8 +110,10 @@ Be direct about misalignments. It's better to identify poor fits quickly than wa
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
-            "funding_need", "company_stage", "industry_focus", "geography", "timeline"
+            "funding_need", "company_stage", "industry_focus", "geography", "timeline",
+            "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "check_size_alignment": 0.25,
@@ -173,8 +175,10 @@ Be thorough in your evaluation. Good investors pass on many deals to find the ri
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
-            "check_size", "stage_preference", "industry_focus", "investment_thesis", "geography"
+            "check_size", "stage_preference", "industry_focus", "investment_thesis", "geography",
+            "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "thesis_alignment": 0.30,
@@ -237,9 +241,10 @@ Be straightforward about misalignments. Finding the right fit matters more than 
             VerdictLevel.NO_MATCH.value: []
         },
         # BUG-089 FIX: Added hiring-specific slots (seniority, remote, compensation)
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
             "role_type", "seniority_level", "remote_preference", "compensation_range",
-            "industry_focus", "geography", "team_size"
+            "industry_focus", "geography", "team_size", "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "skills_alignment": 0.30,
@@ -301,8 +306,10 @@ Partnerships work best when both sides gain clear value. Be direct about where a
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added dealbreakers for MV coverage
         onboarding_focus_slots=[
-            "primary_goal", "industry_focus", "company_stage", "geography", "engagement_style"
+            "primary_goal", "industry_focus", "company_stage", "geography", "engagement_style",
+            "dealbreakers"
         ],
         match_weight_overrides={
             "strategic_alignment": 0.30,
@@ -365,9 +372,10 @@ Good mentorship relationships are built on mutual respect and clear expectations
             VerdictLevel.NO_MATCH.value: []
         },
         # BUG-089 FIX: Added mentorship-specific slots (areas, format, commitment)
+        # BUG-103 FIX: Added dealbreakers for MV coverage
         onboarding_focus_slots=[
             "mentorship_areas", "mentorship_format", "mentorship_commitment",
-            "industry_focus", "experience_years", "engagement_style"
+            "industry_focus", "experience_years", "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "expertise_alignment": 0.35,
@@ -431,9 +439,10 @@ Co-founder relationships are like marriages. Be thorough in exploring compatibil
             VerdictLevel.NO_MATCH.value: []
         },
         # BUG-089 FIX: Added cofounder-specific slots (skills, commitment, equity)
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
             "skills_have", "skills_need", "commitment_level", "equity_expectations",
-            "industry_focus", "company_stage", "geography"
+            "industry_focus", "company_stage", "geography", "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "skills_complement": 0.25,
@@ -496,9 +505,10 @@ Be practical and action-oriented. Help identify concrete ways to accelerate the 
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
             "primary_goal", "user_type", "industry_focus", "company_stage",
-            "geography", "requirements", "offerings", "team_size"
+            "geography", "requirements", "offerings", "team_size", "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "market_alignment": 0.25,
@@ -558,8 +568,10 @@ Good networking is about genuine connection, not transactions. Help create an au
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
-            "primary_goal", "industry_focus", "user_type", "geography"
+            "primary_goal", "industry_focus", "user_type", "geography",
+            "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "interest_overlap": 0.30,
@@ -623,9 +635,10 @@ Good matches happen when both sides see mutual benefit. Help the candidate showc
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
         onboarding_focus_slots=[
             "role_type", "seniority_level", "industry_focus", "remote_preference",
-            "compensation_range", "skills_have", "geography"
+            "compensation_range", "skills_have", "geography", "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={
             "skills_alignment": 0.25,
@@ -690,9 +703,10 @@ Good matches happen when the provider's expertise directly addresses the startup
             ],
             VerdictLevel.NO_MATCH.value: []
         },
+        # BUG-103 FIX: Added dealbreakers for MV coverage
         onboarding_focus_slots=[
             "service_type", "industry_focus", "stage_preference", "geography",
-            "engagement_style", "budget_range"
+            "engagement_style", "budget_range", "dealbreakers"
         ],
         match_weight_overrides={
             "service_alignment": 0.30,

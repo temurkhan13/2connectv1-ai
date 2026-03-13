@@ -63,6 +63,7 @@ MULTI_VECTOR_DIMENSIONS = {
         "weight": 0.10,
         "required": False,
         "slot_name": "engagement_style",
+        "alt_slot_names": ["communication_preference", "collaboration_style"],  # BUG-100: LLM sometimes uses these aliases
         "description": "Preferred engagement style"
     },
     "dealbreakers": {

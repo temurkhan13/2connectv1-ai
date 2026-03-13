@@ -2454,7 +2454,8 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
 
             if inferred_goal:
                 # Add primary_goal to extracted_slots
-                extracted_slots["primary_goal"] = ExtractedSlot(
+                extracted_slots["primary_goal"] = LLMExtractedSlot(
+                    name="primary_goal",
                     value=inferred_goal,
                     confidence=0.90,
                     reasoning=f"BUG-090: Inferred from message content and extracted slots"

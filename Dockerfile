@@ -15,6 +15,10 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download sentence-transformers model during build (not at runtime)
+# This makes cold starts much faster
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')"
+
 # Copy application code
 COPY . .
 

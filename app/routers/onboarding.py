@@ -553,6 +553,25 @@ async def chat(request: ChatMessageRequest):
         else:
             context = context_manager.create_session(request.user_id)
 
+            # BUG-098 FIX: Also restore slots when creating fresh session without session_id
+            # Previously: Slots only restored when session_id provided but expired
+            # Now: Always restore user's persisted slots regardless of session state
+            try:
+                supabase_slots = await supabase_onboarding_adapter.get_user_slots(request.user_id)
+                if supabase_slots:
+                    restored_count = 0
+                    for slot_name, slot_data in supabase_slots.items():
+                        context.slots[slot_name] = ExtractedSlot(
+                            name=slot_name,
+                            value=slot_data.get("value"),
+                            confidence=slot_data.get("confidence", 1.0),
+                            status=SlotStatus.FILLED if slot_data.get("status") == "filled" else SlotStatus.CONFIRMED
+                        )
+                        restored_count += 1
+                    logger.info(f"BUG-098 FIX: Restored {restored_count} slots from Supabase for new session (user {request.user_id[:8]}...)")
+            except Exception as restore_error:
+                logger.warning(f"BUG-098: Could not restore slots from Supabase (continuing with empty): {restore_error}")
+
         session_id = context.session_id
 
         # Add user turn and extract slots

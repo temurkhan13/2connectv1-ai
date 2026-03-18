@@ -429,6 +429,9 @@ async def start_session(request: StartSessionRequest):
                     )
                     restored_count += 1
                 logger.info(f"BUG-029 FIX: Restored {restored_count} slots from Supabase on session start for user {request.user_id[:8]}...")
+                # BUG-100 FIX: Save session to Redis after restoring slots
+                # Without this, subsequent /chat calls get empty slots from Redis
+                context_manager.save_session(context.session_id)
         except Exception as restore_error:
             logger.warning(f"BUG-029: Could not restore slots on session start: {restore_error}")
 
@@ -548,6 +551,8 @@ async def chat(request: ChatMessageRequest):
                             )
                             restored_count += 1
                         logger.info(f"BUG-029 FIX: Restored {restored_count} slots from Supabase for user {request.user_id[:8]}...")
+                        # BUG-100 FIX: Save session to Redis after restoring slots
+                        context_manager.save_session(context.session_id)
                 except Exception as restore_error:
                     logger.warning(f"BUG-029: Could not restore slots from Supabase (continuing with empty): {restore_error}")
         else:
@@ -569,6 +574,8 @@ async def chat(request: ChatMessageRequest):
                         )
                         restored_count += 1
                     logger.info(f"BUG-098 FIX: Restored {restored_count} slots from Supabase for new session (user {request.user_id[:8]}...)")
+                    # BUG-100 FIX: Save session to Redis after restoring slots
+                    context_manager.save_session(context.session_id)
             except Exception as restore_error:
                 logger.warning(f"BUG-098: Could not restore slots from Supabase (continuing with empty): {restore_error}")
 

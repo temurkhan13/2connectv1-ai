@@ -315,6 +315,28 @@ class ContextManager:
 
         return context
 
+    def save_session(self, session_id: str) -> bool:
+        """
+        BUG-100 FIX: Save session to Redis after external modifications.
+
+        This method should be called after slots are restored from Supabase
+        to ensure the updated context is persisted to Redis. Without this,
+        subsequent requests would retrieve stale session data with empty slots.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        context = self._sessions.get(session_id)
+        if context:
+            self._save_to_redis(session_id, context)
+            logger.info(f"BUG-100 FIX: Saved session {session_id[:8]}... to Redis after slot restoration")
+            return True
+        logger.warning(f"BUG-100: Cannot save session {session_id[:8]}... - not found in memory")
+        return False
+
     async def add_turn(
         self,
         session_id: str,

@@ -196,6 +196,22 @@ class InlineMatchingService:
             )
 
             logger.info(f"[INLINE MATCH] Complete for {user_id}: {result['message']}")
+
+            # PUBLISH EVENT: Notify backend that matches are ready
+            # This triggers push notification to user's device
+            try:
+                from app.events.publisher import event_publisher
+                event_publisher.publish_matches_ready(
+                    user_id=user_id,
+                    match_count=total_matches,
+                    algorithm=result.get("algorithm", "unknown"),
+                    reciprocal_updates=reciprocal_count
+                )
+                logger.info(f"[INLINE MATCH] Published matches_ready event for {user_id}")
+            except Exception as pub_error:
+                # Don't fail matching if event publishing fails
+                logger.warning(f"[INLINE MATCH] Failed to publish event for {user_id}: {pub_error}")
+
             return result
 
         except Exception as e:

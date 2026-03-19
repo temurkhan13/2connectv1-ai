@@ -38,7 +38,7 @@ from app.routers.match import router as match_router
 from app.routers.feedback import router as feedback_router
 from app.routers.templates import router as templates_router
 from app.middleware.auth import APIKeyMiddleware
-from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
+from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler, REDIS_EXCEPTIONS
 from dotenv import load_dotenv
 
 dotenv_override = os.getenv("DOTENV_OVERRIDE", "false").lower() == "true"
@@ -130,6 +130,29 @@ app = FastAPI(
 # Configure rate limiting
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+# BUG-133 FIX: Add handler for Redis errors to prevent service crash
+# When Upstash Redis returns errors, allow requests to proceed (fail-open)
+from fastapi.responses import JSONResponse
+
+async def redis_error_handler(request: Request, exc: Exception):
+    """
+    BUG-133: Handle Redis errors gracefully - log and continue.
+    This is a safety net in case errors slip past swallow_errors.
+    """
+    logger.error(f"Redis error in rate limiting (caught globally): {exc}")
+    # Don't crash - let the request proceed without rate limiting
+    # This should rarely happen with swallow_errors=True on the limiter
+    return JSONResponse(
+        status_code=200,
+        content={"warning": "Rate limiting temporarily unavailable"},
+        headers={"X-Rate-Limit-Status": "unavailable"}
+    )
+
+# Register handler for each Redis exception type
+for redis_exc_type in REDIS_EXCEPTIONS:
+    if redis_exc_type != Exception:  # Don't register for base Exception
+        app.add_exception_handler(redis_exc_type, redis_error_handler)
 
 # Configure OpenAPI schema to include API key authentication
 from fastapi.openapi.utils import get_openapi

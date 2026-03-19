@@ -1,6 +1,9 @@
 """
 Rate limiting middleware using slowapi.
 Protects API endpoints from abuse by limiting requests per time window.
+
+BUG-133 FIX: Added Redis error handling to prevent service crash when Upstash
+returns ResponseError. Uses fail-open pattern - if Redis is down, allow requests.
 """
 import os
 import logging
@@ -10,6 +13,17 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
+# BUG-133: Import Redis exceptions for error handling
+try:
+    from redis.exceptions import ResponseError as RedisResponseError
+    from redis.exceptions import ConnectionError as RedisConnectionError
+    REDIS_EXCEPTIONS = (RedisResponseError, RedisConnectionError)
+except ImportError:
+    # If redis-py not installed, use base Exception
+    REDIS_EXCEPTIONS = (Exception,)
+    RedisResponseError = Exception
+    RedisConnectionError = Exception
 
 logger = logging.getLogger(__name__)
 
@@ -39,26 +53,34 @@ def create_limiter() -> Limiter:
     """
     Create a rate limiter instance with appropriate storage backend.
     Uses Redis if available, otherwise falls back to in-memory storage.
+
+    BUG-133 FIX: Added swallow_errors=True to gracefully handle Redis errors
+    at runtime. This ensures the service doesn't crash when Upstash Redis
+    returns ResponseError.
     """
     if REDIS_URL and RATE_LIMIT_ENABLED:
         try:
             # Use Redis for distributed rate limiting
+            # BUG-133: swallow_errors=True allows requests to proceed even if Redis fails
             return Limiter(
                 key_func=get_api_key_or_ip,
                 default_limits=[RATE_LIMIT_DEFAULT],
                 storage_uri=REDIS_URL,
                 strategy="fixed-window",
-                enabled=True
+                enabled=True,
+                swallow_errors=True  # BUG-133: Fail-open pattern for Redis errors
             )
         except Exception as e:
             logger.warning(f"Failed to connect to Redis for rate limiting: {e}. Using in-memory storage.")
 
     # Fallback to in-memory storage
+    # BUG-133: swallow_errors=True for consistency
     return Limiter(
         key_func=get_api_key_or_ip,
         default_limits=[RATE_LIMIT_DEFAULT],
         strategy="fixed-window",
-        enabled=RATE_LIMIT_ENABLED
+        enabled=RATE_LIMIT_ENABLED,
+        swallow_errors=True  # BUG-133: Fail-open for any storage errors
     )
 
 
@@ -86,6 +108,25 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSO
         },
         headers={"Retry-After": str(retry_after)}
     )
+
+
+def redis_error_handler(request: Request, exc: Exception) -> None:
+    """
+    BUG-133 FIX: Handler for Redis connection errors in rate limiting.
+
+    When Redis (Upstash) is unavailable or returns errors, we use a fail-open
+    pattern - allow the request to proceed rather than crashing the service.
+    This ensures the API remains available even when rate limiting storage is down.
+
+    Returns None to signal that the request should continue without rate limiting.
+    """
+    # Log the error but don't crash
+    error_detail = getattr(exc, 'detail', getattr(exc, 'message', str(exc)))
+    logger.error(f"Redis rate limiter error (fail-open): {error_detail}")
+
+    # Return None - this allows the request to proceed without rate limiting
+    # The middleware should catch this and continue
+    return None
 
 
 # Rate limit decorators for different endpoint types

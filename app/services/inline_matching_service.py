@@ -708,13 +708,22 @@ class InlineMatchingService:
                 temporal_boost = enhanced_matching_service._calculate_temporal_boost(candidate_id)
 
                 # STEP 6: Calculate final hybrid score
-                # Base (multi-vector) × intent × bidirectional × boosts
+                # UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain
+                # Old: base × intent × bidirectional × activity × temporal
+                # New: core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10
+                core_score = base_score * bidirectional_factor
+                core_score = max(0.0, min(1.0, core_score))
+
+                # Normalize activity/temporal to 0-1 range
+                activity_normalized = max(0.7, min(1.0, activity_boost))
+                temporal_normalized = max(0.8, min(1.0, temporal_boost))
+                signal_score = (activity_normalized * 0.6) + (temporal_normalized * 0.4)
+
                 final_score = (
-                    base_score *
-                    (0.7 + 0.3 * intent_quality) *  # Intent can boost by 30%
-                    bidirectional_factor *
-                    (0.9 + 0.1 * activity_boost) *  # Activity can boost by 10%
-                    (0.95 + 0.05 * temporal_boost)   # Temporal can boost by 5%
+                    core_score      * 0.35 +    # Bidirectional core compatibility
+                    base_score      * 0.40 +    # Multi-vector dimensional score (already includes dimensions)
+                    intent_quality  * 0.15 +    # Intent complementarity
+                    signal_score    * 0.10      # Activity + recency
                 )
 
                 # Only include if above threshold
@@ -786,50 +795,66 @@ class InlineMatchingService:
         """
         Calculate intent complementarity score (0-1).
 
-        Perfect matches (1.0):
-        - INVESTOR_FOUNDER ↔ FOUNDER_INVESTOR
-        - MENTOR_MENTEE ↔ MENTEE_MENTOR
-        - TALENT_SEEKING ↔ OPPORTUNITY_SEEKING
-
-        Good matches (0.8):
-        - COFOUNDER ↔ COFOUNDER
-        - PARTNERSHIP ↔ PARTNERSHIP
-
-        Neutral (0.5):
-        - GENERAL ↔ anything
-
-        Poor matches (0.3):
-        - Same-seeking intents (INVESTOR_FOUNDER ↔ INVESTOR_FOUNDER)
+        UPGRADED (Mar 2026): Complete pair table matching enhanced_matching_service.
+        Default raised from 0.4 to 0.7 (unknown pair = neutral, not penalty).
         """
         from app.services.enhanced_matching_service import MatchIntent
 
-        # Perfect complementary pairs
-        complementary_pairs = {
+        # Complete complementary pairs table (mirrors enhanced_matching_service)
+        complete_pairs = {
+            # Perfect complementary pairs (1.0)
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 1.0,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 1.0,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 1.0,
             (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE): 1.0,
             (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 1.0,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
-        }
 
-        # Same-type matches (both seeking the same thing)
-        same_type_pairs = {
+            # Strong complementary pairs (0.85-0.95)
+            (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
             (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
+            (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
+
+            # GENERAL pairs
+            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER): 0.9,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL): 0.9,
+            (MatchIntent.GENERAL, MatchIntent.PARTNERSHIP): 0.85,
+            (MatchIntent.PARTNERSHIP, MatchIntent.GENERAL): 0.85,
+            (MatchIntent.GENERAL, MatchIntent.SERVICE_PROVIDER): 0.8,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.GENERAL): 0.8,
+            (MatchIntent.GENERAL, MatchIntent.MENTOR_MENTEE): 0.75,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.GENERAL): 0.75,
+
+            # Good matches
             (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
+
+            # COFOUNDER cross-pairs
+            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.8,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.8,
+            (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.75,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.75,
+            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.7,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.7,
+
+            # NETWORKING pairs
+            (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.8,
+
+            # SERVICE_PROVIDER pairs
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
+
+            # Self-referral pairs
+            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,
         }
 
         pair = (user_intent, candidate_intent)
-
-        if pair in complementary_pairs:
-            return complementary_pairs[pair]
-        if pair in same_type_pairs:
-            return same_type_pairs[pair]
-        if user_intent == MatchIntent.GENERAL or candidate_intent == MatchIntent.GENERAL:
-            return 0.5
-        if user_intent == candidate_intent:
-            return 0.3  # Both seeking same thing (e.g., both INVESTOR_FOUNDER)
-        return 0.4  # Unrelated intents
+        # Default 0.7 for unknown pairs (neutral, NOT punishing)
+        return complete_pairs.get(pair, 0.7)
 
     def _should_block_same_objective(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> bool:
         """

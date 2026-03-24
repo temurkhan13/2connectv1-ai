@@ -471,17 +471,23 @@ class EnhancedMatchingService:
                     user_intent, match_intent, user_intent_confidence, match_intent_confidence
                 )
 
+                # Calculate dimensional alignment (NEW — uses all 15 stored embeddings)
+                dimension_score = self._calculate_dimensional_score(
+                    user_id, match_user_id, scoring_config
+                )
+
                 # Calculate temporal and activity boosts
                 activity_boost = self._calculate_activity_boost(match_profile if match_persona else None)
                 temporal_boost = self._calculate_temporal_boost(match_profile if match_persona else None)
 
-                # Calculate final score with all factors
+                # Calculate final score with all factors (additive weighted)
                 final_score = self._calculate_final_score(
                     combined_score=combined_score,
                     intent_quality=intent_quality,
                     activity_boost=activity_boost,
                     temporal_boost=temporal_boost,
-                    config=scoring_config
+                    config=scoring_config,
+                    dimension_score=dimension_score
                 )
 
                 # Generate explanations
@@ -555,38 +561,66 @@ class EnhancedMatchingService:
         user_confidence: float,
         match_confidence: float
     ) -> float:
-        """Calculate how well two user intents complement each other."""
-        # Perfect complementary pairs
-        perfect_pairs = {
+        """Calculate how well two user intents complement each other.
+
+        UPGRADED (Mar 2026): Complete pair table with 0.7 default.
+        Confidence scaling removed — was double-penalizing scores.
+        """
+        # Complete complementary pairs table
+        complete_pairs = {
+            # Perfect complementary pairs (1.0)
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 1.0,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 1.0,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 1.0,
             (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE): 1.0,
             (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 1.0,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
-            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,  # Both seeking cofounders
-            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
-            # BUG-040 FIX: Recruiter matches both sides
-            (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,  # Recruiter ↔ Hiring company
+
+            # Strong complementary pairs (0.85-0.95)
+            (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,
             (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
-            (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,  # Recruiter ↔ Job seeker
+            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
+            (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,  # Recruiters can refer each other
-            # BUG-040 FIX: Service provider matches with clients
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,  # Consultant ↔ Founder
+
+            # PRODUCT_LAUNCH / GENERAL pairs (PREVIOUSLY MISSING — all got 0.5)
+            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER): 0.9,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL): 0.9,
+            (MatchIntent.GENERAL, MatchIntent.PARTNERSHIP): 0.85,
+            (MatchIntent.PARTNERSHIP, MatchIntent.GENERAL): 0.85,
+            (MatchIntent.GENERAL, MatchIntent.SERVICE_PROVIDER): 0.8,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.GENERAL): 0.8,
+            (MatchIntent.GENERAL, MatchIntent.MENTOR_MENTEE): 0.75,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.GENERAL): 0.75,
+
+            # Good matches (0.8-0.85)
+            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,  # Consultant ↔ Company
+
+            # COFOUNDER cross-pairs (PREVIOUSLY MISSING — all got 0.5)
+            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.8,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.8,
+            (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.75,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.75,
+            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.7,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.7,
+
+            # NETWORKING pairs (PREVIOUSLY ALL 0.5)
+            (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.8,
+
+            # SERVICE_PROVIDER pairs
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
             (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,  # Service providers can refer
+
+            # Self-referral pairs
+            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,
         }
 
         pair = (user_intent, match_intent)
-        base_quality = perfect_pairs.get(pair, 0.5)  # Default to 0.5 for non-perfect pairs
-
-        # Scale by confidence
-        confidence_factor = (user_confidence + match_confidence) / 2
-
-        return base_quality * confidence_factor
+        # Default 0.7 for unknown pairs (neutral, NOT punishing)
+        return complete_pairs.get(pair, 0.7)
 
     def _calculate_activity_boost(self, user_profile) -> float:
         """Active users get a boost, inactive users get a penalty."""
@@ -633,16 +667,129 @@ class EnhancedMatchingService:
         except Exception:
             return 1.0
 
+    def _calculate_dimensional_score(
+        self,
+        user_id: str,
+        candidate_id: str,
+        config: IntentScoringConfig
+    ) -> float:
+        """Calculate dimensional alignment score using all stored embeddings.
+
+        UPGRADED (Mar 2026): Uses all 15 non-core embeddings with per-intent weights.
+        Previously these embeddings were generated and stored but NEVER used in scoring.
+        """
+        try:
+            user_embeddings = postgresql_adapter.get_user_embeddings(user_id)
+            candidate_embeddings = postgresql_adapter.get_user_embeddings(candidate_id)
+        except Exception as e:
+            logger.warning(f"Could not fetch embeddings for dimensional scoring: {e}")
+            return 0.5  # Neutral fallback
+
+        # Map config weights to dimension names
+        weight_mapping = {
+            "industry_combined": config.industry_match_weight,
+            "focus_slot_industry_focus": config.industry_match_weight,
+            "stage_combined": config.stage_match_weight,
+            "focus_slot_company_stage": config.stage_match_weight,
+            "focus_slot_geography": config.geography_weight,
+            # Default weight 1.0 for dimensions without specific config
+        }
+
+        # All dimension embedding types to compare (excluding requirements/offerings — those are in core_score)
+        dimension_types = [
+            "skills_combined", "industry_combined", "stage_combined",
+            "culture_combined", "traction_combined", "market_combined",
+            "team_combined", "funding_combined",
+            "focus_slot_geography", "focus_slot_timeline",
+            "focus_slot_engagement_style", "focus_slot_funding_need",
+            "focus_slot_company_stage", "focus_slot_industry_focus",
+            "focus_slot_dealbreakers",
+        ]
+
+        weighted_total = 0.0
+        weight_sum = 0.0
+
+        for dim in dimension_types:
+            user_emb = user_embeddings.get(dim)
+            candidate_emb = candidate_embeddings.get(dim)
+
+            if not user_emb or not candidate_emb:
+                continue
+
+            user_vec = user_emb.get('vector_data')
+            candidate_vec = candidate_emb.get('vector_data')
+
+            if not user_vec or not candidate_vec:
+                continue
+
+            # Cosine similarity
+            try:
+                similarity = self._cosine_similarity(user_vec, candidate_vec)
+            except Exception:
+                continue
+
+            weight = weight_mapping.get(dim, 1.0)
+            weighted_total += similarity * weight
+            weight_sum += weight
+
+        if weight_sum == 0:
+            return 0.5  # No dimensional data available — neutral fallback
+
+        return weighted_total / weight_sum
+
+    def _cosine_similarity(self, vec_a: list, vec_b: list) -> float:
+        """Calculate cosine similarity between two vectors."""
+        if len(vec_a) != len(vec_b):
+            return 0.0
+
+        dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
+
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+
+        return dot_product / (norm_a * norm_b)
+
     def _calculate_final_score(
         self,
         combined_score: float,
         intent_quality: float,
         activity_boost: float,
         temporal_boost: float,
-        config: IntentScoringConfig
+        config: IntentScoringConfig,
+        dimension_score: float = 0.5
     ) -> float:
-        """Combine all scoring factors into final score."""
-        final = combined_score * intent_quality * activity_boost * temporal_boost
+        """Combine all scoring factors into final score.
+
+        UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain.
+
+        Old formula: combined × intent × activity × temporal (each factor can only reduce)
+        New formula: core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10 (additive)
+
+        Weights:
+        - 35% Core: Bidirectional requirements ↔ offerings (the foundation)
+        - 40% Dimensions: Industry, geography, stage, engagement, timeline, etc.
+        - 15% Intent: User type complementarity (helpful context, not dominant)
+        - 10% Signals: Activity + recency (tiebreakers, not determining factors)
+        """
+        # Normalize activity and temporal to 0-1 range for additive formula
+        # Activity: clamp to 0.7-1.0 (inactive users shouldn't be heavily penalized)
+        activity_score = max(0.7, min(1.0, activity_boost))
+
+        # Temporal: clamp to 0.8-1.0 (gentle decay)
+        temporal_score = max(0.8, min(1.0, temporal_boost))
+
+        # Combined signal score
+        signal_score = (activity_score * 0.6) + (temporal_score * 0.4)
+
+        # Additive weighted formula
+        final = (
+            combined_score   * 0.35 +    # Layer 1: Bidirectional core compatibility
+            dimension_score  * 0.40 +    # Layer 2: Dimensional alignment (NEW)
+            intent_quality   * 0.15 +    # Layer 3: Intent complementarity
+            signal_score     * 0.10      # Layer 4: Activity + recency
+        )
 
         # Clamp to 0-1 range
         return max(0.0, min(1.0, final))

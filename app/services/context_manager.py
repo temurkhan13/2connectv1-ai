@@ -466,6 +466,10 @@ class ContextManager:
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")
 
+            # DEBUG: Log types of each extracted slot to diagnose 'str' has no attribute 'value' crash
+            for _dk, _dv in llm_result.extracted_slots.items():
+                logger.info(f"[DEBUG] Slot '{_dk}': type={type(_dv).__name__}, hasValue={hasattr(_dv, 'value')}, repr={repr(_dv)[:100]}")
+
             # BUG-087 FIX: Calculate missing slots PROGRAMMATICALLY instead of trusting LLM
             # The LLM only sees current turn, not session requirements - can't know what's truly missing.
             from app.services.use_case_templates import get_onboarding_slots, get_template
@@ -588,7 +592,9 @@ class ContextManager:
             logger.info(f"LLM extraction complete: {len(extracted_names)} slots extracted, user_type_inference: {llm_result.user_type_inference}")
 
         except Exception as e:
-            logger.warning(f"LLM extraction failed, falling back to regex: {e}")
+            import traceback
+            logger.error(f"LLM extraction failed, falling back to regex: {e}")
+            logger.error(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
             # Fallback to regex-based extraction
             fallback_result = self._extract_slots_regex_fallback(context, content)
             # Cache fallback result too

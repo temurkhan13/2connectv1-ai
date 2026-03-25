@@ -468,7 +468,7 @@ class ContextManager:
 
             # BUG-087 FIX: Calculate missing slots PROGRAMMATICALLY instead of trusting LLM
             # The LLM only sees current turn, not session requirements - can't know what's truly missing.
-            from app.services.use_case_templates import get_onboarding_slots, resolve_objective
+            from app.services.use_case_templates import get_onboarding_slots, get_template
 
             # Determine objective from primary_goal (user's stated objective), NOT user_type
             # A founder could be looking for co-founder, fundraising, partnership, etc.
@@ -480,13 +480,9 @@ class ContextManager:
                 primary_goal_value = pg_slot.value if hasattr(pg_slot, 'value') else str(pg_slot)
 
             if primary_goal_value:
-                try:
-                    resolved = resolve_objective(str(primary_goal_value))
-                    objective = resolved.value if hasattr(resolved, 'value') else str(resolved)
-                except Exception:
-                    # Fallback to user_type mapping if resolve fails
-                    user_type = llm_result.user_type_inference or "unknown"
-                    objective = self._map_user_type_to_objective(user_type)
+                # get_template handles keyword matching (e.g. "Looking to Invest" → investing)
+                template = get_template(str(primary_goal_value))
+                objective = template.objective.value  # e.g. "investing", "fundraising", "cofounder"
             else:
                 # primary_goal not yet extracted — fall back to user_type inference
                 user_type = llm_result.user_type_inference or "unknown"

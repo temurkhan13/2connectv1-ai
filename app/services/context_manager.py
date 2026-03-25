@@ -505,9 +505,19 @@ class ContextManager:
             if not llm_result.is_off_topic:
                 try:
                     # ALWAYS call question generator - pass calculated missing slots, not LLM's opinion
+                    # Build extracted_slots dict safely — handle both LLMExtractedSlot objects and raw strings
+                    safe_extracted = {}
+                    for k, v in llm_result.extracted_slots.items():
+                        if hasattr(v, 'value') and hasattr(v, 'confidence'):
+                            safe_extracted[k] = {"value": v.value, "confidence": v.confidence}
+                        elif isinstance(v, dict):
+                            safe_extracted[k] = {"value": v.get("value", str(v)), "confidence": v.get("confidence", 0.8)}
+                        else:
+                            safe_extracted[k] = {"value": str(v), "confidence": 0.8}
+
                     follow_up_question = self.question_generator.generate_followup_question(
                         user_message=content,
-                        extracted_slots={k: {"value": v.value, "confidence": v.confidence} for k, v in llm_result.extracted_slots.items()},
+                        extracted_slots=safe_extracted,
                         all_filled_slots=already_filled,
                         missing_slots=actual_missing_slots if actual_missing_slots else ["engagement"],  # Fallback for engagement questions
                         user_type=user_type,

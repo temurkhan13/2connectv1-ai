@@ -162,11 +162,15 @@ class MatchSyncService:
             if target_id in seen_pairs:
                 continue
             seen_pairs.add(target_id)
+            # Include match score so backend displays actual AI-calculated scores
+            score = m.get('similarity_score', m.get('score', 0.5))
+            score_pct = round(score * 100) if score <= 1.0 else round(score)
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',  # Backend requires string, not null
                 'user_b_designation': '',
+                'match_score': score_pct,
             })
 
         # Add offerings matches (what user offers vs others' needs)
@@ -186,11 +190,15 @@ class MatchSyncService:
             if target_id in seen_pairs:
                 continue
             seen_pairs.add(target_id)
+            # Include match score so backend displays actual AI-calculated scores
+            score = m.get('similarity_score', m.get('score', 0.5))
+            score_pct = round(score * 100) if score <= 1.0 else round(score)
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',
                 'user_b_designation': '',
+                'match_score': score_pct,
             })
 
         if skipped_invalid > 0:

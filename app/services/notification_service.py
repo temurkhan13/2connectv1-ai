@@ -283,9 +283,15 @@ class NotificationService:
                     logger.warning(f"User profile not found for matched user {target_user_id}")
                 except Exception as e:
                     logger.warning(f"Error fetching designation for user {target_user_id}: {str(e)}")
+                # Include match score so backend displays actual AI-calculated scores
+                match_score = match.get('similarity_score', match.get('score', 0.5))
+                # Convert to percentage (0-100) for backend
+                score_pct = round(match_score * 100) if match_score <= 1.0 else round(match_score)
+
                 matches_payload.append({
                     "target_user_id": target_user_id,
                     "target_user_designation": designation,
+                    "match_score": score_pct,
                 })
 
             if skipped_count > 0:

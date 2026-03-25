@@ -479,13 +479,15 @@ class ContextManager:
                 pg_slot = llm_result.extracted_slots["primary_goal"]
                 primary_goal_value = pg_slot.value if hasattr(pg_slot, 'value') else str(pg_slot)
 
+            # Always set user_type from LLM inference (needed for question generator)
+            user_type = llm_result.user_type_inference or "unknown"
+
             if primary_goal_value:
                 # get_template handles keyword matching (e.g. "Looking to Invest" → investing)
                 template = get_template(str(primary_goal_value))
                 objective = template.objective.value  # e.g. "investing", "fundraising", "cofounder"
             else:
                 # primary_goal not yet extracted — fall back to user_type inference
-                user_type = llm_result.user_type_inference or "unknown"
                 objective = self._map_user_type_to_objective(user_type)
 
             # Get required slots for this objective

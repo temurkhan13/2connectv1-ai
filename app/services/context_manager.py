@@ -468,11 +468,29 @@ class ContextManager:
 
             # BUG-087 FIX: Calculate missing slots PROGRAMMATICALLY instead of trusting LLM
             # The LLM only sees current turn, not session requirements - can't know what's truly missing.
-            from app.services.use_case_templates import get_onboarding_slots
+            from app.services.use_case_templates import get_onboarding_slots, resolve_objective
 
-            # Determine objective from user_type inference
-            user_type = llm_result.user_type_inference or "unknown"
-            objective = self._map_user_type_to_objective(user_type)
+            # Determine objective from primary_goal (user's stated objective), NOT user_type
+            # A founder could be looking for co-founder, fundraising, partnership, etc.
+            # primary_goal is the actual stated intent; user_type is just their role.
+            primary_goal_value = already_filled.get("primary_goal", "")
+            # Also check if primary_goal was just extracted in this turn
+            if not primary_goal_value and "primary_goal" in llm_result.extracted_slots:
+                pg_slot = llm_result.extracted_slots["primary_goal"]
+                primary_goal_value = pg_slot.value if hasattr(pg_slot, 'value') else str(pg_slot)
+
+            if primary_goal_value:
+                try:
+                    resolved = resolve_objective(str(primary_goal_value))
+                    objective = resolved.value if hasattr(resolved, 'value') else str(resolved)
+                except Exception:
+                    # Fallback to user_type mapping if resolve fails
+                    user_type = llm_result.user_type_inference or "unknown"
+                    objective = self._map_user_type_to_objective(user_type)
+            else:
+                # primary_goal not yet extracted — fall back to user_type inference
+                user_type = llm_result.user_type_inference or "unknown"
+                objective = self._map_user_type_to_objective(user_type)
 
             # Get required slots for this objective
             required_slots = get_onboarding_slots(objective)

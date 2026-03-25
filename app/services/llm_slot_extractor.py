@@ -2467,12 +2467,13 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # =========================================================================
 
         # =========================================================================
-        # BUG-088 FIX: ENFORCE MAX 3 SLOTS PER TURN (CODE-LEVEL, NOT PROMPT)
+        # BUG-088 FIX: ENFORCE MAX 2 SLOTS PER TURN (CODE-LEVEL, NOT PROMPT)
         # =========================================================================
         # The LLM ignores prompt instructions to limit extraction. We MUST enforce
         # this in code to guarantee progressive disclosure and natural conversation.
+        # Reduced from 3 to 2 for more gradual onboarding and richer conversations.
         # =========================================================================
-        MAX_SLOTS_PER_TURN = 3
+        MAX_SLOTS_PER_TURN = 2
 
         if len(extracted_slots) > MAX_SLOTS_PER_TURN:
             # Determine objective from already_filled OR just-extracted primary_goal

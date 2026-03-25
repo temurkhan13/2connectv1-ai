@@ -1021,31 +1021,35 @@ class ProgressiveDisclosure:
         primary_goal = str(primary_goal_slot.value) if primary_goal_slot else None
         user_type = str(user_type_slot.value) if user_type_slot else None
 
-        # Calculate traditional slot progress (30% weight)
+        # Calculate slot progress (85% weight) — counts ALL slots: core + focus + optional
         if primary_goal:
-            # Use objective-based slot selection
+            # Use objective-based slot selection (returns core + role-specific + focus slots)
             objective_slots = self.schema.get_slots_for_objective(primary_goal, user_type)
-            # Only count required slots
-            total_required = len([s for s in objective_slots if s.required])
+            # Count ALL slots for this objective, not just required ones
+            # This gives accurate progress: core + focus + optional per use case
+            total_slots = len(objective_slots)
         else:
-            # Before primary_goal is known, just count core slots
-            total_required = len([s for s in self.schema.CORE_SLOTS if s.required])
+            # Before primary_goal is known, count all core slots
+            total_slots = len(self.schema.CORE_SLOTS)
 
-        # Count filled slots
+        # Count filled slots (only those relevant to this objective)
+        objective_slot_names = {s.name for s in (objective_slots if primary_goal else self.schema.CORE_SLOTS)}
         filled_slots = len([s for s in context.slots.values()
-                          if s.status.value in ["filled", "confirmed"]])
+                          if s.status.value in ["filled", "confirmed"]
+                          and s.name in objective_slot_names])
 
         slot_progress = 0.0
-        if total_required > 0:
-            slot_progress = min(100.0, (filled_slots / total_required) * 100)
+        if total_slots > 0:
+            slot_progress = min(100.0, (filled_slots / total_slots) * 100)
 
-        # Calculate multi-vector coverage (70% weight)
+        # Calculate multi-vector coverage (15% weight - secondary signal)
         mv_filled, mv_total, _ = self._check_multi_vector_coverage(context)
         mv_progress = (mv_filled / mv_total) * 100 if mv_total > 0 else 0.0
 
-        # Combined progress: 70% multi-vector + 30% traditional slots
-        # This ensures users can't reach 100% without multi-vector coverage
-        raw_progress = (mv_progress * 0.70) + (slot_progress * 0.30)
+        # Combined progress: 85% slot completion + 15% multi-vector coverage
+        # Slots are the primary driver — progress should reflect actual data collected,
+        # not just topic coverage. This prevents progress jumping to 90% with 2 answers.
+        raw_progress = (slot_progress * 0.85) + (mv_progress * 0.15)
 
         # Cap at 95% if multi-vector coverage is insufficient
         if mv_filled < MIN_MULTI_VECTOR_DIMENSIONS:

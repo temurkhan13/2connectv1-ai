@@ -1021,22 +1021,21 @@ class ProgressiveDisclosure:
         primary_goal = str(primary_goal_slot.value) if primary_goal_slot else None
         user_type = str(user_type_slot.value) if user_type_slot else None
 
-        # Calculate slot progress (85% weight) — counts ALL slots: core + focus + optional
+        # Calculate slot progress (85% weight) — driven by ALL slots (core + focus + optional)
+        # Once primary_goal is known, get_slots_for_objective returns the full set:
+        # core slots + role-specific slots + focus slots from use_case_templates
         if primary_goal:
-            # Use objective-based slot selection (returns core + role-specific + focus slots)
             objective_slots = self.schema.get_slots_for_objective(primary_goal, user_type)
-            # Count ALL slots for this objective, not just required ones
-            # This gives accurate progress: core + focus + optional per use case
-            total_slots = len(objective_slots)
+            all_slot_names = {s.name for s in objective_slots}
+            total_slots = len(all_slot_names)
+            filled_slots = len([name for name in all_slot_names
+                              if name in context.slots
+                              and context.slots[name].status.value in ["filled", "confirmed"]])
         else:
-            # Before primary_goal is known, count all core slots
+            # Before primary_goal is known, count core slots
             total_slots = len(self.schema.CORE_SLOTS)
-
-        # Count filled slots (only those relevant to this objective)
-        objective_slot_names = {s.name for s in (objective_slots if primary_goal else self.schema.CORE_SLOTS)}
-        filled_slots = len([s for s in context.slots.values()
-                          if s.status.value in ["filled", "confirmed"]
-                          and s.name in objective_slot_names])
+            filled_slots = len([s for s in context.slots.values()
+                              if s.status.value in ["filled", "confirmed"]])
 
         slot_progress = 0.0
         if total_slots > 0:

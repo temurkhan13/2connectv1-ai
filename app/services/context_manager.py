@@ -489,7 +489,9 @@ class ContextManager:
             if primary_goal_value:
                 # get_template handles keyword matching (e.g. "Looking to Invest" → investing)
                 template = get_template(str(primary_goal_value))
-                objective = template.objective.value  # e.g. "investing", "fundraising", "cofounder"
+                # template.objective may be ObjectiveType enum or string depending on Pydantic version
+                obj = template.objective
+                objective = obj.value if hasattr(obj, 'value') else str(obj)
             else:
                 # primary_goal not yet extracted — fall back to user_type inference
                 objective = self._map_user_type_to_objective(user_type)

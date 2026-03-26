@@ -612,7 +612,7 @@ class InlineMatchingService:
             try:
                 from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
                 adapter = SupabaseOnboardingAdapter()
-                slots = adapter.get_user_slots(user_id)
+                slots = adapter.get_user_slots_sync(user_id)
                 for s in slots:
                     slot_name = s.get("slot_name", s.get("name", ""))
                     if slot_name == "primary_goal":
@@ -677,7 +677,7 @@ class InlineMatchingService:
                 # 5a. Classify candidate intent (with primary_goal priority)
                 candidate_primary_goal = ""
                 try:
-                    c_slots = adapter.get_user_slots(candidate_id)
+                    c_slots = adapter.get_user_slots_sync(candidate_id)
                     for s in c_slots:
                         slot_name = s.get("slot_name", s.get("name", ""))
                         if slot_name == "primary_goal":

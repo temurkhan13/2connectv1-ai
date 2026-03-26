@@ -793,7 +793,7 @@ class InlineMatchingService:
                         "reverse_score": round(reverse_score_val, 4),
                         "activity_boost": round(activity_boost, 2),
                         "temporal_boost": round(temporal_boost, 2),
-                        "bidirectional_factor": round(bidirectional_factor, 2),
+                        "bidirectional_factor": round(core_score / dimension_score if dimension_score > 0 else 1.0, 2),
                         "explanation": self._generate_hybrid_explanation(
                             mv_match, user_intent, candidate_intent, intent_quality
                         )

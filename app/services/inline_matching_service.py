@@ -746,7 +746,7 @@ class InlineMatchingService:
 
                 # STEP 6: Calculate final hybrid score
                 # UPGRADED (Mar 2026): Additive weighted formula
-                # core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10
+                # core×0.35 + dimensions×0.30 + intent×0.25 + signals×0.10
                 #
                 # core_score = geometric mean of forward (req→off) and reverse (off→req)
                 # dimension_score = forward multi-vector score (base_score)
@@ -764,8 +764,8 @@ class InlineMatchingService:
 
                 final_score = (
                     core_score       * 0.35 +    # Bidirectional: geometric mean of forward & reverse
-                    dimension_score  * 0.40 +    # Dimensional alignment (forward multi-vector)
-                    intent_quality   * 0.15 +    # Intent complementarity
+                    dimension_score  * 0.30 +    # Dimensional alignment (forward multi-vector)
+                    intent_quality   * 0.25 +    # Intent complementarity (boosted from 0.15)
                     signal_score     * 0.10      # Activity + recency
                 )
 

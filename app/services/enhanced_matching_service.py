@@ -804,12 +804,12 @@ class EnhancedMatchingService:
         UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain.
 
         Old formula: combined × intent × activity × temporal (each factor can only reduce)
-        New formula: core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10 (additive)
+        New formula: core×0.35 + dimensions×0.30 + intent×0.25 + signals×0.10 (additive)
 
         Weights:
         - 35% Core: Bidirectional requirements ↔ offerings (the foundation)
-        - 40% Dimensions: Industry, geography, stage, engagement, timeline, etc.
-        - 15% Intent: User type complementarity (helpful context, not dominant)
+        - 30% Dimensions: Industry, geography, stage, engagement, timeline, etc.
+        - 25% Intent: User type complementarity (strong signal for match quality)
         - 10% Signals: Activity + recency (tiebreakers, not determining factors)
 
         Returns: (final_score, dimension_score, signal_score) tuple for analysis storage
@@ -827,8 +827,8 @@ class EnhancedMatchingService:
         # Additive weighted formula
         final = (
             combined_score   * 0.35 +    # Layer 1: Bidirectional core compatibility
-            dimension_score  * 0.40 +    # Layer 2: Dimensional alignment (NEW)
-            intent_quality   * 0.15 +    # Layer 3: Intent complementarity
+            dimension_score  * 0.30 +    # Layer 2: Dimensional alignment
+            intent_quality   * 0.25 +    # Layer 3: Intent complementarity (boosted from 0.15)
             signal_score     * 0.10      # Layer 4: Activity + recency
         )
 

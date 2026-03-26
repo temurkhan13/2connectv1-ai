@@ -91,7 +91,10 @@ class IntentClassifier:
     # Direct mapping from primary_goal slot values to MatchIntent
     PRIMARY_GOAL_MAP = {
         "hire talent": MatchIntent.TALENT_SEEKING,
+        "hire": MatchIntent.TALENT_SEEKING,
         "hiring": MatchIntent.TALENT_SEEKING,
+        "looking to hire": MatchIntent.TALENT_SEEKING,
+        "build team": MatchIntent.TALENT_SEEKING,
         "recruit": MatchIntent.RECRUITER,
         "find co-founder": MatchIntent.COFOUNDER,
         "find cofounder": MatchIntent.COFOUNDER,
@@ -105,7 +108,17 @@ class IntentClassifier:
         "find mentor": MatchIntent.MENTEE_MENTOR,
         "mentorship": MatchIntent.MENTOR_MENTEE,
         "find job": MatchIntent.OPPORTUNITY_SEEKING,
+        "find new job": MatchIntent.OPPORTUNITY_SEEKING,
+        "find a job": MatchIntent.OPPORTUNITY_SEEKING,
+        "looking for a job": MatchIntent.OPPORTUNITY_SEEKING,
+        "looking for job": MatchIntent.OPPORTUNITY_SEEKING,
         "job search": MatchIntent.OPPORTUNITY_SEEKING,
+        "seeking job": MatchIntent.OPPORTUNITY_SEEKING,
+        "seeking employment": MatchIntent.OPPORTUNITY_SEEKING,
+        "find new role": MatchIntent.OPPORTUNITY_SEEKING,
+        "find role": MatchIntent.OPPORTUNITY_SEEKING,
+        "career change": MatchIntent.OPPORTUNITY_SEEKING,
+        "new opportunity": MatchIntent.OPPORTUNITY_SEEKING,
         "offer services": MatchIntent.SERVICE_PROVIDER,
         "general networking": MatchIntent.GENERAL,
     }

@@ -690,6 +690,14 @@ class InlineMatchingService:
                 except Exception:
                     candidate_persona = None
 
+                # 5-pre. Skip candidates with incomplete profiles
+                # Users without persona or with no meaningful data produce false matches
+                if not candidate_persona:
+                    continue
+                persona_name = getattr(candidate_persona, 'name', None) or getattr(candidate_persona, 'archetype', None)
+                if not persona_name:
+                    continue
+
                 # 5a. Classify candidate intent (with primary_goal priority)
                 candidate_primary_goal = ""
                 try:
@@ -887,6 +895,18 @@ class InlineMatchingService:
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.75,
             (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.7,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.7,
+
+            # PARTNERSHIP cross-pairs (partnership seekers benefit from these)
+            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER): 0.80,  # Investors often ARE strategic partners
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP): 0.80,
+            (MatchIntent.PARTNERSHIP, MatchIntent.FOUNDER_INVESTOR): 0.80,  # Founders raising also seek partners
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.80,
+            (MatchIntent.PARTNERSHIP, MatchIntent.SERVICE_PROVIDER): 0.80,  # Natural B2B partnership target
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP): 0.80,
+            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.75,  # Mentors can be advisory partners
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.75,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.75,  # Hiring companies may want B2B partners too
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.75,
 
             # NETWORKING pairs
             (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.8,

@@ -324,64 +324,33 @@ def generate_embeddings_task(self, user_id: str):
 
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")
-            
-            # NEW: Find and store matches after embeddings are ready
+
+            # Find and store matches using HYBRID service (stores component scores)
+            # Previously used basic matching_service which doesn't store components
             logger.info(f"Finding and storing matches for user {user_id}")
-            
+
             try:
-                # Find and store matches
-                matches_result = matching_service.find_and_store_user_matches(user_id)
+                from app.services.inline_matching_service import inline_matching_service
+                hybrid_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id, threshold=0.5)
+
+                # Convert hybrid result to match the format expected below
+                matches_result = {
+                    'success': hybrid_result.get('success', False),
+                    'total_matches': hybrid_result.get('new_user_matches', hybrid_result.get('total_matches', 0)),
+                    'stored': True,
+                    'requirements_matches': hybrid_result.get('requirements_matches', []),
+                    'offerings_matches': hybrid_result.get('offerings_matches', []),
+                }
+                logger.info(f"Hybrid matching complete: {matches_result['total_matches']} matches with component scores")
                 
                 if matches_result['success']:
-                    if matches_result.get('stored'):
-                        logger.info(f"Successfully found and stored {matches_result['total_matches']} matches for user {user_id}")
-                    else:
-                        logger.info(f"Found {matches_result['total_matches']} matches for user {user_id} but storage failed")
+                    logger.info(f"Successfully found and stored {matches_result['total_matches']} matches for user {user_id}")
+                    # Note: Reciprocal updates and backend sync already handled by
+                    # calculate_and_sync_matches_bidirectional — no need to repeat
                     
-                    # Update OLD users' stored matches with this NEW user
-                    # This ensures OLD users will be notified by scheduled worker
-                    logger.info(f"Updating reciprocal matches for OLD users (requirements only)")
-                    
-                    # Only pass requirements_matches for reciprocal update
-                    requirements_only = {
-                        'requirements_matches': matches_result.get('requirements_matches', []),
-                        'offerings_matches': []  # Don't update offerings
-                    }
-                    
-                    match_pairs = matching_service.update_reciprocal_matches(
-                        source_user_id=user_id,
-                        source_matches=requirements_only
-                    )
-                    logger.info(f"Updated stored matches for {len(match_pairs)} OLD users")
-                    
-                    # Send notification to THIS user about THEIR matches (requirements only)
-                    # Format: user_id + array of matches
-                    # Endpoint: /api/v1/webhooks/user-matches-ready
-                    notification_service = NotificationService()
-                    
-                    if notification_service.is_configured():
-                        # Use the current task ID as batch_id
-                        batch_id = self.request.id if hasattr(self, 'request') and self.request else str(uuid.uuid4())
-                        
-                        notify_threshold = float(os.getenv("SIMILARITY_THRESHOLD", 0.7))
-                        requirements_matches = [
-                            m for m in matches_result.get('requirements_matches', [])
-                            if m.get('similarity_score', 0.0) >= notify_threshold
-                        ]
-                        
-                        # Send notification using user-matches-ready endpoint
-                        notification_result = notification_service.send_matches_ready_notification(
-                            user_id=user_id,
-                            batch_id=batch_id,
-                            matches=requirements_matches  # Array of matched users
-                        )
-                        
-                        if notification_result.get("success"):
-                            logger.info(f"Successfully sent matches notification for user {user_id} with {len(requirements_matches)} matches")
-                        else:
-                            logger.error(f"Failed to send matches notification for user {user_id}: {notification_result.get('message')}")
-                    else:
-                        logger.warning(f"Backend notification not configured, skipping matches notification for user {user_id}")
+                    # Notification already handled by calculate_and_sync_matches_bidirectional
+                    # which sends matches_ready event via Redis + syncs to backend
+                    logger.info(f"Notifications handled by hybrid matching service for user {user_id}")
                 else:
                     logger.warning(f"No matches found for user {user_id}")
                     

@@ -744,10 +744,15 @@ class InlineMatchingService:
                             {"dimension": ds.dimension, "score": round(ds.weighted_score, 4)}
                             for ds in mv_match.dimension_scores
                         ],
-                        # Enhanced components
+                        # Formula component scores (for analysis)
+                        "core_score": round(core_score, 4),
+                        "dimension_score": round(base_score, 4),  # base_score IS the dimensional score
+                        "signal_score": round(signal_score, 4),
                         "intent_quality": round(intent_quality, 2),
                         "user_intent": user_intent.value,
                         "candidate_intent": candidate_intent.value,
+                        "forward_score": round(mv_match.forward_score, 4) if hasattr(mv_match, 'forward_score') else round(base_score, 4),
+                        "reverse_score": round(mv_match.reverse_score, 4) if hasattr(mv_match, 'reverse_score') else round(base_score, 4),
                         "activity_boost": round(activity_boost, 2),
                         "temporal_boost": round(temporal_boost, 2),
                         "bidirectional_factor": round(bidirectional_factor, 2),

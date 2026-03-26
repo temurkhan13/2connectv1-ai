@@ -168,11 +168,24 @@ class MultiVectorMatcher:
         """
         results = {}
 
+        # Get the directional context text to differentiate req vs off embeddings
+        req_text = persona_data.get("requirements", "")
+        off_text = persona_data.get("offerings", "")
+
         for dim_config in self.config.dimensions:
             dimension = dim_config.dimension
-            text = self.extract_dimension_text(persona_data, dimension)
+            dim_text = self.extract_dimension_text(persona_data, dimension)
 
-            if text:
+            if dim_text:
+                # Create direction-aware text so embeddings capture what user
+                # NEEDS (requirements) vs what user OFFERS (offerings)
+                if direction == "requirements":
+                    # Embed: "Looking for [dimension] in context of [requirements]"
+                    text = f"Looking for: {dim_text}. Needs: {req_text[:200]}" if req_text else f"Looking for: {dim_text}"
+                else:
+                    # Embed: "Offers [dimension] in context of [offerings]"
+                    text = f"Offers: {dim_text}. Brings: {off_text[:200]}" if off_text else f"Provides: {dim_text}"
+
                 # Generate embedding for this dimension
                 embedding = self.embedding_service.generate_embedding(text)
 

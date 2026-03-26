@@ -437,6 +437,122 @@ class PostgreSQLAdapter:
             if conn:
                 conn.close()
     
+    def find_multi_vector_matches_reverse(self,
+                                        user_id: str,
+                                        dimension_weights: Dict[str, float],
+                                        limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        Find reverse matches: viewer's OFFERINGS vs candidates' REQUIREMENTS.
+
+        This is the complement to find_multi_vector_matches which does
+        viewer's REQUIREMENTS vs candidates' OFFERINGS.
+
+        Together they enable true bidirectional scoring:
+        - Forward: What I need vs what they offer
+        - Reverse: What I offer vs what they need
+        """
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+            # Fetch Viewer's OFFERINGS embeddings (reverse of forward query)
+            cursor.execute("""
+                SELECT embedding_type, vector_data
+                FROM user_embeddings
+                WHERE user_id = %s AND embedding_type LIKE 'offerings_%%'
+            """, (user_id,))
+
+            viewer_rows = cursor.fetchall()
+            if not viewer_rows:
+                return []
+
+            viewer_vectors = {}
+            for row in viewer_rows:
+                dim = row['embedding_type'].replace('offerings_', '')
+                vec_data = row['vector_data']
+                if hasattr(vec_data, 'tolist'):
+                    vec_list = vec_data.tolist()
+                else:
+                    vec_list = [float(v) for v in vec_data]
+                viewer_vectors[dim] = str(vec_list)
+
+            active_dimensions = []
+            for dim, weight in dimension_weights.items():
+                if dim in viewer_vectors:
+                    active_dimensions.append(dim)
+
+            if not active_dimensions:
+                return []
+
+            query_parts = []
+            query_params = []
+            type_filters = []
+
+            for dim in active_dimensions:
+                # Compare viewer's offerings against candidates' REQUIREMENTS
+                emb_type = f"requirements_{dim}"
+                vec_str = viewer_vectors[dim]
+                weight = dimension_weights[dim]
+
+                part = f"WHEN embedding_type = %s THEN (1 - (vector_data <=> %s)) * %s"
+                query_parts.append(part)
+                query_params.extend([emb_type, vec_str, weight])
+                type_filters.append(emb_type)
+
+            if not query_parts:
+                return []
+
+            full_query = f"""
+                SELECT
+                    user_id,
+                    SUM(match_score) as total_score,
+                    json_object_agg(dimension, raw_similarity) as dimension_scores
+                FROM (
+                    SELECT
+                        user_id,
+                        REPLACE(embedding_type, 'requirements_', '') as dimension,
+                        CASE
+                            {' '.join(query_parts)}
+                            ELSE 0
+                        END as match_score,
+                        CASE
+                            {' '.join([p.replace(f" * %s", "") for p in query_parts])}
+                            ELSE 0
+                        END as raw_similarity
+                    FROM user_embeddings
+                    WHERE user_id != %s
+                    AND embedding_type = ANY(%s)
+                ) calculated
+                GROUP BY user_id
+                ORDER BY total_score DESC
+                LIMIT %s
+            """
+
+            final_params = []
+            final_params.extend(query_params)
+            for dim in active_dimensions:
+                emb_type = f"requirements_{dim}"
+                vec_str = viewer_vectors[dim]
+                final_params.extend([emb_type, vec_str])
+            final_params.append(user_id)
+            final_params.append(type_filters)
+            final_params.append(limit)
+
+            cursor.execute(full_query, final_params)
+            results = cursor.fetchall()
+            return [dict(row) for row in results]
+
+        except Exception as e:
+            logger.error(f"Error finding reverse multi-vector matches in DB: {str(e)}")
+            return []
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+
     def health_check(self) -> bool:
         """Check if PostgreSQL is accessible."""
         conn = None

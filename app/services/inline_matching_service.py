@@ -585,6 +585,7 @@ class InlineMatchingService:
             logger.info(f"[INLINE MATCH] Using HYBRID matching for user {user_id}")
 
             # STEP 1: Get multi-vector base scores (6 dimensions)
+            # Forward: my requirements → their offerings
             matcher = MultiVectorMatcher()
             multi_vector_matches = matcher.find_multi_vector_matches(
                 user_id=user_id,
@@ -596,6 +597,22 @@ class InlineMatchingService:
                 # Multi-vector embeddings don't exist yet, fall back to enhanced matching
                 logger.warning(f"[INLINE MATCH] No multi-vector embeddings for {user_id}, falling back to enhanced matching")
                 return self._calculate_enhanced_matches(user_id, threshold)
+
+            # STEP 1b: Get REVERSE scores (my offerings → their requirements)
+            from app.adapters.postgresql import postgresql_adapter
+            reverse_scores = {}
+            try:
+                weights_map = {d.dimension: d.weight for d in matcher.config.dimensions}
+                reverse_results = postgresql_adapter.find_multi_vector_matches_reverse(
+                    user_id=user_id,
+                    dimension_weights=weights_map,
+                    limit=self.max_matches * 2
+                )
+                for r in reverse_results:
+                    reverse_scores[r['user_id']] = float(r['total_score'])
+                logger.info(f"[INLINE MATCH] Got {len(reverse_scores)} reverse scores for {user_id}")
+            except Exception as e:
+                logger.warning(f"[INLINE MATCH] Reverse scoring failed for {user_id}: {e}")
 
             # STEP 2: Get user's persona for enhanced features
             try:
@@ -718,24 +735,8 @@ class InlineMatchingService:
                             dealbreaker_count += 1
                             continue
 
-                # 5e. Calculate bidirectional adjustment
-                # Use enhanced service's bidirectional calculation
-                bidirectional_factor = 1.0
-                try:
-                    bidirectional_matches = enhanced_matching_service.find_bidirectional_matches(
-                        user_id=user_id,
-                        threshold=0.3,  # Low threshold, we're filtering ourselves
-                        limit=1,
-                        candidate_ids=[candidate_id],
-                        include_explanations=False
-                    )
-                    if bidirectional_matches:
-                        bm = bidirectional_matches[0]
-                        # Geometric mean of forward and reverse
-                        bidirectional_factor = math.sqrt(bm.forward_score * bm.reverse_score) / base_score
-                        bidirectional_factor = max(0.5, min(1.5, bidirectional_factor))  # Cap adjustment
-                except Exception:
-                    pass  # Use default factor
+                # 5e. Bidirectional scoring now handled via reverse_scores dict (Step 1b)
+                # No need for per-candidate enhanced_matching_service call
 
                 # 5f. Calculate activity boost
                 activity_boost = enhanced_matching_service._calculate_activity_boost(candidate_id)
@@ -744,10 +745,14 @@ class InlineMatchingService:
                 temporal_boost = enhanced_matching_service._calculate_temporal_boost(candidate_id)
 
                 # STEP 6: Calculate final hybrid score
-                # UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain
-                # Old: base × intent × bidirectional × activity × temporal
-                # New: core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10
-                core_score = base_score * bidirectional_factor
+                # UPGRADED (Mar 2026): Additive weighted formula
+                # core×0.35 + dimensions×0.40 + intent×0.15 + signals×0.10
+                #
+                # core_score = geometric mean of forward (req→off) and reverse (off→req)
+                # dimension_score = forward multi-vector score (base_score)
+                forward_score = base_score
+                reverse_score_val = reverse_scores.get(candidate_id, base_score * 0.8)  # Fallback: 80% of forward
+                core_score = math.sqrt(forward_score * reverse_score_val)
                 core_score = max(0.0, min(1.0, core_score))
 
                 # Normalize activity/temporal to 0-1 range
@@ -755,11 +760,13 @@ class InlineMatchingService:
                 temporal_normalized = max(0.8, min(1.0, temporal_boost))
                 signal_score = (activity_normalized * 0.6) + (temporal_normalized * 0.4)
 
+                dimension_score = base_score  # Forward multi-vector (req→off) as dimensional alignment
+
                 final_score = (
-                    core_score      * 0.35 +    # Bidirectional core compatibility
-                    base_score      * 0.40 +    # Multi-vector dimensional score (already includes dimensions)
-                    intent_quality  * 0.15 +    # Intent complementarity
-                    signal_score    * 0.10      # Activity + recency
+                    core_score       * 0.35 +    # Bidirectional: geometric mean of forward & reverse
+                    dimension_score  * 0.40 +    # Dimensional alignment (forward multi-vector)
+                    intent_quality   * 0.15 +    # Intent complementarity
+                    signal_score     * 0.10      # Activity + recency
                 )
 
                 # Only include if above threshold
@@ -777,13 +784,13 @@ class InlineMatchingService:
                         ],
                         # Formula component scores (for analysis)
                         "core_score": round(core_score, 4),
-                        "dimension_score": round(base_score, 4),  # base_score IS the dimensional score
+                        "dimension_score": round(dimension_score, 4),
                         "signal_score": round(signal_score, 4),
                         "intent_quality": round(intent_quality, 2),
                         "user_intent": user_intent.value,
                         "candidate_intent": candidate_intent.value,
-                        "forward_score": round(mv_match.forward_score, 4) if hasattr(mv_match, 'forward_score') else round(base_score, 4),
-                        "reverse_score": round(mv_match.reverse_score, 4) if hasattr(mv_match, 'reverse_score') else round(base_score, 4),
+                        "forward_score": round(forward_score, 4),
+                        "reverse_score": round(reverse_score_val, 4),
                         "activity_boost": round(activity_boost, 2),
                         "temporal_boost": round(temporal_boost, 2),
                         "bidirectional_factor": round(bidirectional_factor, 2),

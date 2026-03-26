@@ -117,7 +117,7 @@ Generate the following outputs:
    - name: Concise, creative title reflecting their ACTUAL role (e.g., "The Growth-Focused Founder" for founders, NOT "The Strategic Investor")
    - archetype: Descriptive classification matching their role
    - designation: Explicit job title from input; if missing, "Not specified"
-   - experience: Description from input; if missing, "Not specified"
+   - experience: EXACT years/description from input ONLY. If user said "7 years", write "7 years". If not explicitly stated, write "Not specified". NEVER inflate or round up.
    - focus: Key areas separated by " | "
    - profile_essence: 3–4 sentences, grounded in input, accurately reflecting their role
    - strategy: 3–4 bullet points describing their approach (business strategy for founders, investment thesis for investors)
@@ -136,7 +136,7 @@ Generate the following outputs:
    CRITICAL DISTINCTION:
    - Extract from their BACKGROUND, EXPERIENCE, SKILLS, ACHIEVEMENTS, and NETWORK
    - These come from their resume/CV and professional history
-   - Examples: "20 years in healthcare", "connections to VCs", "built companies that raised $XM", "expertise in X"
+   - Examples: "connections to VCs", "built companies that raised $XM", "expertise in X", "experience in payment systems"
    - These are capabilities they ALREADY HAVE - value they bring to others
    - RULE: If it describes what they WANT or NEED, it's requirements, NOT offerings
 

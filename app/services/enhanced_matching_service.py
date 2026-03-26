@@ -219,7 +219,7 @@ class BidirectionalMatch:
     user_id: str
     forward_score: float          # My requirements → Their offerings
     reverse_score: float          # My offerings → Their requirements
-    combined_score: float         # Geometric mean
+    combined_score: float         # Geometric mean (core_score input)
     intent_match_quality: float   # How well intents align (0-1)
     activity_boost: float         # Boost from user activity
     temporal_boost: float         # Boost from recency
@@ -227,6 +227,9 @@ class BidirectionalMatch:
     match_reasons: List[str]      # Human-readable reasons
     potential_gaps: List[str]     # Potential issues
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Formula component scores (added for analysis)
+    dimension_score: float = 0.5  # Layer 2: Dimensional alignment
+    signal_score: float = 0.86    # Layer 4: Activity + recency combined
 
 
 class EnhancedMatchingService:
@@ -481,7 +484,7 @@ class EnhancedMatchingService:
                 temporal_boost = self._calculate_temporal_boost(match_profile if match_persona else None)
 
                 # Calculate final score with all factors (additive weighted)
-                final_score = self._calculate_final_score(
+                final_score, dim_score_stored, signal_score_stored = self._calculate_final_score(
                     combined_score=combined_score,
                     intent_quality=intent_quality,
                     activity_boost=activity_boost,
@@ -519,7 +522,9 @@ class EnhancedMatchingService:
                         "user_intent": user_intent.value,
                         "match_intent": match_intent.value,
                         "scoring_config": scoring_config.__class__.__name__
-                    }
+                    },
+                    dimension_score=dim_score_stored,
+                    signal_score=signal_score_stored
                 ))
 
             # Log filter results
@@ -759,7 +764,7 @@ class EnhancedMatchingService:
         temporal_boost: float,
         config: IntentScoringConfig,
         dimension_score: float = 0.5
-    ) -> float:
+    ) -> tuple:
         """Combine all scoring factors into final score.
 
         UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain.
@@ -772,6 +777,8 @@ class EnhancedMatchingService:
         - 40% Dimensions: Industry, geography, stage, engagement, timeline, etc.
         - 15% Intent: User type complementarity (helpful context, not dominant)
         - 10% Signals: Activity + recency (tiebreakers, not determining factors)
+
+        Returns: (final_score, dimension_score, signal_score) tuple for analysis storage
         """
         # Normalize activity and temporal to 0-1 range for additive formula
         # Activity: clamp to 0.7-1.0 (inactive users shouldn't be heavily penalized)
@@ -792,7 +799,7 @@ class EnhancedMatchingService:
         )
 
         # Clamp to 0-1 range
-        return max(0.0, min(1.0, final))
+        return max(0.0, min(1.0, final)), dimension_score, signal_score
 
     def _generate_match_explanation(
         self,

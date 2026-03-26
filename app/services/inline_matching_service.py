@@ -398,9 +398,14 @@ class InlineMatchingService:
                     "match_type": "enhanced_bidirectional",
                     "forward_score": m.forward_score,
                     "reverse_score": m.reverse_score,
+                    "combined_score": m.combined_score,  # Core bidirectional (geometric mean)
                     "intent_quality": m.intent_match_quality,
+                    "dimension_score": m.dimension_score,  # Layer 2: dimensional alignment
+                    "signal_score": m.signal_score,  # Layer 4: activity + recency
                     "activity_boost": m.activity_boost,
                     "temporal_boost": m.temporal_boost,
+                    "user_intent": m.metadata.get("user_intent", "unknown"),
+                    "match_intent": m.metadata.get("match_intent", "unknown"),
                     "explanation": m.match_reasons[0] if m.match_reasons else "Strong bidirectional match"
                 }
 

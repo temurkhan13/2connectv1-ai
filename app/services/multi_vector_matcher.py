@@ -50,12 +50,14 @@ class MultiVectorConfig:
         """Load configuration from environment variables."""
         return cls(
             dimensions=[
-                DimensionWeight("primary_goal", float(os.getenv("MATCH_WEIGHT_PRIMARY_GOAL", "0.20")), required=True),
-                DimensionWeight("industry", float(os.getenv("MATCH_WEIGHT_INDUSTRY", "0.25")), required=False),
+                # Weights tuned 2026-03-26: Increased primary_goal and industry (most important for match quality)
+                # Decreased engagement_style and dealbreakers (context, not drivers)
+                DimensionWeight("primary_goal", float(os.getenv("MATCH_WEIGHT_PRIMARY_GOAL", "0.25")), required=True),
+                DimensionWeight("industry", float(os.getenv("MATCH_WEIGHT_INDUSTRY", "0.30")), required=False),
                 DimensionWeight("stage", float(os.getenv("MATCH_WEIGHT_STAGE", "0.20")), required=False),
                 DimensionWeight("geography", float(os.getenv("MATCH_WEIGHT_GEOGRAPHY", "0.15")), required=False),
-                DimensionWeight("engagement_style", float(os.getenv("MATCH_WEIGHT_ENGAGEMENT", "0.10")), required=False),
-                DimensionWeight("dealbreakers", float(os.getenv("MATCH_WEIGHT_DEALBREAKERS", "0.10")), required=False),
+                DimensionWeight("engagement_style", float(os.getenv("MATCH_WEIGHT_ENGAGEMENT", "0.05")), required=False),
+                DimensionWeight("dealbreakers", float(os.getenv("MATCH_WEIGHT_DEALBREAKERS", "0.05")), required=False),
             ]
         )
 

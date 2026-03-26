@@ -895,6 +895,24 @@ class InlineMatchingService:
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
             (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
 
+            # OPPORTUNITY_SEEKING cross-pairs (job seekers benefit from these connections)
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.85,  # Investors can intro to portfolio companies hiring
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.85,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.80,  # Mentors help with career guidance
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.80,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.80,  # Founders may be hiring too
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.80,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.PARTNERSHIP): 0.75,  # Partnership seekers may have team needs
+            (MatchIntent.PARTNERSHIP, MatchIntent.OPPORTUNITY_SEEKING): 0.75,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.85,  # Co-founder seekers need talent
+            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.85,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.75,  # Service providers may have openings
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.OPPORTUNITY_SEEKING): 0.75,
+
+            # FOUNDER cross-pairs with talent
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.80,  # Founders raising may also be hiring
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.80,
+
             # Self-referral pairs
             (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,

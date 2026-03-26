@@ -613,11 +613,10 @@ class InlineMatchingService:
                 from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
                 adapter = SupabaseOnboardingAdapter()
                 slots = adapter.get_user_slots_sync(user_id)
-                for s in slots:
-                    slot_name = s.get("slot_name", s.get("name", ""))
-                    if slot_name == "primary_goal":
-                        user_primary_goal = s.get("slot_value", s.get("value", ""))
-                        break
+                # get_user_slots_sync returns dict: {slot_name: {value, confidence, status}}
+                if isinstance(slots, dict) and "primary_goal" in slots:
+                    pg = slots["primary_goal"]
+                    user_primary_goal = pg.get("value", "") if isinstance(pg, dict) else str(pg)
             except Exception as e:
                 logger.warning(f"[INLINE MATCH] Could not fetch primary_goal for {user_id}: {e}")
 
@@ -678,11 +677,9 @@ class InlineMatchingService:
                 candidate_primary_goal = ""
                 try:
                     c_slots = adapter.get_user_slots_sync(candidate_id)
-                    for s in c_slots:
-                        slot_name = s.get("slot_name", s.get("name", ""))
-                        if slot_name == "primary_goal":
-                            candidate_primary_goal = s.get("slot_value", s.get("value", ""))
-                            break
+                    if isinstance(c_slots, dict) and "primary_goal" in c_slots:
+                        cpg = c_slots["primary_goal"]
+                        candidate_primary_goal = cpg.get("value", "") if isinstance(cpg, dict) else str(cpg)
                 except Exception:
                     pass
 

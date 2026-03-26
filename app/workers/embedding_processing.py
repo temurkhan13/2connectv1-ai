@@ -283,6 +283,36 @@ def generate_embeddings_task(self, user_id: str):
                 # Don't fail the task if multi-vector fails - basic embeddings are still good
                 logger.warning(f"Multi-vector embedding generation failed for user {user_id}: {mv_error}")
 
+            # Generate DIRECTIONAL multi-vector embeddings (requirements_X and offerings_X)
+            # These are used by the hybrid matcher for bidirectional scoring
+            try:
+                from app.services.multi_vector_matcher import multi_vector_matcher
+                from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
+                adapter = SupabaseOnboardingAdapter()
+                slots = adapter.get_user_slots_sync(user_id)
+
+                persona_data = {
+                    "primary_goal": slots.get("primary_goal", {}).get("value", "") if isinstance(slots.get("primary_goal"), dict) else str(slots.get("primary_goal", "")),
+                    "industry": slots.get("industry_focus", {}).get("value", "") if isinstance(slots.get("industry_focus"), dict) else str(slots.get("industry_focus", "")),
+                    "stage": slots.get("company_stage", {}).get("value", "") if isinstance(slots.get("company_stage"), dict) else str(slots.get("company_stage", "")),
+                    "geography": slots.get("geography", {}).get("value", "") if isinstance(slots.get("geography"), dict) else str(slots.get("geography", "")),
+                    "engagement_style": slots.get("engagement_style", {}).get("value", "") if isinstance(slots.get("engagement_style"), dict) else str(slots.get("engagement_style", "")),
+                    "dealbreakers": slots.get("dealbreakers", {}).get("value", "") if isinstance(slots.get("dealbreakers"), dict) else str(slots.get("dealbreakers", "")),
+                    "requirements": requirements or "",
+                    "offerings": offerings or "",
+                }
+
+                req_results = multi_vector_matcher.store_multi_vector_embeddings(
+                    user_id=user_id, persona_data=persona_data, direction="requirements"
+                )
+                off_results = multi_vector_matcher.store_multi_vector_embeddings(
+                    user_id=user_id, persona_data=persona_data, direction="offerings"
+                )
+                dir_count = sum(1 for v in {**req_results, **off_results}.values() if v)
+                logger.info(f"Generated {dir_count} directional multi-vector embeddings for user {user_id}")
+            except Exception as dir_error:
+                logger.warning(f"Directional multi-vector embedding generation failed for user {user_id}: {dir_error}")
+
             # Generate focus slot embeddings (direct embeddings from extracted slot values)
             try:
                 focus_slot_count = _generate_focus_slot_embeddings(user_id, objective)

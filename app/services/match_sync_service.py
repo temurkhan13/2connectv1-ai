@@ -171,16 +171,6 @@ class MatchSyncService:
                 'user_a_designation': '',  # Backend requires string, not null
                 'user_b_designation': '',
                 'match_score': score_pct,
-                'score_components': {
-                    'core_score': round(m.get('combined_score', 0), 4),
-                    'dimension_score': round(m.get('dimension_score', 0.5), 4),
-                    'intent_quality': round(m.get('intent_quality', 0), 4),
-                    'signal_score': round(m.get('signal_score', 0.86), 4),
-                    'forward_score': round(m.get('forward_score', 0), 4),
-                    'reverse_score': round(m.get('reverse_score', 0), 4),
-                    'user_intent': m.get('user_intent', 'unknown'),
-                    'match_intent': m.get('match_intent', 'unknown'),
-                },
             })
 
         # Add offerings matches (what user offers vs others' needs)
@@ -209,16 +199,6 @@ class MatchSyncService:
                 'user_a_designation': '',
                 'user_b_designation': '',
                 'match_score': score_pct,
-                'score_components': {
-                    'core_score': round(m.get('combined_score', 0), 4),
-                    'dimension_score': round(m.get('dimension_score', 0.5), 4),
-                    'intent_quality': round(m.get('intent_quality', 0), 4),
-                    'signal_score': round(m.get('signal_score', 0.86), 4),
-                    'forward_score': round(m.get('forward_score', 0), 4),
-                    'reverse_score': round(m.get('reverse_score', 0), 4),
-                    'user_intent': m.get('user_intent', 'unknown'),
-                    'match_intent': m.get('match_intent', 'unknown'),
-                },
             })
 
         if skipped_invalid > 0:

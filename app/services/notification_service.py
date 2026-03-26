@@ -292,17 +292,6 @@ class NotificationService:
                     "target_user_id": target_user_id,
                     "target_user_designation": designation,
                     "match_score": score_pct,
-                    # Formula component scores for analysis
-                    "score_components": {
-                        "core_score": round(match.get('combined_score', 0), 4),
-                        "dimension_score": round(match.get('dimension_score', 0.5), 4),
-                        "intent_quality": round(match.get('intent_quality', 0), 4),
-                        "signal_score": round(match.get('signal_score', 0.86), 4),
-                        "forward_score": round(match.get('forward_score', 0), 4),
-                        "reverse_score": round(match.get('reverse_score', 0), 4),
-                        "user_intent": match.get('user_intent', 'unknown'),
-                        "match_intent": match.get('match_intent', 'unknown'),
-                    },
                 })
 
             if skipped_count > 0:

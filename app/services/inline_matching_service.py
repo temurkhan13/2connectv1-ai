@@ -605,10 +605,25 @@ class InlineMatchingService:
                 logger.warning(f"[INLINE MATCH] Could not load persona for {user_id}: {e}")
                 user_persona = None
 
-            # STEP 3: Classify user intent
+            # STEP 3: Classify user intent (primary_goal slot takes priority)
             intent_classifier = IntentClassifier()
+            # Fetch primary_goal from onboarding slots for accurate intent
+            user_primary_goal = ""
+            try:
+                from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
+                adapter = SupabaseOnboardingAdapter()
+                slots = adapter.get_user_slots(user_id)
+                for s in slots:
+                    slot_name = s.get("slot_name", s.get("name", ""))
+                    if slot_name == "primary_goal":
+                        user_primary_goal = s.get("slot_value", s.get("value", ""))
+                        break
+            except Exception as e:
+                logger.warning(f"[INLINE MATCH] Could not fetch primary_goal for {user_id}: {e}")
+
             if user_persona:
                 user_intent, intent_confidence = intent_classifier.classify({
+                    "primary_goal": user_primary_goal,  # Highest priority signal
                     "what_theyre_looking_for": getattr(user_persona, "what_theyre_looking_for", ""),
                     "requirements": getattr(user_persona, "requirements", ""),
                     "offerings": getattr(user_persona, "offerings", ""),
@@ -616,7 +631,12 @@ class InlineMatchingService:
                     "focus": getattr(user_persona, "focus", "")
                 })
             else:
-                user_intent, intent_confidence = MatchIntent.GENERAL, 0.5
+                # Even without persona, try primary_goal
+                if user_primary_goal:
+                    user_intent, intent_confidence = intent_classifier.classify({"primary_goal": user_primary_goal})
+                else:
+                    user_intent, intent_confidence = MatchIntent.GENERAL, 0.5
+            logger.info(f"[INLINE MATCH] User {user_id} intent: {user_intent.value} (confidence: {intent_confidence}, primary_goal: '{user_primary_goal}')")
 
             # STEP 4: Get user's dealbreakers
             user_dealbreakers = []
@@ -654,15 +674,29 @@ class InlineMatchingService:
                 except Exception:
                     candidate_persona = None
 
-                # 5a. Classify candidate intent
+                # 5a. Classify candidate intent (with primary_goal priority)
+                candidate_primary_goal = ""
+                try:
+                    c_slots = adapter.get_user_slots(candidate_id)
+                    for s in c_slots:
+                        slot_name = s.get("slot_name", s.get("name", ""))
+                        if slot_name == "primary_goal":
+                            candidate_primary_goal = s.get("slot_value", s.get("value", ""))
+                            break
+                except Exception:
+                    pass
+
                 if candidate_persona:
                     candidate_intent, _ = intent_classifier.classify({
+                        "primary_goal": candidate_primary_goal,
                         "what_theyre_looking_for": getattr(candidate_persona, "what_theyre_looking_for", ""),
                         "requirements": getattr(candidate_persona, "requirements", ""),
                         "offerings": getattr(candidate_persona, "offerings", ""),
                         "archetype": getattr(candidate_persona, "archetype", ""),
                         "focus": getattr(candidate_persona, "focus", "")
                     })
+                elif candidate_primary_goal:
+                    candidate_intent, _ = intent_classifier.classify({"primary_goal": candidate_primary_goal})
                 else:
                     candidate_intent = MatchIntent.GENERAL
 

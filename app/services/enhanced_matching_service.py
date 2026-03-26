@@ -88,9 +88,43 @@ class IntentClassifier:
         ]
     }
 
+    # Direct mapping from primary_goal slot values to MatchIntent
+    PRIMARY_GOAL_MAP = {
+        "hire talent": MatchIntent.TALENT_SEEKING,
+        "hiring": MatchIntent.TALENT_SEEKING,
+        "recruit": MatchIntent.RECRUITER,
+        "find co-founder": MatchIntent.COFOUNDER,
+        "find cofounder": MatchIntent.COFOUNDER,
+        "raise funding": MatchIntent.FOUNDER_INVESTOR,
+        "fundraising": MatchIntent.FOUNDER_INVESTOR,
+        "seeking investment": MatchIntent.FOUNDER_INVESTOR,
+        "invest in startups": MatchIntent.INVESTOR_FOUNDER,
+        "investing": MatchIntent.INVESTOR_FOUNDER,
+        "explore partnerships": MatchIntent.PARTNERSHIP,
+        "partnerships": MatchIntent.PARTNERSHIP,
+        "find mentor": MatchIntent.MENTEE_MENTOR,
+        "mentorship": MatchIntent.MENTOR_MENTEE,
+        "find job": MatchIntent.OPPORTUNITY_SEEKING,
+        "job search": MatchIntent.OPPORTUNITY_SEEKING,
+        "offer services": MatchIntent.SERVICE_PROVIDER,
+        "general networking": MatchIntent.GENERAL,
+    }
+
     def classify(self, persona_data: Dict[str, Any]) -> Tuple[MatchIntent, float]:
-        """Classify user intent, returns (MatchIntent, confidence_score)."""
-        # Combine relevant persona fields
+        """Classify user intent, returns (MatchIntent, confidence_score).
+
+        Priority: primary_goal slot > keyword analysis of persona text.
+        The primary_goal is the user's own stated objective — it should always win.
+        """
+        # PRIORITY 1: Use primary_goal slot if available (highest confidence)
+        primary_goal = str(persona_data.get("primary_goal", "")).lower().strip()
+        if primary_goal:
+            for goal_text, intent in self.PRIMARY_GOAL_MAP.items():
+                if goal_text in primary_goal or primary_goal in goal_text:
+                    logger.info(f"[IntentClassifier] Resolved intent from primary_goal '{primary_goal}' -> {intent.value}")
+                    return intent, 0.95
+
+        # PRIORITY 2: Keyword analysis of persona text (fallback)
         text_to_analyze = " ".join([
             str(persona_data.get("what_theyre_looking_for", "")),
             str(persona_data.get("requirements", "")),

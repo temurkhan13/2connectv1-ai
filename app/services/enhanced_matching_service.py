@@ -466,6 +466,8 @@ class EnhancedMatchingService:
             (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER),
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER),
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER),
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR),
         }
 
         return (user_intent, candidate_intent) in blocked_same_pairs
@@ -626,6 +628,25 @@ class EnhancedMatchingService:
                         combined_score *= 0.70  # 30% penalty for mirror matches
                         logger.debug(f"Mirror match penalty for {match_user_id}: same archetype '{user_archetype}'")
 
+                # Same-ROLE mirror match penalty (expanded from archetype-only)
+                # Corp dev matched to corp dev, advisor matched to advisor, etc.
+                if user_persona and match_persona:
+                    user_desig = (getattr(user_persona, 'designation', '') or '').lower()
+                    cand_desig = (getattr(match_persona, 'designation', '') or '').lower()
+                    # Check for role keyword overlap in designation
+                    role_groups = [
+                        ['corporate development', 'corp dev', 'business development', 'acquisitions'],
+                        ['advisor', 'board member', 'advisory'],
+                        ['consultant', 'consulting'],
+                    ]
+                    for group in role_groups:
+                        user_has = any(kw in user_desig for kw in group)
+                        cand_has = any(kw in cand_desig for kw in group)
+                        if user_has and cand_has:
+                            combined_score *= 0.50  # 50% penalty for same-role matches
+                            logger.debug(f"Same-role penalty for {match_user_id}: designation overlap in group {group}")
+                            break
+
                 # Role-overlap penalty: a service provider matched with someone who already holds
                 # that role gets penalized. E.g., fractional CTO matched with an existing CTO.
                 if user_intent == MatchIntent.SERVICE_PROVIDER and match_persona:
@@ -770,8 +791,8 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.70,  # Was 0.85 — consultants aren't universally useful without industry alignment
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.70,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.45,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.45,
 
             # === ALLOWED SAME-SIDE PAIRS (genuine mutual benefit) ===
             (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
@@ -797,8 +818,8 @@ class EnhancedMatchingService:
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.4,
             (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.4,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.4,
-            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.55,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.55,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.35,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.35,
 
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,

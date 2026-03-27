@@ -456,6 +456,16 @@ class EnhancedMatchingService:
             # Layer 4: Block cross-pairs where both sides need help (neither can serve the other)
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR),  # job seeker ↔ mentee
             (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING),
+            # Block non-fundraising intents from investor match lists
+            # Investors should ONLY see founders actively raising money
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING),
+            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP),
+            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL),
+            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER),
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.INVESTOR_FOUNDER),
         }
 
         return (user_intent, candidate_intent) in blocked_same_pairs
@@ -583,6 +593,15 @@ class EnhancedMatchingService:
                     match_intent = MatchIntent.GENERAL
                     match_intent_confidence = 0.5
 
+                # Fix: Founders with opportunity_seeking are NOT job seekers — they're seeking
+                # funding/partnerships. Reclassify based on archetype.
+                if match_intent == MatchIntent.OPPORTUNITY_SEEKING and match_persona:
+                    match_arch = (getattr(match_persona, 'archetype', '') or '').lower()
+                    if any(kw in match_arch for kw in ['founder', 'entrepreneur', 'ceo', 'co-founder']):
+                        match_intent = MatchIntent.FOUNDER_INVESTOR
+                        # This means they'll now be blocked from talent_seeking users
+                        # and correctly shown to investor_founder users
+
                 # HARD FILTER 1: Dealbreaker check (Feb 2026)
                 if self.enforce_hard_dealbreakers and user_dealbreakers and match_persona:
                     has_violation, violated = self._check_dealbreaker_violation(user_dealbreakers, match_persona)
@@ -606,6 +625,28 @@ class EnhancedMatchingService:
                     if user_archetype and match_archetype and user_archetype.lower() == match_archetype.lower():
                         combined_score *= 0.70  # 30% penalty for mirror matches
                         logger.debug(f"Mirror match penalty for {match_user_id}: same archetype '{user_archetype}'")
+
+                # Role-overlap penalty: a service provider matched with someone who already holds
+                # that role gets penalized. E.g., fractional CTO matched with an existing CTO.
+                if user_intent == MatchIntent.SERVICE_PROVIDER and match_persona:
+                    user_offerings = (getattr(user_persona, 'offerings', '') or '').lower() if user_persona else ''
+                    cand_designation = (getattr(match_persona, 'designation', '') or '').lower()
+                    cand_arch = (getattr(match_persona, 'archetype', '') or '').lower()
+
+                    # Check if the candidate already holds the role the service provider offers
+                    role_keywords = []
+                    if 'cto' in user_offerings or 'technical leadership' in user_offerings:
+                        role_keywords = ['cto', 'chief technology', 'vp engineering', 'head of engineering']
+                    elif 'cmo' in user_offerings or 'marketing' in user_offerings:
+                        role_keywords = ['cmo', 'chief marketing', 'vp marketing', 'head of marketing']
+                    elif 'cfo' in user_offerings or 'financial' in user_offerings:
+                        role_keywords = ['cfo', 'chief financial', 'vp finance', 'head of finance']
+
+                    if role_keywords:
+                        cand_text = f"{cand_designation} {cand_arch}"
+                        if any(kw in cand_text for kw in role_keywords):
+                            combined_score *= 0.50  # 50% penalty — they already have this role
+                            logger.debug(f"Role-overlap penalty for {match_user_id}: candidate already holds offered role")
 
                 # Calculate intent match quality
                 intent_quality = self._calculate_intent_match_quality(
@@ -873,12 +914,11 @@ class EnhancedMatchingService:
 
         # Map config weights to dimension names
         weight_mapping = {
-            "industry_combined": config.industry_match_weight,
-            "focus_slot_industry_focus": config.industry_match_weight,
+            "industry_combined": config.industry_match_weight * 2.0,  # Doubled — industry mismatch is a fundamental quality failure
+            "focus_slot_industry_focus": config.industry_match_weight * 2.0,
             "stage_combined": config.stage_match_weight,
             "focus_slot_company_stage": config.stage_match_weight,
             "focus_slot_geography": config.geography_weight,
-            # Default weight 1.0 for dimensions without specific config
         }
 
         # All dimension embedding types to compare (excluding requirements/offerings — those are in core_score)

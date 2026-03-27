@@ -751,6 +751,15 @@ class InlineMatchingService:
                 else:
                     candidate_intent = MatchIntent.GENERAL
 
+                # Fix: Founders with opportunity_seeking are NOT job seekers — they're seeking
+                # funding/partnerships. Reclassify based on archetype.
+                if candidate_intent == MatchIntent.OPPORTUNITY_SEEKING and candidate_persona:
+                    cand_arch = (getattr(candidate_persona, 'archetype', '') or '').lower()
+                    if any(kw in cand_arch for kw in ['founder', 'entrepreneur', 'ceo', 'co-founder']):
+                        candidate_intent = MatchIntent.FOUNDER_INVESTOR
+                        # This means they'll now be blocked from talent_seeking users (Joe Gordon)
+                        # and correctly shown to investor_founder users
+
                 # 5b. Check intent complementarity
                 intent_quality = self._get_intent_quality(user_intent, candidate_intent)
 
@@ -809,6 +818,27 @@ class InlineMatchingService:
                     cand_arch = getattr(candidate_persona, 'archetype', None) or ''
                     if user_arch and cand_arch and user_arch.lower() == cand_arch.lower():
                         core_score *= 0.70  # 30% penalty for mirror matches
+
+                # Role-overlap penalty: a service provider matched with someone who already holds
+                # that role gets penalized. E.g., fractional CTO matched with an existing CTO.
+                if user_intent == MatchIntent.SERVICE_PROVIDER and candidate_persona:
+                    user_offerings = (getattr(user_persona, 'offerings', '') or '').lower() if user_persona else ''
+                    cand_designation = (getattr(candidate_persona, 'designation', '') or '').lower()
+                    cand_arch = (getattr(candidate_persona, 'archetype', '') or '').lower()
+
+                    # Check if the candidate already holds the role the service provider offers
+                    role_keywords = []
+                    if 'cto' in user_offerings or 'technical leadership' in user_offerings:
+                        role_keywords = ['cto', 'chief technology', 'vp engineering', 'head of engineering']
+                    elif 'cmo' in user_offerings or 'marketing' in user_offerings:
+                        role_keywords = ['cmo', 'chief marketing', 'vp marketing', 'head of marketing']
+                    elif 'cfo' in user_offerings or 'financial' in user_offerings:
+                        role_keywords = ['cfo', 'chief financial', 'vp finance', 'head of finance']
+
+                    if role_keywords:
+                        cand_text = f"{cand_designation} {cand_arch}"
+                        if any(kw in cand_text for kw in role_keywords):
+                            core_score *= 0.50  # 50% penalty — they already have this role
 
                 # Normalize activity/temporal to 0-1 range
                 activity_normalized = max(0.7, min(1.0, activity_boost))
@@ -885,6 +915,23 @@ class InlineMatchingService:
 
             # Limit to max_matches
             enhanced_matches = enhanced_matches[:self.max_matches]
+
+            # Deduplicate candidates with same persona name (e.g. multiple Ryan Best profiles)
+            seen_names = set()
+            deduped_matches = []
+            for m in enhanced_matches:
+                cand_name = ""
+                try:
+                    cp = UserProfile.get(m["user_id"])
+                    cand_name = (cp.persona.name or "").lower().strip() if cp and cp.persona else ""
+                except:
+                    pass
+                if cand_name and cand_name in seen_names:
+                    continue
+                if cand_name:
+                    seen_names.add(cand_name)
+                deduped_matches.append(m)
+            enhanced_matches = deduped_matches
 
             # Store in DynamoDB
             matches_to_store = {
@@ -1055,6 +1102,16 @@ class InlineMatchingService:
         blocked_cross_pairs = {
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR),  # job seeker ↔ mentee
             (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING),
+            # Block non-fundraising intents from investor match lists
+            # Investors should ONLY see founders actively raising money
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING),
+            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP),
+            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL),
+            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER),
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.INVESTOR_FOUNDER),
         }
 
         if (user_intent, candidate_intent) in blocked_cross_pairs:

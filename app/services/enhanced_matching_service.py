@@ -42,40 +42,62 @@ class IntentClassifier:
     """Classifies user intent from persona data."""
 
     # Keywords that indicate each intent type
+    # CRITICAL FIX (Mar 27, 2026): Investor vs Founder keywords were overlapping.
+    # "fund", "seed", "series", "capital" appeared in INVESTOR_FOUNDER but also
+    # match founders seeking funding. This caused founders like Ryan Best to be
+    # misclassified as investors, inverting their entire match direction.
+    #
+    # Fix: INVESTOR_FOUNDER keywords must be investor-SPECIFIC (deploying capital).
+    #       FOUNDER_INVESTOR keywords must catch fundraising language broadly.
     INTENT_KEYWORDS = {
         MatchIntent.INVESTOR_FOUNDER: [
-            "invest", "investor", "angel", "vc", "venture capital", "fund",
-            "portfolio", "deal flow", "seed", "series", "pre-seed", "capital"
+            # Words that ONLY an investor would use (deploying capital, not seeking it)
+            "invest in", "investor", "angel investor", "vc", "venture capital",
+            "portfolio companies", "deal flow", "deploy capital", "back founders",
+            "fund startups", "write checks", "check size", "investment thesis",
+            "due diligence", "term sheet review", "co-invest"
         ],
         MatchIntent.FOUNDER_INVESTOR: [
+            # Words a founder seeking money would use
             "raising", "fundraising", "seeking investment", "looking for funding",
-            "seed round", "series a", "need capital", "investor relations"
+            "need funding", "need capital", "raise capital", "raise a round",
+            "seed round", "series a", "series b", "pre-seed round",
+            "seeking investors", "looking for investors", "pitch to investors",
+            "investor relations", "funding round", "raise money",
+            "need investment", "capital raise", "seeking seed", "seeking series"
         ],
         MatchIntent.MENTOR_MENTEE: [
-            "mentor", "guide", "advise", "coach", "teach", "share knowledge",
-            "help others", "give back", "mentorship", "guidance"
+            "mentor others", "guide others", "advise founders", "coach",
+            "teach", "share knowledge", "help others", "give back",
+            "offer mentorship", "provide guidance", "advisory role"
         ],
         MatchIntent.MENTEE_MENTOR: [
             "learn from", "seeking mentor", "looking for guidance", "need advice",
-            "want to learn", "mentorship", "career guidance", "growth"
+            "want to learn", "need mentorship", "career guidance",
+            "seeking advice", "find a mentor", "looking for a mentor"
         ],
         MatchIntent.COFOUNDER: [
-            "co-founder", "cofounder", "founding team", "partner",
-            "build together", "start together", "technical cofounder"
+            "co-founder", "cofounder", "founding team",
+            "build together", "start together", "technical cofounder",
+            "find a cofounder", "looking for cofounder"
         ],
         MatchIntent.TALENT_SEEKING: [
             "hiring", "recruit", "looking for talent", "need engineer",
-            "seeking developer", "team expansion", "new hire"
+            "seeking developer", "team expansion", "new hire",
+            "build a team", "looking to hire", "seeking talent",
+            "need senior engineer", "hiring for", "open role"
         ],
         MatchIntent.OPPORTUNITY_SEEKING: [
-            "job", "opportunity", "position", "role", "career",
-            "looking for work", "new opportunity", "next role"
+            "job", "position", "role", "career",
+            "looking for work", "new opportunity", "next role",
+            "seeking employment", "job search", "find a role",
+            "looking for a job", "open to opportunities"
         ],
         MatchIntent.PARTNERSHIP: [
             "partner", "collaborate", "b2b", "enterprise", "strategic",
-            "alliance", "joint venture", "integration"
+            "alliance", "joint venture", "integration",
+            "strategic partner", "business development"
         ],
-        # BUG-040 FIX: Added recruiter and service provider keywords
         MatchIntent.RECRUITER: [
             "recruiter", "recruiting", "talent acquisition", "headhunter",
             "staffing", "placing candidates", "hiring for clients",
@@ -84,7 +106,7 @@ class IntentClassifier:
         MatchIntent.SERVICE_PROVIDER: [
             "consulting", "consultant", "agency", "service provider",
             "client work", "serving companies", "advisory services",
-            "professional services", "boutique firm"
+            "professional services", "boutique firm", "fractional"
         ]
     }
 
@@ -99,10 +121,25 @@ class IntentClassifier:
         "find co-founder": MatchIntent.COFOUNDER,
         "find cofounder": MatchIntent.COFOUNDER,
         "raise funding": MatchIntent.FOUNDER_INVESTOR,
+        "raise capital": MatchIntent.FOUNDER_INVESTOR,
+        "raise a round": MatchIntent.FOUNDER_INVESTOR,
+        "raise money": MatchIntent.FOUNDER_INVESTOR,
         "fundraising": MatchIntent.FOUNDER_INVESTOR,
         "seeking investment": MatchIntent.FOUNDER_INVESTOR,
+        "seeking funding": MatchIntent.FOUNDER_INVESTOR,
+        "seeking investors": MatchIntent.FOUNDER_INVESTOR,
+        "looking for investors": MatchIntent.FOUNDER_INVESTOR,
+        "looking for funding": MatchIntent.FOUNDER_INVESTOR,
+        "need funding": MatchIntent.FOUNDER_INVESTOR,
+        "need investment": MatchIntent.FOUNDER_INVESTOR,
+        "need capital": MatchIntent.FOUNDER_INVESTOR,
+        "seed round": MatchIntent.FOUNDER_INVESTOR,
+        "series a": MatchIntent.FOUNDER_INVESTOR,
         "invest in startups": MatchIntent.INVESTOR_FOUNDER,
-        "investing": MatchIntent.INVESTOR_FOUNDER,
+        "investing in": MatchIntent.INVESTOR_FOUNDER,
+        "deploy capital": MatchIntent.INVESTOR_FOUNDER,
+        "back founders": MatchIntent.INVESTOR_FOUNDER,
+        "angel investing": MatchIntent.INVESTOR_FOUNDER,
         "explore partnerships": MatchIntent.PARTNERSHIP,
         "partnerships": MatchIntent.PARTNERSHIP,
         "find mentor": MatchIntent.MENTEE_MENTOR,
@@ -156,8 +193,29 @@ class IntentClassifier:
         if not intent_scores:
             return MatchIntent.GENERAL, 0.5
 
-        # Return highest scoring intent
-        best_intent = max(intent_scores, key=intent_scores.get)
+        # Tiebreaker priority: when multiple intents score equally,
+        # prefer actionable intents over vague ones.
+        # e.g., "mentor" can appear in both mentor_mentee and talent_seeking contexts —
+        # a founder "mentoring" their team while also hiring should be talent_seeking.
+        INTENT_PRIORITY = {
+            MatchIntent.TALENT_SEEKING: 6,       # Most actionable — hiring
+            MatchIntent.OPPORTUNITY_SEEKING: 6,   # Most actionable — job seeking
+            MatchIntent.INVESTOR_FOUNDER: 5,      # Deploying capital
+            MatchIntent.FOUNDER_INVESTOR: 5,      # Raising capital
+            MatchIntent.RECRUITER: 4,
+            MatchIntent.SERVICE_PROVIDER: 4,
+            MatchIntent.COFOUNDER: 3,
+            MatchIntent.PARTNERSHIP: 3,
+            MatchIntent.MENTOR_MENTEE: 2,         # Vague — often misclassified
+            MatchIntent.MENTEE_MENTOR: 2,
+            MatchIntent.GENERAL: 1,
+        }
+
+        # Return highest scoring intent, with priority tiebreaker
+        best_intent = max(
+            intent_scores,
+            key=lambda i: (intent_scores[i], INTENT_PRIORITY.get(i, 0))
+        )
         confidence = min(0.95, intent_scores[best_intent] * 2)  # Cap at 0.95
 
         return best_intent, confidence
@@ -671,8 +729,8 @@ class EnhancedMatchingService:
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.4,
             (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.4,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.4,
-            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.45,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.45,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.55,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.55,
 
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,
@@ -703,8 +761,12 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
 
             # === FOUNDER cross-pairs with talent ===
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.5,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.5,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.6,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.6,
+
+            # === TALENT_SEEKING cross-pairs with investors ===
+            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.75,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING): 0.75,
 
             # === Self-referral pairs ===
             (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.6,
@@ -881,6 +943,9 @@ class EnhancedMatchingService:
         if intent_quality < 0.5:
             intent_multiplier = intent_quality / 0.5  # Maps 0→0, 0.5→1.0
             final = base_total * intent_multiplier + intent_quality * 0.15
+        elif intent_quality >= 0.95:
+            # PERFECT pair: boost so good matches break above 75%
+            final = base_total * 1.15 + intent_quality * 0.15
         else:
             final = base_total + intent_quality * 0.15
 

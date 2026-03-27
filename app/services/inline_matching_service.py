@@ -584,6 +584,25 @@ class InlineMatchingService:
         try:
             logger.info(f"[INLINE MATCH] Using HYBRID matching for user {user_id}")
 
+            # STEP 0: Source user profile completeness gate
+            # Users with 0 slots / 0 embeddings should NOT generate matches — they produce
+            # noise scores (52-72%) against everyone, polluting other users' match pools too.
+            from app.adapters.postgresql import postgresql_adapter
+            try:
+                source_embeddings = postgresql_adapter.get_user_embeddings(user_id)
+                if not source_embeddings or not source_embeddings.get('requirements'):
+                    logger.warning(f"[INLINE MATCH] Source user {user_id} has no embeddings — blocking match generation")
+                    return {
+                        "success": True,
+                        "total_matches": 0,
+                        "requirements_matches": [],
+                        "offerings_matches": [],
+                        "algorithm": "hybrid_full",
+                        "stats": {"blocked_reason": "source_user_no_embeddings"}
+                    }
+            except Exception as e:
+                logger.warning(f"[INLINE MATCH] Could not check source embeddings for {user_id}: {e}")
+
             # STEP 1: Get multi-vector base scores (6 dimensions)
             # Forward: my requirements → their offerings
             matcher = MultiVectorMatcher()
@@ -802,9 +821,12 @@ class InlineMatchingService:
 
                 if intent_quality < 0.5:
                     # BAD pair: intent acts as multiplier on the whole score
-                    # e.g., intent=0.3 → final ≈ base_total * 0.3 + 0.3 * 0.15 = much lower
                     intent_multiplier = intent_quality / 0.5  # Maps 0→0, 0.5→1.0
                     final_score = base_total * intent_multiplier + intent_quality * 0.15
+                elif intent_quality >= 0.95:
+                    # PERFECT pair (1.0): boost score so good matches break above 75%
+                    # Without this, base_total of 0.55 + intent*0.15 = 0.70 → capped below 75%
+                    final_score = base_total * 1.15 + intent_quality * 0.15
                 else:
                     # GOOD pair: standard additive formula
                     final_score = base_total + intent_quality * 0.15
@@ -946,8 +968,8 @@ class InlineMatchingService:
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.4,
             (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.4,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.4,
-            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.45,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.45,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.55,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.55,
 
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,   # Investors don't hire job seekers
@@ -977,9 +999,14 @@ class InlineMatchingService:
             (MatchIntent.GENERAL, MatchIntent.OPPORTUNITY_SEEKING): 0.4,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
 
-            # === FOUNDER cross-pairs with talent (founders raising are sometimes hiring too) ===
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.5,  # Both seeking, weak overlap
-            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.5,
+            # === FOUNDER cross-pairs with talent ===
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.6,  # Founders raising often also hiring
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.6,
+
+            # === TALENT_SEEKING cross-pairs with investors ===
+            # Hiring companies often ALSO need funding — Joe Gordon needs engineers AND investors
+            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.75,  # Investors fund hiring companies
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING): 0.75,
 
             # === Self-referral pairs ===
             (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.6,

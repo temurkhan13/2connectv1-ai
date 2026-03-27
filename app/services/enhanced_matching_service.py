@@ -487,6 +487,12 @@ class EnhancedMatchingService:
                 # Geometric mean (rewards balanced mutual matches)
                 combined_score = math.sqrt(forward_score * reverse_score)
 
+                # Fwd-Rev asymmetry penalty (Mar 27, 2026)
+                fwd_rev_diff = abs(forward_score - reverse_score)
+                if fwd_rev_diff > 0.15:
+                    asymmetry_penalty = 1.0 - min(0.3, (fwd_rev_diff - 0.15) * 1.5)
+                    combined_score *= asymmetry_penalty
+
                 # Skip if below threshold
                 if combined_score < threshold:
                     continue
@@ -619,8 +625,11 @@ class EnhancedMatchingService:
         Confidence scaling removed — was double-penalizing scores.
         """
         # Complete complementary pairs table
+        # UPGRADED (Mar 27, 2026): Realistic scores based on match quality analysis.
+        # Previous version was far too generous — job seekers scored 0.85 against investors,
+        # founders seeking funding scored 0.80 against other founders seeking partnerships.
         complete_pairs = {
-            # Perfect complementary pairs (1.0)
+            # === PERFECT COMPLEMENTARY PAIRS (1.0) — opposite sides of a transaction ===
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 1.0,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 1.0,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 1.0,
@@ -628,51 +637,83 @@ class EnhancedMatchingService:
             (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 1.0,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
 
-            # Strong complementary pairs (0.85-0.95)
+            # === STRONG COMPLEMENTARY PAIRS (0.85-0.95) ===
             (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,
             (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
-            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
             (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-
-            # PRODUCT_LAUNCH / GENERAL pairs (PREVIOUSLY MISSING — all got 0.5)
-            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER): 0.9,
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL): 0.9,
-            (MatchIntent.GENERAL, MatchIntent.PARTNERSHIP): 0.85,
-            (MatchIntent.PARTNERSHIP, MatchIntent.GENERAL): 0.85,
-            (MatchIntent.GENERAL, MatchIntent.SERVICE_PROVIDER): 0.8,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.GENERAL): 0.8,
-            (MatchIntent.GENERAL, MatchIntent.MENTOR_MENTEE): 0.75,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.GENERAL): 0.75,
-
-            # Good matches (0.8-0.85)
-            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.85,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
-
-            # COFOUNDER cross-pairs (PREVIOUSLY MISSING — all got 0.5)
-            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.8,
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.8,
-            (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.75,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.75,
-            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.7,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.7,
-
-            # NETWORKING pairs (PREVIOUSLY ALL 0.5)
-            (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.8,
-
-            # SERVICE_PROVIDER pairs
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
             (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
 
-            # Self-referral pairs
-            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.7,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.6,
+            # === ALLOWED SAME-SIDE PAIRS (genuine mutual benefit) ===
+            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,
+            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.7,
+            (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.5,
+
+            # === COFOUNDER cross-pairs ===
+            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.85,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.85,
+            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.7,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.7,
+            (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.5,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.5,
+            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.6,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.6,
+
+            # === PARTNERSHIP cross-pairs (conservative) ===
+            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER): 0.5,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP): 0.5,
+            (MatchIntent.PARTNERSHIP, MatchIntent.SERVICE_PROVIDER): 0.65,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP): 0.65,
+            (MatchIntent.PARTNERSHIP, MatchIntent.FOUNDER_INVESTOR): 0.4,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.4,
+            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.4,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.4,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.45,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.45,
+
+            # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.65,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.65,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.35,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.35,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.PARTNERSHIP): 0.25,
+            (MatchIntent.PARTNERSHIP, MatchIntent.OPPORTUNITY_SEEKING): 0.25,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.3,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
+
+            # === GENERAL cross-pairs (low — weak signal) ===
+            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER): 0.5,
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL): 0.5,
+            (MatchIntent.GENERAL, MatchIntent.FOUNDER_INVESTOR): 0.5,
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.GENERAL): 0.5,
+            (MatchIntent.GENERAL, MatchIntent.PARTNERSHIP): 0.45,
+            (MatchIntent.PARTNERSHIP, MatchIntent.GENERAL): 0.45,
+            (MatchIntent.GENERAL, MatchIntent.SERVICE_PROVIDER): 0.45,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.GENERAL): 0.45,
+            (MatchIntent.GENERAL, MatchIntent.MENTOR_MENTEE): 0.45,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.GENERAL): 0.45,
+            (MatchIntent.GENERAL, MatchIntent.TALENT_SEEKING): 0.45,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.GENERAL): 0.45,
+            (MatchIntent.GENERAL, MatchIntent.OPPORTUNITY_SEEKING): 0.4,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
+
+            # === FOUNDER cross-pairs with talent ===
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.5,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.5,
+
+            # === Self-referral pairs ===
+            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.6,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.3,
         }
 
         pair = (user_intent, match_intent)
-        # Default 0.7 for unknown pairs (neutral, NOT punishing)
-        return complete_pairs.get(pair, 0.7)
+        # Default 0.35 for unknown pairs — unknown intent = weak match signal
+        return complete_pairs.get(pair, 0.35)
 
     def _calculate_activity_boost(self, user_profile) -> float:
         """Active users get a boost, inactive users get a penalty."""
@@ -814,39 +855,41 @@ class EnhancedMatchingService:
     ) -> tuple:
         """Combine all scoring factors into final score.
 
-        UPGRADED (Mar 2026): Additive weighted formula replaces multiplicative chain.
+        UPGRADED (Mar 27, 2026): Intent as hard multiplier + asymmetry penalty + spread.
 
-        Old formula: combined × intent × activity × temporal (each factor can only reduce)
-        New formula: core×0.35 + dimensions×0.30 + intent×0.25 + signals×0.10 (additive)
-
-        Weights:
-        - 35% Core: Bidirectional requirements ↔ offerings (the foundation)
-        - 30% Dimensions: Industry, geography, stage, engagement, timeline, etc.
-        - 25% Intent: User type complementarity (strong signal for match quality)
-        - 10% Signals: Activity + recency (tiebreakers, not determining factors)
+        Intent < 0.5 now CRUSHES the score (multiplier) instead of mild additive penalty.
+        Forward-reverse asymmetry penalizes one-sided matches.
+        Power scaling spreads scores apart for better ranking signal.
 
         Returns: (final_score, dimension_score, signal_score) tuple for analysis storage
         """
+        import math as _math
+
         # Normalize activity and temporal to 0-1 range for additive formula
-        # Activity: clamp to 0.7-1.0 (inactive users shouldn't be heavily penalized)
         activity_score = max(0.7, min(1.0, activity_boost))
-
-        # Temporal: clamp to 0.8-1.0 (gentle decay)
         temporal_score = max(0.8, min(1.0, temporal_boost))
-
-        # Combined signal score
         signal_score = (activity_score * 0.6) + (temporal_score * 0.4)
 
-        # Additive weighted formula
-        final = (
-            combined_score   * 0.35 +    # Layer 1: Bidirectional core compatibility
-            dimension_score  * 0.30 +    # Layer 2: Dimensional alignment
-            intent_quality   * 0.25 +    # Layer 3: Intent complementarity (boosted from 0.15)
-            signal_score     * 0.10      # Layer 4: Activity + recency
+        # Base formula (without intent)
+        base_total = (
+            combined_score   * 0.40 +    # Layer 1: Bidirectional core (boosted from 0.35)
+            dimension_score  * 0.35 +    # Layer 2: Dimensional alignment (boosted from 0.30)
+            signal_score     * 0.10      # Layer 3: Activity + recency
         )
 
-        # Clamp to 0-1 range
-        return max(0.0, min(1.0, final)), dimension_score, signal_score
+        # Intent as hard multiplier for bad pairs
+        if intent_quality < 0.5:
+            intent_multiplier = intent_quality / 0.5  # Maps 0→0, 0.5→1.0
+            final = base_total * intent_multiplier + intent_quality * 0.15
+        else:
+            final = base_total + intent_quality * 0.15
+
+        # Score spread enhancement (power scaling)
+        final = max(0.0, min(1.0, final))
+        if final > 0:
+            final = final ** 0.85
+
+        return final, dimension_score, signal_score
 
     def _generate_match_explanation(
         self,

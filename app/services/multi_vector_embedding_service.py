@@ -103,7 +103,10 @@ DIMENSION_CONFIGS = {
         keywords=[
             "industry", "sector", "market", "fintech", "healthtech", "edtech",
             "saas", "b2b", "b2c", "e-commerce", "healthcare", "finance",
-            "real estate", "logistics", "media", "entertainment"
+            "real estate", "logistics", "media", "entertainment",
+            "sustainability", "esg", "cleantech", "climate", "green",
+            "proptech", "insurtech", "legaltech", "biotech", "agritech",
+            "cybersecurity", "devtools", "martech", "foodtech", "govtech"
         ],
         extraction_prompt="Extract the industry or sector focus."
     ),

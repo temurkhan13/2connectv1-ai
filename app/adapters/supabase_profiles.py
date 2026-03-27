@@ -384,6 +384,26 @@ class SupabaseUserProfile:
             if conn:
                 conn.close()
 
+    def _get_real_user_name(self) -> Optional[str]:
+        """Fetch the real user name (first_name + last_name) from the users table."""
+        try:
+            adapter = get_adapter()
+            conn = adapter.get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT first_name, last_name FROM users WHERE id = %s::uuid",
+                (self.user_id,)
+            )
+            row = cur.fetchone()
+            cur.close()
+            conn.close()
+            if row:
+                name = f"{row[0] or ''} {row[1] or ''}".strip()
+                return name if name else None
+        except Exception:
+            pass
+        return None
+
     def _sync_from_nested_objects(self):
         """Sync attributes from nested objects (profile, persona) to flat fields."""
         if self.profile:
@@ -391,7 +411,10 @@ class SupabaseUserProfile:
             self.raw_questions = [q.as_dict() if hasattr(q, 'as_dict') else q for q in self.profile.raw_questions]
 
         if self.persona:
-            self._persona_name = self.persona.name
+            # Use real user name from users table instead of LLM-generated archetype title
+            # The LLM generates names like "The Growth-Focused Founder" — useless for identification
+            real_name = self._get_real_user_name()
+            self._persona_name = real_name if real_name else self.persona.name
             self._persona_archetype = self.persona.archetype
             self._persona_designation = self.persona.designation
             self._persona_experience = self.persona.experience

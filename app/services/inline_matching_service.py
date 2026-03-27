@@ -802,6 +802,14 @@ class InlineMatchingService:
                     asymmetry_penalty = 1.0 - min(0.3, (fwd_rev_diff - 0.15) * 1.5)
                     core_score *= asymmetry_penalty
 
+                # --- Same-persona mirror match penalty ---
+                # Two users with identical archetypes have the same gaps — they can't help each other
+                if user_persona and candidate_persona:
+                    user_arch = getattr(user_persona, 'archetype', None) or ''
+                    cand_arch = getattr(candidate_persona, 'archetype', None) or ''
+                    if user_arch and cand_arch and user_arch.lower() == cand_arch.lower():
+                        core_score *= 0.70  # 30% penalty for mirror matches
+
                 # Normalize activity/temporal to 0-1 range
                 activity_normalized = max(0.7, min(1.0, activity_boost))
                 temporal_normalized = max(0.8, min(1.0, temporal_boost))
@@ -819,25 +827,25 @@ class InlineMatchingService:
                     signal_score     * 0.10      # Activity + recency
                 )
 
-                if intent_quality < 0.5:
-                    # BAD pair: intent acts as multiplier on the whole score
-                    intent_multiplier = intent_quality / 0.5  # Maps 0→0, 0.5→1.0
+                # Layer 2: Raised multiplier threshold from 0.5 → 0.65
+                # Intent < 0.65 now CRUSHES the score (catches mediocre cross-pairs)
+                if intent_quality < 0.65:
+                    intent_multiplier = intent_quality / 0.65  # Maps 0→0, 0.65→1.0
                     final_score = base_total * intent_multiplier + intent_quality * 0.15
                 elif intent_quality >= 0.95:
                     # PERFECT pair (1.0): boost score so good matches break above 75%
-                    # Without this, base_total of 0.55 + intent*0.15 = 0.70 → capped below 75%
                     final_score = base_total * 1.15 + intent_quality * 0.15
                 else:
                     # GOOD pair: standard additive formula
                     final_score = base_total + intent_quality * 0.15
 
                 # --- Score spread enhancement ---
-                # Apply power scaling to separate good from bad matches
-                # Power < 1.0 boosts high scores and compresses low scores apart
-                # f(0.3) = 0.3^0.85 = 0.34, f(0.7) = 0.7^0.85 = 0.73, f(0.9) = 0.9^0.85 = 0.91
                 final_score = max(0.0, min(1.0, final_score))
                 if final_score > 0:
                     final_score = final_score ** 0.85  # Gentle spread enhancement
+
+                # Layer 1: Intent ceiling — embedding similarity can NEVER override intent
+                final_score = min(final_score, intent_quality)
 
                 # Only include if above threshold
                 if final_score >= threshold:
@@ -939,8 +947,8 @@ class InlineMatchingService:
             (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
             (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,  # Consultants serve founders
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.70,  # Was 0.85 — consultants need industry alignment to be useful
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.70,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,     # Agencies serve hiring companies
             (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
 
@@ -950,10 +958,10 @@ class InlineMatchingService:
             (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.5,             # Both networking — weak signal
 
             # === COFOUNDER cross-pairs ===
-            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.85,  # Cofounders need talent
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.85,
-            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.7,      # Investors may back cofounder teams
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.7,
+            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.45,  # Cofounders need talent
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.45,
+            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.40,     # Was 0.70 — investors fund, they don't co-found
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.40,
             (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.5,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.5,
             (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.6,
@@ -974,8 +982,11 @@ class InlineMatchingService:
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,   # Investors don't hire job seekers
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.65,     # Mentors help career guidance
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.65,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.50,     # Layer 3: was 0.65, misclassified mentors create false matches
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.50,
+            # Layer 4: Block mentee↔opportunity (two people needing help, neither can hire)
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR): 0.15,
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.15,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.35,  # Founders raising aren't hiring
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.35,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.PARTNERSHIP): 0.25,       # Partnership seekers don't need job seekers
@@ -1000,8 +1011,9 @@ class InlineMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
 
             # === FOUNDER cross-pairs with talent ===
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.6,  # Founders raising often also hiring
-            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.6,
+            # Layer 3: was 0.60, a founder raising money doesn't help a hiring company get engineers or capital
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.45,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.45,
 
             # === TALENT_SEEKING cross-pairs with investors ===
             # Hiring companies often ALSO need funding — Joe Gordon needs engineers AND investors
@@ -1036,7 +1048,17 @@ class InlineMatchingService:
             MatchIntent.OPPORTUNITY_SEEKING,  # Two job seekers
             MatchIntent.TALENT_SEEKING,  # Two hiring companies
             MatchIntent.MENTEE_MENTOR,  # Two mentees seeking mentors
+            MatchIntent.MENTOR_MENTEE,  # Two mentors (no mentees)
         ]
+
+        # Layer 4: Also block cross-pairs where both sides need help
+        blocked_cross_pairs = {
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR),  # job seeker ↔ mentee
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING),
+        }
+
+        if (user_intent, candidate_intent) in blocked_cross_pairs:
+            return True
 
         return user_intent == candidate_intent and user_intent in blocked_same_pairs
 

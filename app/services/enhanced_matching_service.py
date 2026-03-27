@@ -64,7 +64,9 @@ class IntentClassifier:
             "seed round", "series a", "series b", "pre-seed round",
             "seeking investors", "looking for investors", "pitch to investors",
             "investor relations", "funding round", "raise money",
-            "need investment", "capital raise", "seeking seed", "seeking series"
+            "need investment", "capital raise", "seeking seed", "seeking series",
+            "seeking investment capital", "need investment capital",
+            "looking for capital"
         ],
         MatchIntent.MENTOR_MENTEE: [
             "mentor others", "guide others", "advise founders", "coach",
@@ -158,6 +160,13 @@ class IntentClassifier:
         "new opportunity": MatchIntent.OPPORTUNITY_SEEKING,
         "offer services": MatchIntent.SERVICE_PROVIDER,
         "general networking": MatchIntent.GENERAL,
+        # Founder goals that don't imply investing (Mar 27, 2026)
+        "find first customer": MatchIntent.FOUNDER_INVESTOR,
+        "validate product": MatchIntent.PARTNERSHIP,
+        "expand to new markets": MatchIntent.PARTNERSHIP,
+        "launch product": MatchIntent.PARTNERSHIP,
+        "scale business": MatchIntent.FOUNDER_INVESTOR,
+        "grow revenue": MatchIntent.PARTNERSHIP,
     }
 
     def classify(self, persona_data: Dict[str, Any]) -> Tuple[MatchIntent, float]:
@@ -167,7 +176,12 @@ class IntentClassifier:
         The primary_goal is the user's own stated objective — it should always win.
         """
         # PRIORITY 1: Use primary_goal slot if available (highest confidence)
-        primary_goal = str(persona_data.get("primary_goal", "")).lower().strip()
+        raw_goal = persona_data.get("primary_goal", "")
+        # Handle case where primary_goal is a list (e.g. ['Validate Product', 'Expand to New Markets'])
+        if isinstance(raw_goal, list):
+            raw_goal = raw_goal[0] if raw_goal else ""
+            logger.info(f"[IntentClassifier] primary_goal was a list, using first element: '{raw_goal}'")
+        primary_goal = str(raw_goal).lower().strip()
         if primary_goal:
             for goal_text, intent in self.PRIMARY_GOAL_MAP.items():
                 if goal_text in primary_goal or primary_goal in goal_text:
@@ -236,14 +250,14 @@ INTENT_SCORING_CONFIGS = {
     MatchIntent.INVESTOR_FOUNDER: IntentScoringConfig(
         experience_gap_weight=0.0,
         industry_match_weight=1.5,  # Investors care about industry focus
-        stage_match_weight=2.0,     # Stage (seed/series) is critical
+        stage_match_weight=3.0,     # Stage (seed/series) is critical — raised from 2.0 to catch seed↔Series A mismatches
         geography_weight=0.3,
         bidirectional_required=True
     ),
     MatchIntent.FOUNDER_INVESTOR: IntentScoringConfig(
         experience_gap_weight=0.0,
         industry_match_weight=1.5,
-        stage_match_weight=2.0,
+        stage_match_weight=3.0,     # Raised from 2.0 — founders need stage-matched investors
         geography_weight=0.3,
         bidirectional_required=True
     ),
@@ -308,9 +322,10 @@ INTENT_SCORING_CONFIGS = {
         bidirectional_required=False  # Recruiters can initiate matches
     ),
     # BUG-040 FIX: Service provider scoring - similar to partnership
+    # Industry weight raised 1.3→2.0: out-of-industry consultants are a fundamental quality failure
     MatchIntent.SERVICE_PROVIDER: IntentScoringConfig(
         experience_gap_weight=0.0,
-        industry_match_weight=1.3,
+        industry_match_weight=2.0,
         stage_match_weight=0.7,
         geography_weight=0.5,
         bidirectional_required=False  # Service providers seek clients
@@ -438,6 +453,9 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
             (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTOR_MENTEE),
             (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
+            # Layer 4: Block cross-pairs where both sides need help (neither can serve the other)
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR),  # job seeker ↔ mentee
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING),
         }
 
         return (user_intent, candidate_intent) in blocked_same_pairs
@@ -580,6 +598,15 @@ class EnhancedMatchingService:
                         logger.debug(f"Filtered {match_user_id}: same objective ({user_intent.value})")
                         continue
 
+                # PENALTY: Same-persona mirror match detection
+                # Two users with identical archetypes have the same gaps — they can't help each other
+                if user_persona and match_persona:
+                    user_archetype = getattr(user_persona, 'archetype', None) or ''
+                    match_archetype = getattr(match_persona, 'archetype', None) or ''
+                    if user_archetype and match_archetype and user_archetype.lower() == match_archetype.lower():
+                        combined_score *= 0.70  # 30% penalty for mirror matches
+                        logger.debug(f"Mirror match penalty for {match_user_id}: same archetype '{user_archetype}'")
+
                 # Calculate intent match quality
                 intent_quality = self._calculate_intent_match_quality(
                     user_intent, match_intent, user_intent_confidence, match_intent_confidence
@@ -700,8 +727,8 @@ class EnhancedMatchingService:
             (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
             (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.85,
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.85,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.70,  # Was 0.85 — consultants aren't universally useful without industry alignment
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.70,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.8,
             (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.8,
 
@@ -711,10 +738,10 @@ class EnhancedMatchingService:
             (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.5,
 
             # === COFOUNDER cross-pairs ===
-            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.85,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.85,
-            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.7,
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.7,
+            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.45,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.45,
+            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.40,  # Was 0.70 — investors fund, they don't co-found
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.40,
             (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.5,
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.5,
             (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.6,
@@ -735,10 +762,13 @@ class EnhancedMatchingService:
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.65,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.65,
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.50,  # Layer 3: was 0.65, misclassified mentors create false matches
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.50,  # Layer 3: was 0.65
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.35,
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.35,
+            # Layer 4: Block mentee↔opportunity (two people needing help, neither can hire)
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR): 0.15,
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.15,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.PARTNERSHIP): 0.25,
             (MatchIntent.PARTNERSHIP, MatchIntent.OPPORTUNITY_SEEKING): 0.25,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.3,
@@ -761,8 +791,9 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
 
             # === FOUNDER cross-pairs with talent ===
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.6,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.6,
+            # Layer 3: was 0.60, a founder raising money doesn't help a hiring company get engineers or capital
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.45,
+            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.45,
 
             # === TALENT_SEEKING cross-pairs with investors ===
             (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.75,
@@ -939,9 +970,11 @@ class EnhancedMatchingService:
             signal_score     * 0.10      # Layer 3: Activity + recency
         )
 
-        # Intent as hard multiplier for bad pairs
-        if intent_quality < 0.5:
-            intent_multiplier = intent_quality / 0.5  # Maps 0→0, 0.5→1.0
+        # Layer 2: Raised multiplier threshold from 0.5 → 0.65
+        # Intent < 0.65 now CRUSHES the score (catches mediocre cross-pairs like
+        # founder↔talent_seeking 0.45, partnership↔investor 0.50, opportunity↔mentor 0.50)
+        if intent_quality < 0.65:
+            intent_multiplier = intent_quality / 0.65  # Maps 0→0, 0.65→1.0
             final = base_total * intent_multiplier + intent_quality * 0.15
         elif intent_quality >= 0.95:
             # PERFECT pair: boost so good matches break above 75%
@@ -953,6 +986,10 @@ class EnhancedMatchingService:
         final = max(0.0, min(1.0, final))
         if final > 0:
             final = final ** 0.85
+
+        # Layer 1: Intent ceiling — embedding similarity can NEVER override intent
+        # If intent = 0.60, max possible score is 60% regardless of how similar profiles are
+        final = min(final, intent_quality)
 
         return final, dimension_score, signal_score
 

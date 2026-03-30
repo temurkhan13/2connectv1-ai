@@ -2473,7 +2473,7 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # this in code to guarantee progressive disclosure and natural conversation.
         # Reduced from 3 to 2 for more gradual onboarding and richer conversations.
         # =========================================================================
-        MAX_SLOTS_PER_TURN = 3  # Raised from 2 — users were repeating info 3-4 times
+        MAX_SLOTS_PER_TURN = 2
 
         if len(extracted_slots) > MAX_SLOTS_PER_TURN:
             # Determine objective from already_filled OR just-extracted primary_goal

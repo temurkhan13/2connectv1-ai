@@ -702,16 +702,12 @@ class ProgressiveDisclosure:
             return False, "Need to understand your primary goal first"
 
         # Get focus slots for this objective
+        # Use get_template() which handles keyword matching (e.g. "launch product" → PRODUCT_LAUNCH)
         try:
-            from app.services.use_case_templates import TEMPLATES, ObjectiveType
-            objective_enum = ObjectiveType(objective)
-            template = TEMPLATES.get(objective_enum)
-            if template:
-                focus_slots = template.onboarding_focus_slots
-            else:
-                focus_slots = []
-        except (ValueError, KeyError):
-            # Unknown objective - use default check
+            from app.services.use_case_templates import get_template
+            template = get_template(objective)
+            focus_slots = template.onboarding_focus_slots if template else []
+        except (ValueError, KeyError, Exception):
             focus_slots = []
 
         if not focus_slots:

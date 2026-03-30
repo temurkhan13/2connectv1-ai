@@ -37,6 +37,7 @@ from app.routers.onboarding import router as onboarding_router
 from app.routers.match import router as match_router
 from app.routers.feedback import router as feedback_router
 from app.routers.templates import router as templates_router
+from app.routers.voice import router as voice_router
 from app.middleware.auth import APIKeyMiddleware
 from app.middleware.rate_limit import limiter, rate_limit_exceeded_handler
 from dotenv import load_dotenv
@@ -198,3 +199,5 @@ app.include_router(match_router, prefix="/api/v1")
 app.include_router(feedback_router, prefix="/api/v1")
 # Templates router for use case templates
 app.include_router(templates_router, prefix="/api/v1")
+# Voice transcription router (Whisper)
+app.include_router(voice_router, prefix="/api/v1")

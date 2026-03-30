@@ -197,6 +197,19 @@ class InlineMatchingService:
 
             logger.info(f"[INLINE MATCH] Complete for {user_id}: {result['message']}")
 
+            # Clear needs_matchmaking flag so scheduled cron doesn't re-process this user.
+            # Inline matching already handled this user — the cron should only pick up
+            # users who need re-matching (admin imports, embedding changes).
+            try:
+                from app.adapters.supabase_profiles import UserProfile
+                profile = UserProfile.get(user_id)
+                if profile and hasattr(profile, 'needs_matchmaking'):
+                    profile.needs_matchmaking = "false"
+                    profile.save()
+                    logger.info(f"[INLINE MATCH] Cleared needs_matchmaking for {user_id}")
+            except Exception as flag_error:
+                logger.warning(f"[INLINE MATCH] Failed to clear needs_matchmaking for {user_id}: {flag_error}")
+
             # PUBLISH EVENT: Notify backend that matches are ready
             # This triggers push notification to user's device
             try:
@@ -587,10 +600,14 @@ class InlineMatchingService:
             # STEP 0: Source user profile completeness gate
             # Users with 0 slots / 0 embeddings should NOT generate matches — they produce
             # noise scores (52-72%) against everyone, polluting other users' match pools too.
+            # FIX (Mar 29, 2026): Check for ANY embeddings (multi-vector included),
+            # not just basic 'requirements' type. The basic embedding may not exist yet
+            # when multi-vector embeddings from slots are already stored.
             from app.adapters.postgresql import postgresql_adapter
             try:
                 source_embeddings = postgresql_adapter.get_user_embeddings(user_id)
-                if not source_embeddings or not source_embeddings.get('requirements'):
+                has_any_embedding = bool(source_embeddings) and len(source_embeddings) > 0
+                if not has_any_embedding:
                     logger.warning(f"[INLINE MATCH] Source user {user_id} has no embeddings — blocking match generation")
                     return {
                         "success": True,
@@ -600,6 +617,7 @@ class InlineMatchingService:
                         "algorithm": "hybrid_full",
                         "stats": {"blocked_reason": "source_user_no_embeddings"}
                     }
+                logger.info(f"[INLINE MATCH] Source user {user_id} has {len(source_embeddings)} embedding types")
             except Exception as e:
                 logger.warning(f"[INLINE MATCH] Could not check source embeddings for {user_id}: {e}")
 
@@ -656,9 +674,16 @@ class InlineMatchingService:
             except Exception as e:
                 logger.warning(f"[INLINE MATCH] Could not fetch primary_goal for {user_id}: {e}")
 
+            # Extract user_type from slots for mentor/mentee disambiguation
+            user_type_slot = ""
+            if isinstance(slots, dict) and "user_type" in slots:
+                ut = slots["user_type"]
+                user_type_slot = ut.get("value", "") if isinstance(ut, dict) else str(ut)
+
             if user_persona:
                 user_intent, intent_confidence = intent_classifier.classify({
                     "primary_goal": user_primary_goal,  # Highest priority signal
+                    "user_type": user_type_slot,  # For mentor/mentee disambiguation
                     "what_theyre_looking_for": getattr(user_persona, "what_theyre_looking_for", ""),
                     "requirements": getattr(user_persona, "requirements", ""),
                     "offerings": getattr(user_persona, "offerings", ""),
@@ -668,7 +693,7 @@ class InlineMatchingService:
             else:
                 # Even without persona, try primary_goal
                 if user_primary_goal:
-                    user_intent, intent_confidence = intent_classifier.classify({"primary_goal": user_primary_goal})
+                    user_intent, intent_confidence = intent_classifier.classify({"primary_goal": user_primary_goal, "user_type": user_type_slot})
                 else:
                     user_intent, intent_confidence = MatchIntent.GENERAL, 0.5
             logger.info(f"[INLINE MATCH] User {user_id} intent: {user_intent.value} (confidence: {intent_confidence}, primary_goal: '{user_primary_goal}')")
@@ -737,9 +762,16 @@ class InlineMatchingService:
                 except Exception:
                     pass
 
+                # Extract candidate user_type for mentor/mentee disambiguation
+                candidate_user_type = ""
+                if isinstance(c_slots, dict) and "user_type" in c_slots:
+                    cut = c_slots["user_type"]
+                    candidate_user_type = cut.get("value", "") if isinstance(cut, dict) else str(cut)
+
                 if candidate_persona:
                     candidate_intent, _ = intent_classifier.classify({
                         "primary_goal": candidate_primary_goal,
+                        "user_type": candidate_user_type,
                         "what_theyre_looking_for": getattr(candidate_persona, "what_theyre_looking_for", ""),
                         "requirements": getattr(candidate_persona, "requirements", ""),
                         "offerings": getattr(candidate_persona, "offerings", ""),
@@ -747,18 +779,12 @@ class InlineMatchingService:
                         "focus": getattr(candidate_persona, "focus", "")
                     })
                 elif candidate_primary_goal:
-                    candidate_intent, _ = intent_classifier.classify({"primary_goal": candidate_primary_goal})
+                    candidate_intent, _ = intent_classifier.classify({"primary_goal": candidate_primary_goal, "user_type": candidate_user_type})
                 else:
                     candidate_intent = MatchIntent.GENERAL
 
-                # Fix: Founders with opportunity_seeking are NOT job seekers — they're seeking
-                # funding/partnerships. Reclassify based on archetype.
-                if candidate_intent == MatchIntent.OPPORTUNITY_SEEKING and candidate_persona:
-                    cand_arch = (getattr(candidate_persona, 'archetype', '') or '').lower()
-                    if any(kw in cand_arch for kw in ['founder', 'entrepreneur', 'ceo', 'co-founder']):
-                        candidate_intent = MatchIntent.FOUNDER_INVESTOR
-                        # This means they'll now be blocked from talent_seeking users (Joe Gordon)
-                        # and correctly shown to investor_founder users
+                # NOTE: Removed archetype-based intent override (Mar 30, 2026).
+                # Primary goal always takes precedence over archetype.
 
                 # 5b. Check intent complementarity
                 intent_quality = self._get_intent_quality(user_intent, candidate_intent)
@@ -865,26 +891,37 @@ class InlineMatchingService:
 
                 dimension_score = base_score  # Forward multi-vector (req→off) as dimensional alignment
 
+                # Seniority bonus for mentorship matches
+                seniority_bonus = 1.0
+                if user_intent in (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE):
+                    seniority_bonus = self._calculate_mentorship_seniority_bonus(candidate_persona)
+
+                # Product launch relevance bonus
+                launch_bonus = self._calculate_product_launch_relevance_bonus(user_persona, candidate_persona)
+                if launch_bonus > 1.0:
+                    seniority_bonus = max(seniority_bonus, launch_bonus)
+
                 # --- Intent as hard multiplier ---
-                # Bad intent pairs should CRUSH the score, not just reduce it by 25%
-                # intent_quality < 0.5 → multiply base by intent (e.g., 0.3 intent → 30% of base)
-                # intent_quality >= 0.5 → no penalty, intent contributes additively as before
                 base_total = (
                     core_score       * 0.40 +    # Bidirectional (boosted from 0.35)
                     dimension_score  * 0.35 +    # Dimensional alignment (boosted from 0.30)
                     signal_score     * 0.10      # Activity + recency
                 )
 
-                # Layer 2: Raised multiplier threshold from 0.5 → 0.65
-                # Intent < 0.65 now CRUSHES the score (catches mediocre cross-pairs)
-                if intent_quality < 0.65:
-                    intent_multiplier = intent_quality / 0.65  # Maps 0→0, 0.65→1.0
+                # Apply seniority bonus for mentorship matches
+                if seniority_bonus > 1.0:
+                    base_total = base_total * seniority_bonus
+
+                # Intent multiplier: only truly bad pairs (< 0.50) get crushed.
+                # Pairs in 0.50-0.65 range (service/partnership) get mild scaling, not destruction.
+                if intent_quality < 0.50:
+                    intent_multiplier = intent_quality / 0.50  # Maps 0→0, 0.50→1.0
                     final_score = base_total * intent_multiplier + intent_quality * 0.15
                 elif intent_quality >= 0.95:
                     # PERFECT pair (1.0): boost score so good matches break above 75%
                     final_score = base_total * 1.15 + intent_quality * 0.15
                 else:
-                    # GOOD pair: standard additive formula
+                    # GOOD/MODERATE pair: standard additive formula
                     final_score = base_total + intent_quality * 0.15
 
                 # --- Score spread enhancement ---
@@ -892,8 +929,16 @@ class InlineMatchingService:
                 if final_score > 0:
                     final_score = final_score ** 0.85  # Gentle spread enhancement
 
-                # Layer 1: Intent ceiling — embedding similarity can NEVER override intent
-                final_score = min(final_score, intent_quality)
+                # Intent ceiling — different for mentorship vs transactional
+                is_mentee = user_intent in (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE)
+                is_general = user_intent == MatchIntent.GENERAL
+                if (is_mentee or is_general) and intent_quality < 0.95:
+                    # Softened ceiling: profile quality can push past IQ
+                    hard_ceiling = min(final_score, intent_quality)
+                    soft_ceiling = intent_quality * 0.60 + base_total * 0.40
+                    final_score = max(hard_ceiling, min(final_score, soft_ceiling))
+                else:
+                    final_score = min(final_score, intent_quality)
 
                 # Only include if above threshold
                 if final_score >= threshold:
@@ -928,8 +973,14 @@ class InlineMatchingService:
                     }
                     enhanced_matches.append(match_data)
 
-            # Sort by final score
-            enhanced_matches.sort(key=lambda x: x["similarity_score"], reverse=True)
+            # Tiered sort: for transactional intents, perfect complementary matches
+            # (IQ>=0.95) always rank above non-complementary, then by score within tier.
+            transactional = user_intent in (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER,
+                                            MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING)
+            if transactional:
+                enhanced_matches.sort(key=lambda x: (-int(x.get("intent_quality", 0) >= 0.95), -x["similarity_score"]))
+            else:
+                enhanced_matches.sort(key=lambda x: -x["similarity_score"])
 
             # Limit to max_matches
             enhanced_matches = enhanced_matches[:self.max_matches]
@@ -1012,14 +1063,14 @@ class InlineMatchingService:
             (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
             (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.70,  # Was 0.85 — consultants need industry alignment to be useful
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.70,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.45,    # Lowered — agencies rarely serve hiring companies well
-            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.45,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.90,  # Founders benefit from consultants — raised to outrank peer partnerships
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.90,
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.70,   # Staffing agencies / HR consultants serve hiring companies
+            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.70,
 
             # === ALLOWED SAME-SIDE PAIRS (genuine mutual benefit) ===
             (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,         # Both seeking cofounders — valid
-            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.7,      # Both seeking partners — moderate
+            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.80,     # Both seeking partners = valid B2B (lowered so service providers rank above)
             (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.5,             # Both networking — weak signal
 
             # === COFOUNDER cross-pairs ===
@@ -1032,17 +1083,17 @@ class InlineMatchingService:
             (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.6,
             (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.6,
 
-            # === PARTNERSHIP cross-pairs (conservative — partnerships are vague) ===
-            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER): 0.5,   # Investor might partner, weak
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP): 0.5,
-            (MatchIntent.PARTNERSHIP, MatchIntent.SERVICE_PROVIDER): 0.65,  # B2B services = natural partners
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP): 0.65,
-            (MatchIntent.PARTNERSHIP, MatchIntent.FOUNDER_INVESTOR): 0.4,   # Founder raising ≠ partner material
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.4,
-            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.4,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.4,
-            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.35,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.35,
+            # === PARTNERSHIP cross-pairs ===
+            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER): 0.60,  # Investors do strategic partnerships
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP): 0.60,
+            (MatchIntent.PARTNERSHIP, MatchIntent.SERVICE_PROVIDER): 0.80,  # Service providers are natural partners
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP): 0.80,
+            (MatchIntent.PARTNERSHIP, MatchIntent.FOUNDER_INVESTOR): 0.65,  # Founders seek distribution/channel partners
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.65,
+            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.50,
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.50,
+            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.70,   # Hiring companies are potential customers/partners for product launchers
+            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.70,
 
             # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,   # Investors don't hire job seekers
@@ -1087,13 +1138,70 @@ class InlineMatchingService:
 
             # === Self-referral pairs ===
             (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.6,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.3,  # Two consultants = no transaction
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.50,  # Referral network — consultants refer each other
         }
 
         pair = (user_intent, candidate_intent)
         # Default 0.35 for unknown pairs — unknown intent = weak match signal
         # Previous 0.7 default was far too generous and inflated scores for unclassified users
         return complete_pairs.get(pair, 0.35)
+
+    PRODUCT_LAUNCH_KEYWORDS = [
+        'go-to-market', 'gtm', 'sales', 'distribution', 'channel',
+        'revenue operations', 'revenue ops', 'growth', 'marketing',
+        'product marketing', 'demand gen', 'customer acquisition',
+        'business development', 'partnerships', 'enterprise sales',
+        'b2b sales', 'market entry', 'launch', 'scaling',
+    ]
+
+    def _calculate_product_launch_relevance_bonus(self, user_persona, match_persona) -> float:
+        """Bonus for matches with GTM expertise when user is launching a product."""
+        if not match_persona:
+            return 1.0
+
+        user_goal = ''
+        if user_persona:
+            user_goal = (getattr(user_persona, 'primary_goal', '') or '').lower()
+        if 'launch' not in user_goal and 'product' not in user_goal:
+            return 1.0
+
+        match_focus = (getattr(match_persona, 'focus', '') or '').lower()
+        match_offerings = (getattr(match_persona, 'offerings', '') or '').lower()
+        match_designation = (getattr(match_persona, 'designation', '') or '').lower()
+        combined = f"{match_focus} {match_offerings} {match_designation}"
+
+        matches = sum(1 for kw in self.PRODUCT_LAUNCH_KEYWORDS if kw in combined)
+        if matches >= 3:
+            return 1.25
+        elif matches >= 1:
+            return 1.15
+        return 1.0
+
+    def _calculate_mentorship_seniority_bonus(self, match_persona) -> float:
+        """
+        Score bonus for matches with senior designations when user is a mentee.
+        Returns a multiplier: 1.0 (no bonus) to 1.30 (strong senior match).
+        """
+        if not match_persona:
+            return 1.0
+
+        designation = (getattr(match_persona, 'designation', '') or '').lower()
+        archetype = (getattr(match_persona, 'archetype', '') or '').lower()
+        combined = f"{designation} {archetype}"
+
+        # Strong senior signal — VP/Director/C-level
+        strong_senior = ['vp ', 'vice president', 'director', 'head of',
+                         'cto', 'cmo', 'cfo', 'coo', 'ceo', 'cpo',
+                         'svp', 'evp', 'principal', 'managing director']
+        if any(kw in combined for kw in strong_senior):
+            return 1.30  # 30% boost
+
+        # Moderate senior signal — experienced professionals
+        moderate_senior = ['senior', 'lead', 'manager', 'partner', 'founder']
+        if any(kw in combined for kw in moderate_senior):
+            return 1.15  # 15% boost
+
+        return 1.0  # No bonus for junior/unclear roles
 
     def _should_block_same_objective(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> bool:
         """
@@ -1130,8 +1238,21 @@ class InlineMatchingService:
             (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER),
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER),
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER),
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR),
+            # Removed: FOUNDER_INVESTOR ↔ SERVICE_PROVIDER block
+            # Founders benefit from consultants (legal, marketing, fractional CTO)
+
+            # === SERVICE PROVIDER same-side block ===
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),
+
+            # === MENTEE blocks — mentees need mentors, not co-founders or partners ===
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.COFOUNDER),
+            (MatchIntent.COFOUNDER, MatchIntent.MENTEE_MENTOR),
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER),
+            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE),
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.PARTNERSHIP),
+            (MatchIntent.PARTNERSHIP, MatchIntent.MENTEE_MENTOR),
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP),
+            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE),
         }
 
         if (user_intent, candidate_intent) in blocked_cross_pairs:

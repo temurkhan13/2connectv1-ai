@@ -940,7 +940,12 @@ class SlotSchema:
             focus_slot_names = []
 
         # Universal slots always included (requirements/offerings are CRITICAL for matching)
-        universal_slots = ["primary_goal", "user_type", "industry_focus", "geography", "dealbreakers", "requirements", "offerings"]
+        # For mentorship: requirements/offerings are covered by mentorship_areas and persona generation
+        # Including them inflates the denominator, causing stuck progress (~67%)
+        if "mentor" in objective_lower or "advisor" in objective_lower:
+            universal_slots = ["primary_goal", "industry_focus", "geography", "dealbreakers"]
+        else:
+            universal_slots = ["primary_goal", "user_type", "industry_focus", "geography", "dealbreakers", "requirements", "offerings"]
 
         # Start with universal slots from CORE_SLOTS
         slots = [s for s in cls.CORE_SLOTS if s.name in universal_slots]

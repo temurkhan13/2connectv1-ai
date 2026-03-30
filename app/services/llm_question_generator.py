@@ -46,6 +46,8 @@ SLOT_DISPLAY_NAMES = {
     "service_type": "services you offer",
     "offerings": "what you can offer",
     "requirements": "what you're looking for",
+    "achievement": "a key professional achievement",
+    "network_strength": "your strongest professional network",
 }
 
 
@@ -150,6 +152,11 @@ class LLMQuestionGenerator:
                 "industry_focus": "what industries or sectors the user works in or targets",
                 "requirements": "what the user is specifically looking for from connections",
                 "offerings": "what the user can offer to others",
+                "achievement": "a concrete professional achievement, milestone, or result — ask naturally, e.g., 'what's something you've built or achieved that you're most proud of?'",
+                "network_strength": "their strongest professional network or community — ask naturally, e.g., 'where are your strongest connections?'",
+                "experience_years": "how many years of relevant experience they have",
+                "timeline": "when they want to achieve their goal by",
+                "team_size": "how many people are on their team (employees, NOT customers)",
             }
             missing_with_hints = []
             for slot in priority_missing:

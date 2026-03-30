@@ -369,6 +369,17 @@ SLOT_DEFINITIONS = {
         "description": "What would make the user immediately pass on a connection - absolute non-starters",
         "type": "text",
         "extraction_hint": "Extract clear rejections and non-starters: 'not interested in generalist VCs' → 'generalist VCs', 'won't work with agencies' → 'agencies', 'no crypto' → 'crypto projects'. CRITICAL: This is DIFFERENT from 'requirements' - dealbreakers are EXCLUSIONS, things they actively avoid. CONCISE ONLY: 3-8 words max per item, semicolon-separated."
+    },
+    # Conditional identity slots — activated by dependency triggers
+    "achievement": {
+        "description": "A key professional achievement, milestone, or result the user is proud of",
+        "type": "text",
+        "extraction_hint": "Extract concrete achievements: 'scaled team from 5 to 200' → 'Scaled team 5→200'; 'raised $10M Series A' → 'Raised $10M Series A'; 'grew revenue 10x' → 'Grew revenue 10x'; 'built product used by 1M users' → 'Built product reaching 1M users'. Look for numbers, growth metrics, funding milestones, exits, launches. CONCISE: 5-15 words max."
+    },
+    "network_strength": {
+        "description": "The user's strongest professional network or community",
+        "type": "text",
+        "extraction_hint": "Extract their strongest connections/community: 'I know every VC in London' → 'London VC community'; 'deep network in healthcare' → 'Healthcare industry network'; 'well connected in YC alumni' → 'YC alumni network'; 'strong relationships with enterprise CTOs' → 'Enterprise CTO network'. CONCISE: 3-8 words max."
     }
 }
 
@@ -2474,9 +2485,10 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         # =========================================================================
         # The LLM ignores prompt instructions to limit extraction. We MUST enforce
         # this in code to guarantee progressive disclosure and natural conversation.
-        # Reduced from 3 to 2 for more gradual onboarding and richer conversations.
+        # Increased from 2 to 3: with identity + conditional slots added,
+        # we need to capture more per turn to keep onboarding short.
         # =========================================================================
-        MAX_SLOTS_PER_TURN = 2
+        MAX_SLOTS_PER_TURN = 3
 
         if len(extracted_slots) > MAX_SLOTS_PER_TURN:
             # Determine objective from already_filled OR just-extracted primary_goal

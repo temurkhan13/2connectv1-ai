@@ -501,11 +501,20 @@ class ContextManager:
                 objective = self._map_user_type_to_objective(user_type)
 
             # Get required slots for this objective
-            required_slots = get_onboarding_slots(objective)
+            required_slots = list(get_onboarding_slots(objective))
             logger.info(f"[BUG-087] Objective '{objective}' requires slots: {required_slots}")
 
-            # Calculate what's ACTUALLY missing (required - already_filled - just_extracted)
+            # Evaluate conditional slot triggers — add slots activated by what's already filled
+            from app.services.use_case_templates import get_conditional_slots
             all_filled_now = set(already_filled.keys()) | set(llm_result.extracted_slots.keys())
+            conditional_activated = get_conditional_slots(dict.fromkeys(all_filled_now, True))
+            if conditional_activated:
+                for cond_slot in conditional_activated:
+                    if cond_slot not in required_slots:
+                        required_slots.append(cond_slot)
+                logger.info(f"[CONDITIONAL] Activated slots from triggers: {conditional_activated}")
+
+            # Calculate what's ACTUALLY missing (required - already_filled - just_extracted)
             actual_missing_slots = [s for s in required_slots if s not in all_filled_now]
             logger.info(f"[BUG-087] Actually missing: {actual_missing_slots} (filled: {list(all_filled_now)})")
 

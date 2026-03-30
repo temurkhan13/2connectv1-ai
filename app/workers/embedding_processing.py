@@ -196,6 +196,79 @@ def _generate_focus_slot_embeddings(user_id: str, objective: str) -> int:
         return 0
 
 
+# Identity slots that get direct embeddings (bypass persona narrative)
+IDENTITY_EMBEDDING_SLOTS = [
+    "skills_have",
+    "role_title",
+    "achievement",
+    "network_strength",
+]
+
+
+def _generate_identity_slot_embeddings(user_id: str) -> int:
+    """
+    Generate direct embeddings for identity/conditional slots.
+
+    These slots describe WHO the user is (skills, role, achievements, network)
+    and create embeddings directly from slot values — not through the lossy
+    persona narrative conversion.
+
+    Returns:
+        Number of identity slot embeddings generated
+    """
+    try:
+        extracted_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
+        if not extracted_slots:
+            return 0
+
+        generated_count = 0
+        for slot_name in IDENTITY_EMBEDDING_SLOTS:
+            slot_data = extracted_slots.get(slot_name)
+            if not slot_data:
+                continue
+
+            slot_value = slot_data.get("value")
+            if not slot_value:
+                continue
+
+            if isinstance(slot_value, list):
+                text_value = ", ".join(str(v) for v in slot_value)
+            else:
+                text_value = str(slot_value)
+
+            if not text_value.strip():
+                continue
+
+            embedding = embedding_service.generate_embedding(text_value)
+            if not embedding:
+                logger.warning(f"[Identity] Failed to generate embedding for '{slot_name}'")
+                continue
+
+            embedding_type = f"identity_{slot_name}"
+            success = postgresql_adapter.store_embedding(
+                user_id=user_id,
+                embedding_type=embedding_type,
+                vector_data=embedding,
+                metadata={
+                    "slot_name": slot_name,
+                    "slot_value": text_value[:500],
+                    "source": "identity_slot"
+                }
+            )
+
+            if success:
+                generated_count += 1
+                logger.info(f"[Identity] Stored {embedding_type} embedding for user {user_id[:8]}...")
+
+        if generated_count > 0:
+            logger.info(f"[Identity] Generated {generated_count} identity embeddings for user {user_id}")
+        return generated_count
+
+    except Exception as e:
+        logger.error(f"[Identity] Error generating identity embeddings for user {user_id}: {e}")
+        return 0
+
+
 @celery_app.task(bind=True, name='generate_embeddings')
 def generate_embeddings_task(self, user_id: str):
     """
@@ -321,6 +394,15 @@ def generate_embeddings_task(self, user_id: str):
             except Exception as fs_error:
                 # Don't fail the task if focus slot embeddings fail
                 logger.warning(f"Focus slot embedding generation failed for user {user_id}: {fs_error}")
+
+            # Generate identity slot embeddings (conditional slots like achievement, network_strength)
+            # These bypass persona narrative — direct slot value → embedding
+            try:
+                identity_count = _generate_identity_slot_embeddings(user_id)
+                if identity_count > 0:
+                    logger.info(f"Generated {identity_count} identity slot embeddings for user {user_id}")
+            except Exception as id_error:
+                logger.warning(f"Identity slot embedding generation failed for user {user_id}: {id_error}")
 
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")

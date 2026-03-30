@@ -832,10 +832,38 @@ def get_verdict_criteria(objective: str) -> Dict[str, List[str]]:
     return template.verdict_criteria
 
 
+# Conditional slots activated by dependency chain.
+# When slot X is filled, slots Y and Z become required.
+# This handles cross-objective slots that depend on what the user says,
+# not which objective they chose.
+CONDITIONAL_SLOT_TRIGGERS = {
+    "company_name": ["company_stage", "team_size"],
+    "skills_have": ["experience_years"],
+    "company_stage": ["timeline"],
+    "primary_goal": ["achievement"],
+    "geography": ["network_strength"],
+}
+
+
 def get_onboarding_slots(objective: str) -> List[str]:
     """Get the focus slots for onboarding based on objective."""
     template = get_template(objective)
     return template.onboarding_focus_slots
+
+
+def get_conditional_slots(filled_slots: dict) -> List[str]:
+    """Get conditional slots that should be activated based on filled slots.
+
+    Evaluates CONDITIONAL_SLOT_TRIGGERS: if a trigger slot is filled,
+    its dependent slots are added to the required list.
+    """
+    activated = []
+    for trigger_slot, conditional_slots in CONDITIONAL_SLOT_TRIGGERS.items():
+        if trigger_slot in filled_slots:
+            for slot in conditional_slots:
+                if slot not in filled_slots and slot not in activated:
+                    activated.append(slot)
+    return activated
 
 
 def get_match_weights(objective: str) -> Dict[str, float]:

@@ -322,6 +322,23 @@ class SlotSchema:
             extract_keywords=["employees", "company size", "companies with", "50-200", "100-500",
                             "startups", "scaleups", "enterprises", "smb", "mid-market", "headcount"]
         ),
+        # Conditional identity slots — activated by dependency triggers
+        SlotDefinition(
+            name="achievement",
+            display_name="Key Achievement",
+            slot_type=SlotType.FREE_TEXT,
+            description="A key professional achievement or milestone",
+            required=False,
+            extract_keywords=["achieved", "built", "scaled", "grew", "raised", "launched", "exited", "sold", "milestone"]
+        ),
+        SlotDefinition(
+            name="network_strength",
+            display_name="Strongest Network",
+            slot_type=SlotType.FREE_TEXT,
+            description="Your strongest professional network or community",
+            required=False,
+            extract_keywords=["network", "connected", "community", "know everyone", "relationships", "alumni"]
+        ),
     ]
 
     # ========================================================================

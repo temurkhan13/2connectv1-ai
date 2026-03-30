@@ -173,11 +173,13 @@ SLOT_DEFINITIONS = {
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
-        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
+        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Offer Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
         "extraction_hint": "KEYWORD-TO-GOAL MAPPING (extract on first match): "
                           "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
                           "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
-                          "• 'mentor', 'advice', 'guidance', 'learn from' → 'Seek Mentorship'. "
+                          "• MENTORSHIP DIRECTION IS CRITICAL: "
+                          "  - If user wants to RECEIVE mentorship ('find a mentor', 'looking for guidance', 'need advice', 'learn from', 'seeking mentor') → 'Seek Mentorship'. "
+                          "  - If user wants to GIVE mentorship ('I want to mentor', 'offer mentorship', 'guide others', 'give back', 'help founders', 'advise', 'coach') → 'Offer Mentorship'. "
                           "• 'partnership', 'collaborate', 'strategic alliance', 'joint venture' → 'Explore Partnerships'. "
                           "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
                           "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
@@ -2535,11 +2537,20 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
 
             # BUG-090 FIX: ALWAYS prioritize primary_goal if not already filled
             # Even with objective-specific slots, primary_goal must come first
+            # FIX (Mar 30, 2026): Also prioritize user_type — critical for mentor/mentee
+            # disambiguation. Without it, "Seek Mentorship" can't be distinguished.
+            forced_first = []
             if "primary_goal" not in already_filled:
-                if "primary_goal" in priority_slots:
-                    priority_slots.remove("primary_goal")
-                priority_slots = ["primary_goal"] + list(priority_slots)
-                logger.info(f"[BUG-090] Prioritizing primary_goal as first slot")
+                forced_first.append("primary_goal")
+            if "user_type" not in already_filled:
+                forced_first.append("user_type")
+
+            if forced_first:
+                for slot in forced_first:
+                    if slot in priority_slots:
+                        priority_slots.remove(slot)
+                priority_slots = forced_first + list(priority_slots)
+                logger.info(f"[BUG-090] Prioritizing forced slots: {forced_first}")
 
             # Select top 3 slots by priority order
             limited_slots = {}

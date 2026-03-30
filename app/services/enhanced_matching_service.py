@@ -146,6 +146,9 @@ class IntentClassifier:
         "partnerships": MatchIntent.PARTNERSHIP,
         "find mentor": MatchIntent.MENTEE_MENTOR,
         "mentorship": MatchIntent.MENTOR_MENTEE,
+        "offer mentorship": MatchIntent.MENTEE_MENTOR,  # They ARE a mentor offering guidance
+        "provide mentorship": MatchIntent.MENTEE_MENTOR,
+        "give mentorship": MatchIntent.MENTEE_MENTOR,
         "find job": MatchIntent.OPPORTUNITY_SEEKING,
         "find new job": MatchIntent.OPPORTUNITY_SEEKING,
         "find a job": MatchIntent.OPPORTUNITY_SEEKING,

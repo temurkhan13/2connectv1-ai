@@ -1037,114 +1037,12 @@ class InlineMatchingService:
 
     def _get_intent_quality(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> float:
         """
-        Calculate intent complementarity score (0-1).
-
-        UPGRADED (Mar 2026): Complete pair table matching enhanced_matching_service.
-        Default raised from 0.4 to 0.7 (unknown pair = neutral, not penalty).
+        UPGRADED (Mar 30, 2026): IQ = 1.0 for all non-blocked pairs.
+        Same-need pairs are blocked by _should_block_same_objective() before
+        scoring. Everything that reaches here is a valid match type.
+        Embedding similarity handles whether the specific person is right.
         """
-        from app.services.enhanced_matching_service import MatchIntent
-
-        # Complete complementary pairs table (mirrors enhanced_matching_service)
-        # UPGRADED (Mar 27, 2026): Realistic scores based on match quality analysis.
-        # Previous version was far too generous — job seekers scored 0.85 against investors,
-        # founders seeking funding scored 0.80 against other founders seeking partnerships.
-        # This caused 73% of matches to be bad/questionable across 220+ analyzed matches.
-        complete_pairs = {
-            # === PERFECT COMPLEMENTARY PAIRS (1.0) — opposite sides of a transaction ===
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 1.0,
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 1.0,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 1.0,
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE): 1.0,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 1.0,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 1.0,
-
-            # === STRONG COMPLEMENTARY PAIRS (0.85-0.95) ===
-            (MatchIntent.RECRUITER, MatchIntent.TALENT_SEEKING): 0.95,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.RECRUITER): 0.95,
-            (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.9,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.9,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.FOUNDER_INVESTOR): 0.90,  # Founders benefit from consultants — raised to outrank peer partnerships
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.SERVICE_PROVIDER): 0.90,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.TALENT_SEEKING): 0.70,   # Staffing agencies / HR consultants serve hiring companies
-            (MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.70,
-
-            # === ALLOWED SAME-SIDE PAIRS (genuine mutual benefit) ===
-            (MatchIntent.COFOUNDER, MatchIntent.COFOUNDER): 0.9,         # Both seeking cofounders — valid
-            (MatchIntent.PARTNERSHIP, MatchIntent.PARTNERSHIP): 0.80,     # Both seeking partners = valid B2B (lowered so service providers rank above)
-            (MatchIntent.GENERAL, MatchIntent.GENERAL): 0.5,             # Both networking — weak signal
-
-            # === COFOUNDER cross-pairs ===
-            (MatchIntent.COFOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.45,  # Cofounders need talent
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.COFOUNDER): 0.45,
-            (MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER): 0.40,     # Was 0.70 — investors fund, they don't co-found
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER): 0.40,
-            (MatchIntent.COFOUNDER, MatchIntent.SERVICE_PROVIDER): 0.5,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.COFOUNDER): 0.5,
-            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE): 0.6,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER): 0.6,
-
-            # === PARTNERSHIP cross-pairs ===
-            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER): 0.60,  # Investors do strategic partnerships
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP): 0.60,
-            (MatchIntent.PARTNERSHIP, MatchIntent.SERVICE_PROVIDER): 0.80,  # Service providers are natural partners
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP): 0.80,
-            (MatchIntent.PARTNERSHIP, MatchIntent.FOUNDER_INVESTOR): 0.65,  # Founders seek distribution/channel partners
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.PARTNERSHIP): 0.65,
-            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE): 0.50,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP): 0.50,
-            (MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING): 0.70,   # Hiring companies are potential customers/partners for product launchers
-            (MatchIntent.TALENT_SEEKING, MatchIntent.PARTNERSHIP): 0.70,
-
-            # === OPPORTUNITY_SEEKING cross-pairs (job seekers only benefit from employers) ===
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.3,   # Investors don't hire job seekers
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE): 0.50,     # Layer 3: was 0.65, misclassified mentors create false matches
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.OPPORTUNITY_SEEKING): 0.50,
-            # Layer 4: Block mentee↔opportunity (two people needing help, neither can hire)
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR): 0.15,
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.15,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.35,  # Founders raising aren't hiring
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.OPPORTUNITY_SEEKING): 0.35,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.PARTNERSHIP): 0.25,       # Partnership seekers don't need job seekers
-            (MatchIntent.PARTNERSHIP, MatchIntent.OPPORTUNITY_SEEKING): 0.25,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.SERVICE_PROVIDER): 0.3,   # Service providers aren't employers
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.OPPORTUNITY_SEEKING): 0.3,
-
-            # === GENERAL cross-pairs (low — general networking is weak signal) ===
-            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER): 0.5,
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL): 0.5,
-            (MatchIntent.GENERAL, MatchIntent.FOUNDER_INVESTOR): 0.5,
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.GENERAL): 0.5,
-            (MatchIntent.GENERAL, MatchIntent.PARTNERSHIP): 0.45,
-            (MatchIntent.PARTNERSHIP, MatchIntent.GENERAL): 0.45,
-            (MatchIntent.GENERAL, MatchIntent.SERVICE_PROVIDER): 0.45,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.GENERAL): 0.45,
-            (MatchIntent.GENERAL, MatchIntent.MENTOR_MENTEE): 0.45,
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.GENERAL): 0.45,
-            (MatchIntent.GENERAL, MatchIntent.TALENT_SEEKING): 0.45,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.GENERAL): 0.45,
-            (MatchIntent.GENERAL, MatchIntent.OPPORTUNITY_SEEKING): 0.4,
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.GENERAL): 0.4,
-
-            # === FOUNDER cross-pairs with talent ===
-            # Layer 3: was 0.60, a founder raising money doesn't help a hiring company get engineers or capital
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.TALENT_SEEKING): 0.45,
-            (MatchIntent.TALENT_SEEKING, MatchIntent.FOUNDER_INVESTOR): 0.45,
-
-            # === TALENT_SEEKING cross-pairs with investors ===
-            # Hiring companies often ALSO need funding — Joe Gordon needs engineers AND investors
-            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER): 0.75,  # Investors fund hiring companies
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING): 0.75,
-
-            # === Self-referral pairs ===
-            (MatchIntent.RECRUITER, MatchIntent.RECRUITER): 0.6,
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER): 0.50,  # Referral network — consultants refer each other
-        }
-
-        pair = (user_intent, candidate_intent)
-        # Default 0.35 for unknown pairs — unknown intent = weak match signal
-        # Previous 0.7 default was far too generous and inflated scores for unclassified users
-        return complete_pairs.get(pair, 0.35)
+        return 1.0
 
     PRODUCT_LAUNCH_KEYWORDS = [
         'go-to-market', 'gtm', 'sales', 'distribution', 'channel',
@@ -1205,60 +1103,23 @@ class InlineMatchingService:
 
     def _should_block_same_objective(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> bool:
         """
-        Check if two users should be blocked from matching due to same objective.
+        UPGRADED (Mar 30, 2026): Only block truly same-need pairs.
 
-        Blocks:
-        - Two investors both looking for founders
-        - Two founders both raising
-        - Two job seekers
-        - Two hiring companies
+        ONLY block when both users have the exact same unidirectional need
+        and neither can provide what the other seeks.
+        Everything else is allowed — let IQ scores and profile quality decide.
         """
         from app.services.enhanced_matching_service import MatchIntent
 
-        blocked_same_pairs = [
-            MatchIntent.INVESTOR_FOUNDER,  # Two investors
-            MatchIntent.FOUNDER_INVESTOR,  # Two founders raising
-            MatchIntent.OPPORTUNITY_SEEKING,  # Two job seekers
-            MatchIntent.TALENT_SEEKING,  # Two hiring companies
-            MatchIntent.MENTEE_MENTOR,  # Two mentees seeking mentors
-            MatchIntent.MENTOR_MENTEE,  # Two mentors (no mentees)
-        ]
-
-        # Layer 4: Also block cross-pairs where both sides need help
-        blocked_cross_pairs = {
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTEE_MENTOR),  # job seeker ↔ mentee
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.OPPORTUNITY_SEEKING),
-            # Block non-fundraising intents from investor match lists
-            # Investors should ONLY see founders actively raising money
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING),
-            (MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP),
-            (MatchIntent.PARTNERSHIP, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.GENERAL),
-            (MatchIntent.GENERAL, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER),
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.INVESTOR_FOUNDER),
-            # Removed: FOUNDER_INVESTOR ↔ SERVICE_PROVIDER block
-            # Founders benefit from consultants (legal, marketing, fractional CTO)
-
-            # === SERVICE PROVIDER same-side block ===
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),
-
-            # === MENTEE blocks — mentees need mentors, not co-founders or partners ===
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.COFOUNDER),
-            (MatchIntent.COFOUNDER, MatchIntent.MENTEE_MENTOR),
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.COFOUNDER),
-            (MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE),
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.PARTNERSHIP),
-            (MatchIntent.PARTNERSHIP, MatchIntent.MENTEE_MENTOR),
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.PARTNERSHIP),
-            (MatchIntent.PARTNERSHIP, MatchIntent.MENTOR_MENTEE),
+        same_need_pairs = {
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
+            (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
         }
 
-        if (user_intent, candidate_intent) in blocked_cross_pairs:
-            return True
-
-        return user_intent == candidate_intent and user_intent in blocked_same_pairs
+        return (user_intent, candidate_intent) in same_need_pairs
 
     def _generate_hybrid_explanation(
         self,

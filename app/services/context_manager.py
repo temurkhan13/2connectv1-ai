@@ -145,6 +145,10 @@ class ContextManager:
         # Store LLM responses for contextual follow-ups
         self._llm_responses: Dict[str, LLMExtractionResult] = {}
 
+        # Track slots user mentioned but were deferred by BUG-088 2-slot limit
+        # Key: session_id, Value: list of slot names mentioned but not yet extracted
+        self._deferred_slots: Dict[str, List[str]] = {}
+
         # Extraction cache to prevent redundant API calls (P2 fix)
         # Key: hash(content), Value: extracted_names list
         self._extraction_cache: Dict[str, List[str]] = {}
@@ -505,6 +509,23 @@ class ContextManager:
             actual_missing_slots = [s for s in required_slots if s not in all_filled_now]
             logger.info(f"[BUG-087] Actually missing: {actual_missing_slots} (filled: {list(all_filled_now)})")
 
+            # Track acknowledged (mentioned but deferred due to 2-slot limit) slots
+            # These were mentioned by the user but not formally extracted yet
+            ack_slots = getattr(llm_result, 'acknowledged_slots', [])
+            # Also include previously deferred slots from earlier turns
+            prev_deferred = self._deferred_slots.get(context.session_id, [])
+            all_deferred = list(set(ack_slots + prev_deferred))
+            if all_deferred:
+                logger.info(f"[BUG-088] User previously mentioned but not yet extracted: {all_deferred} — avoid re-asking")
+
+            # Separate truly missing from user-mentioned-but-deferred
+            # Slots the user already mentioned should NOT be asked about as if unknown
+            truly_missing = [s for s in actual_missing_slots if s not in all_deferred]
+            mentioned_but_deferred = [s for s in actual_missing_slots if s in all_deferred]
+
+            if mentioned_but_deferred:
+                logger.info(f"[BUG-088] Slots mentioned by user but deferred: {mentioned_but_deferred} — will not ask about these as if new")
+
             # BUG-087 FIX: ALWAYS generate follow-up question using DEDICATED question generator
             # Previously gated on llm_result.missing_slots being non-empty, but that was unreliable.
             follow_up_question = None
@@ -521,11 +542,14 @@ class ContextManager:
                         else:
                             safe_extracted[k] = {"value": str(v), "confidence": 0.8}
 
+                    # Pass only truly missing slots (not ones user already mentioned)
+                    # The question generator will ask about NEW unknowns first
+                    slots_to_ask = truly_missing if truly_missing else actual_missing_slots
                     follow_up_question = self.question_generator.generate_followup_question(
                         user_message=content,
                         extracted_slots=safe_extracted,
                         all_filled_slots=already_filled,
-                        missing_slots=actual_missing_slots if actual_missing_slots else ["engagement"],  # Fallback for engagement questions
+                        missing_slots=slots_to_ask if slots_to_ask else ["engagement"],  # Fallback for engagement questions
                         user_type=user_type,
                         session_id=context.session_id,
                         conversation_history=conversation_history
@@ -541,6 +565,21 @@ class ContextManager:
                 logger.info(f"[BUG-092] User signaled completion - skipping follow-up question")
                 follow_up_question = ""
 
+            # Store deferred slots for this session so next turn knows what was mentioned
+            if ack_slots:
+                existing_deferred = self._deferred_slots.get(context.session_id, [])
+                for s in ack_slots:
+                    if s not in existing_deferred:
+                        existing_deferred.append(s)
+                self._deferred_slots[context.session_id] = existing_deferred
+
+            # Clear deferred slots that were actually extracted this turn
+            if context.session_id in self._deferred_slots:
+                self._deferred_slots[context.session_id] = [
+                    s for s in self._deferred_slots[context.session_id]
+                    if s not in llm_result.extracted_slots
+                ]
+
             llm_result_with_question = LLMExtractionResult(
                 extracted_slots=llm_result.extracted_slots,
                 user_type_inference=llm_result.user_type_inference,
@@ -548,7 +587,8 @@ class ContextManager:
                 understanding_summary=llm_result.understanding_summary,
                 is_off_topic=llm_result.is_off_topic,
                 is_completion_signal=llm_result.is_completion_signal,  # BUG-092: Propagate signal
-                follow_up_question=follow_up_question or ""
+                follow_up_question=follow_up_question or "",
+                acknowledged_slots=self._deferred_slots.get(context.session_id, [])
             )
 
             # Store LLM result for response generation (CRITICAL for question generation)

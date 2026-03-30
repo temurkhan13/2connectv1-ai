@@ -162,6 +162,7 @@ class LLMExtractionResult:
     is_off_topic: bool  # True if user asked off-topic/general knowledge question
     is_completion_signal: bool = False  # BUG-092: True if user explicitly wants to finish onboarding
     follow_up_question: str = ""  # DEPRECATED: Now handled by LLMQuestionGenerator
+    acknowledged_slots: List[str] = []  # Slots mentioned by user but deferred due to BUG-088 limit
 
 
 # Slot definitions for the LLM prompt
@@ -2603,8 +2604,8 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             missing_slots=response_data.get("missing_important_slots", []),
             understanding_summary=response_data.get("understanding_summary", ""),
             is_off_topic=response_data.get("is_off_topic", False),
-            is_completion_signal=is_completion  # BUG-092: LLM decides, not regex
-            # follow_up_question defaults to "" - now handled by LLMQuestionGenerator
+            is_completion_signal=is_completion,  # BUG-092: LLM decides, not regex
+            acknowledged_slots=acknowledged_slots if 'acknowledged_slots' in locals() else []
         )
 
     def _clean_follow_up_question(self, text: str) -> str:

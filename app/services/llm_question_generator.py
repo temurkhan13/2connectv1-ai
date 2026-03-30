@@ -139,6 +139,27 @@ class LLMQuestionGenerator:
             if session_id and session_id in self._session_patterns:
                 asked_before = self._session_patterns[session_id].get('asked_questions', [])[-5:]
 
+            # Build slot context hints so the LLM asks about the RIGHT thing
+            # e.g., "company_stage" for partnership = YOUR company's stage, not the partner's
+            slot_hints = {
+                "company_stage": "the stage of the USER's OWN company/business (e.g., startup, growing, established) — NOT the stage of people they want to connect with",
+                "stage_preference": "what stage of companies the user prefers to work with or invest in",
+                "geography": "where the user is based or where they want to connect with people",
+                "engagement_style": "how the user prefers to collaborate (e.g., regular meetings, async, advisory)",
+                "dealbreakers": "things the user absolutely does NOT want in a connection",
+                "industry_focus": "what industries or sectors the user works in or targets",
+                "requirements": "what the user is specifically looking for from connections",
+                "offerings": "what the user can offer to others",
+            }
+            missing_with_hints = []
+            for slot in priority_missing:
+                hint = slot_hints.get(slot)
+                display = SLOT_DISPLAY_NAMES.get(slot, slot.replace('_', ' '))
+                if hint:
+                    missing_with_hints.append(f"{display} ({hint})")
+                else:
+                    missing_with_hints.append(display)
+
             # Build the prompt
             prompt = f"""You are a warm, professional onboarding assistant for a business networking platform.
 
@@ -150,26 +171,29 @@ User just said: "{user_message}"
 User type: {user_type}
 Just extracted: {extracted_summary}
 Already know: {filled_summary}
-Still need: {', '.join(priority_missing) if priority_missing else 'nothing critical'}
+Still need: {chr(10).join([f'  - {h}' for h in missing_with_hints]) if missing_with_hints else 'nothing critical'}
 
 ## QUESTIONS ALREADY ASKED (NEVER REPEAT)
 {chr(10).join([f'- "{q[:100]}..."' for q in previous_questions[-3:]]) if previous_questions else 'None yet'}
 
 ## RULES
-1. Ask about ONE of the missing slots: {priority_missing}
+1. Ask about ONE of the missing information areas listed above
 2. Reference something SPECIFIC from their message (not generic acknowledgment)
 3. Be conversational, not form-like
 4. NEVER repeat a question already asked
 5. Keep it SHORT (1-2 sentences max)
+6. Questions about the user should be about THEIR OWN situation, not about the people they want to meet
 
 ## WRONG EXAMPLES
 - "That's interesting! What industries are you focused on?" (too generic)
 - "Got it. Can you tell me more about your goals?" (robotic)
 - "Thanks for sharing. What's your budget?" (abrupt topic change)
+- "What stage are the companies you want to partner with?" (WRONG - asks about partners instead of the user's own business)
 
 ## GOOD EXAMPLES
 - "A B2B SaaS for healthcare sounds promising - are you looking for investors who specialize in healthtech, or more generalist funds?"
 - "Series A with strong MRR is a great position. What's driving your decision to raise now vs continue bootstrapping?"
+- "Since you're looking for B2C affiliates, where is your business at right now - early stage or more established?"
 
 Return ONLY the question. No preamble, no explanation."""
 

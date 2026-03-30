@@ -64,20 +64,30 @@ Your goal is to provide insightful, specific analysis of how these two people ca
 Be concise, professional, and focus on actionable insights.
 Always respond in valid JSON format."""
 
+        # User A = the person VIEWING the match (the "you")
+        # User B = the match being shown to them
+        name_a = user_a.get('name', 'Unknown')
+        name_b = user_b.get('name', 'Unknown')
+
         user_prompt = f"""Analyze why these two users are matched and generate a helpful, SPECIFIC explanation.
 
-USER A:
-- Name: {user_a.get('name', 'Unknown')}
+IMPORTANT: This explanation is shown to {name_a} (the viewer). Write from THEIR perspective:
+- Refer to {name_a} as "you" / "your"
+- Refer to {name_b} by their name: "{name_b}"
+- NEVER say "User A" or "User B" — always use "you" or "{name_b}"
+
+YOU (the viewer):
+- Name: {name_a}
 - Role: {user_a.get('user_type', 'Professional')}
 - Designation: {user_a.get('designation', 'Not specified')}
 - Experience: {user_a.get('experience', 'Not specified')}
 - Focus: {user_a.get('industry', 'General')}
-- What they're looking for: {user_a.get('what_theyre_looking_for', user_a.get('requirements', 'Not specified'))}
-- What they can offer: {user_a.get('offerings', 'Not specified')}
+- What you're looking for: {user_a.get('what_theyre_looking_for', user_a.get('requirements', 'Not specified'))}
+- What you can offer: {user_a.get('offerings', 'Not specified')}
 - Engagement style: {user_a.get('engagement_style', 'Not specified')}
 
-USER B:
-- Name: {user_b.get('name', 'Unknown')}
+{name_b} (the match):
+- Name: {name_b}
 - Role: {user_b.get('user_type', 'Professional')}
 - Designation: {user_b.get('designation', 'Not specified')}
 - Experience: {user_b.get('experience', 'Not specified')}
@@ -87,8 +97,8 @@ USER B:
 - Engagement style: {user_b.get('engagement_style', 'Not specified')}
 
 ALIGNMENT SCORES:
-- User A needs → User B offers: {scores.get('req_to_off', 0.5):.0%}
-- User B needs → User A offers: {scores.get('off_to_req', 0.5):.0%}
+- Your needs → {name_b} offers: {scores.get('req_to_off', 0.5):.0%}
+- {name_b} needs → You offer: {scores.get('off_to_req', 0.5):.0%}
 - Industry overlap: {scores.get('industry_match', 0.5):.0%}
 - Stage alignment: {scores.get('stage_match', 0.5):.0%}
 - Geography overlap: {scores.get('geography_match', 0.5):.0%}
@@ -97,13 +107,14 @@ ALIGNMENT SCORES:
 CRITICAL INSTRUCTIONS:
 1. CITE SPECIFIC DETAILS from their profiles (e.g., "$500K seed", "payment infrastructure", "LATAM", "5 bank clients")
 2. Don't say "Industry match: AI" - say "Both scaling AI models in healthcare (your drug discovery, their diagnostics)"
-3. Don't say "They offer expertise" - say "They built 3 React Native apps to 100K+ users"
+3. Don't say "They offer expertise" - say "{name_b} built 3 React Native apps to 100K+ users"
 4. Don't say "Mutually beneficial" - explain WHY and HOW it's beneficial
 5. Focus on VALUE EXCHANGE: what can each person specifically do for the other?
+6. ALWAYS use "you/your" for the viewer and "{name_b}" for the match — NEVER "User A" or "User B"
 
 Respond with a JSON object containing:
 {{
-    "summary": "2-3 sentences citing SPECIFIC details (amounts, technologies, markets, metrics, etc.)",
+    "summary": "2-3 sentences citing SPECIFIC details. Use 'you' for {name_a} and '{name_b}' for the match.",
     "synergy_areas": ["3-4 specific areas with CONCRETE details - no generic phrases"],
     "friction_points": ["1-2 potential gaps with specifics - or 'No significant gaps identified'"],
     "talking_points": ["3-4 specific conversation starters with details they can reference"]

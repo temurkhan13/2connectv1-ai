@@ -1248,33 +1248,67 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         try:
             import json
             # Build summary from collected slots
-            summary_data = {
-                "profile_type": slots.get("user_type", {}).get("value", "Unknown"),
-                "industry": slots.get("industry_focus", {}).get("value", ""),
-                "goal": slots.get("primary_goal", {}).get("value", ""),
-                "stage": slots.get("stage_preference", {}).get("value", ""),
-                "geography": slots.get("geographic_focus", {}).get("value", ""),
-                "offerings": slots.get("offerings", {}).get("value", ""),
-                "requirements": slots.get("requirements", {}).get("value", ""),
-            }
+            def _get_slot_value(slot_name: str) -> str:
+                """Safely extract slot value as string."""
+                slot = slots.get(slot_name, {})
+                val = slot.get("value", "") if isinstance(slot, dict) else ""
+                if isinstance(val, list):
+                    return "; ".join(str(item).strip() for item in val if item)
+                return str(val) if val else ""
 
-            # BUG-013 FIX: Ensure offerings/requirements are strings, not lists
-            # This prevents DynamoDB serialization errors and embedding generation crashes
-            for key in ["offerings", "requirements"]:
-                if isinstance(summary_data[key], list):
-                    summary_data[key] = "; ".join(str(item).strip() for item in summary_data[key] if item)
-                    logger.info(f"BUG-013 FIX: Converted {key} from list to string in summary_data")
+            summary_data = {
+                "profile_type": _get_slot_value("user_type") or "Unknown",
+                "industry": _get_slot_value("industry_focus"),
+                "goal": _get_slot_value("primary_goal"),
+                "stage": _get_slot_value("stage_preference") or _get_slot_value("company_stage"),
+                "geography": _get_slot_value("geography") or _get_slot_value("geographic_focus"),
+                "offerings": _get_slot_value("offerings"),
+                "requirements": _get_slot_value("requirements"),
+                # Identity slots
+                "role_title": _get_slot_value("role_title"),
+                "company_name": _get_slot_value("company_name"),
+                "skills": _get_slot_value("skills_have"),
+                "experience": _get_slot_value("experience_years"),
+                "achievement": _get_slot_value("achievement"),
+                "network": _get_slot_value("network_strength"),
+            }
 
             # Generate markdown summary for frontend display (AI Summary page)
             profile_type = summary_data["profile_type"] or "User"
+            role_title = summary_data["role_title"]
+            company_name = summary_data["company_name"]
             industry = summary_data["industry"] or "Not specified"
             goal = summary_data["goal"] or "Not specified"
             stage = summary_data["stage"] or "Not specified"
             geography = summary_data["geography"] or "Not specified"
             offerings = summary_data["offerings"] or "Not specified"
             requirements = summary_data["requirements"] or "Not specified"
+            skills = summary_data["skills"]
+            experience = summary_data["experience"]
+            achievement = summary_data["achievement"]
+            network = summary_data["network"]
 
-            summary_markdown = f"""# {profile_type} Profile
+            # Build identity header
+            identity_line = profile_type
+            if role_title:
+                identity_line = f"{role_title}"
+                if company_name:
+                    identity_line += f" at {company_name}"
+            elif company_name:
+                identity_line = f"{profile_type} at {company_name}"
+
+            # Build optional sections (only show if data exists)
+            optional_sections = ""
+            if skills:
+                optional_sections += f"\n## Skills & Expertise\n{skills}\n"
+            if experience:
+                optional_sections += f"\n## Experience\n{experience} years\n"
+            if achievement:
+                optional_sections += f"\n## Key Achievement\n{achievement}\n"
+            if network:
+                optional_sections += f"\n## Strongest Network\n{network}\n"
+
+            summary_markdown = f"""# {identity_line}
 
 ## Primary Goal
 {goal}
@@ -1282,12 +1316,12 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
 ## Industry Focus
 {industry}
 
-## Stage/Experience
+## Stage
 {stage}
 
 ## Geography
 {geography}
-
+{optional_sections}
 ## What I Can Offer
 {offerings}
 

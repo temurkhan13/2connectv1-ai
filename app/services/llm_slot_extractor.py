@@ -15,7 +15,7 @@ import json
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from anthropic import Anthropic
 from app.services.use_case_templates import get_onboarding_slots
 
@@ -162,7 +162,7 @@ class LLMExtractionResult:
     is_off_topic: bool  # True if user asked off-topic/general knowledge question
     is_completion_signal: bool = False  # BUG-092: True if user explicitly wants to finish onboarding
     follow_up_question: str = ""  # DEPRECATED: Now handled by LLMQuestionGenerator
-    acknowledged_slots: List[str] = []  # Slots mentioned by user but deferred due to BUG-088 limit
+    acknowledged_slots: List[str] = field(default_factory=list)  # Slots mentioned by user but deferred due to BUG-088 limit
 
 
 # Slot definitions for the LLM prompt

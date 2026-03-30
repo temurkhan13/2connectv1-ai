@@ -537,16 +537,16 @@ class EnhancedMatchingService:
         try:
             # Get user's embeddings
             user_embeddings = postgresql_adapter.get_user_embeddings(user_id)
-            if not user_embeddings or not user_embeddings.get('requirements'):
+            if not user_embeddings or len(user_embeddings) == 0:
                 logger.warning(f"No embeddings found for user {user_id}")
                 return []
 
-            # Get user's persona for intent classification
+            # Get user's persona and onboarding slots for intent classification
             from app.adapters.supabase_profiles import UserProfile
             try:
                 user_profile = UserProfile.get(user_id)
                 user_persona = user_profile.persona
-                user_intent, user_intent_confidence = self._classify_user_intent(user_persona)
+                user_intent, user_intent_confidence = self._classify_user_intent(user_persona, user_id)
             except Exception as e:
                 logger.warning(f"Could not get persona for {user_id}: {e}")
                 user_intent = MatchIntent.GENERAL
@@ -623,7 +623,7 @@ class EnhancedMatchingService:
                 try:
                     match_profile = UserProfile.get(match_user_id)
                     match_persona = match_profile.persona
-                    match_intent, match_intent_confidence = self._classify_user_intent(match_persona)
+                    match_intent, match_intent_confidence = self._classify_user_intent(match_persona, match_user_id)
                 except Exception:
                     match_persona = None
                     match_intent = MatchIntent.GENERAL
@@ -792,12 +792,38 @@ class EnhancedMatchingService:
             logger.error(f"Error finding bidirectional matches for {user_id}: {e}")
             return []
 
-    def _classify_user_intent(self, persona) -> Tuple[MatchIntent, float]:
-        """Classify user intent from persona."""
+    def _classify_user_intent(self, persona, user_id: str = None) -> Tuple[MatchIntent, float]:
+        """Classify user intent from persona + onboarding slots.
+
+        FIX (Mar 30, 2026): Also fetches primary_goal and user_type from
+        onboarding_answers for accurate classification. Previously only
+        used persona fields, resulting in low-confidence classifications
+        and the scheduled cron returning 0 matches for all users.
+        """
         if not persona:
             return MatchIntent.GENERAL, 0.5
 
+        # Fetch primary_goal and user_type from onboarding for accurate classification
+        primary_goal = ""
+        user_type_slot = ""
+        if user_id:
+            try:
+                from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
+                adapter = SupabaseOnboardingAdapter()
+                slots = adapter.get_user_slots_sync(user_id)
+                if isinstance(slots, dict):
+                    if "primary_goal" in slots:
+                        pg = slots["primary_goal"]
+                        primary_goal = pg.get("value", "") if isinstance(pg, dict) else str(pg)
+                    if "user_type" in slots:
+                        ut = slots["user_type"]
+                        user_type_slot = ut.get("value", "") if isinstance(ut, dict) else str(ut)
+            except Exception:
+                pass
+
         persona_dict = {
+            "primary_goal": primary_goal,
+            "user_type": user_type_slot,
             "what_theyre_looking_for": getattr(persona, "what_theyre_looking_for", ""),
             "requirements": getattr(persona, "requirements", ""),
             "offerings": getattr(persona, "offerings", ""),

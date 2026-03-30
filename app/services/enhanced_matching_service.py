@@ -145,10 +145,11 @@ class IntentClassifier:
         "explore partnerships": MatchIntent.PARTNERSHIP,
         "partnerships": MatchIntent.PARTNERSHIP,
         "find mentor": MatchIntent.MENTEE_MENTOR,
-        "mentorship": MatchIntent.MENTOR_MENTEE,
         "offer mentorship": MatchIntent.MENTEE_MENTOR,  # They ARE a mentor offering guidance
         "provide mentorship": MatchIntent.MENTEE_MENTOR,
         "give mentorship": MatchIntent.MENTEE_MENTOR,
+        "seek mentorship": MatchIntent.MENTOR_MENTEE,   # They WANT a mentor
+        "mentorship": MatchIntent.MENTOR_MENTEE,
         "find job": MatchIntent.OPPORTUNITY_SEEKING,
         "find new job": MatchIntent.OPPORTUNITY_SEEKING,
         "find a job": MatchIntent.OPPORTUNITY_SEEKING,
@@ -190,7 +191,10 @@ class IntentClassifier:
             logger.info(f"[IntentClassifier] primary_goal was a list, using first element: '{raw_goal}'")
         primary_goal = str(raw_goal).lower().strip()
         if primary_goal:
-            for goal_text, intent in self.PRIMARY_GOAL_MAP.items():
+            # Sort by length descending so more specific matches win
+            # e.g. "offer mentorship" matches before "mentorship"
+            sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+            for goal_text, intent in sorted_goals:
                 if goal_text in primary_goal or primary_goal in goal_text:
                     # FIX (Mar 30, 2026): Distinguish mentor from mentee
                     # "Seek Mentorship" is ambiguous — check user_type to determine side

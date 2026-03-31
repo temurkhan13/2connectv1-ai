@@ -456,13 +456,19 @@ class EnhancedMatchingService:
     # Cross-intent blocks (from Mar 31 audit):
     # Certain candidate intents should never appear in certain user lists.
     CROSS_INTENT_BLOCKS = {
-        # talent_seeking (hiring) should only appear for job seekers
+        # Founders seeking funding: only see investors + service providers
         MatchIntent.FOUNDER_INVESTOR: {MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING},
-        MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING},
+        # Investors: only see founders raising money
+        MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP, MatchIntent.COFOUNDER},
         MatchIntent.MENTOR_MENTEE: {MatchIntent.TALENT_SEEKING},
-        MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING},
-        # investors shouldn't appear in service provider lists
-        MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER},
+        # Cofounders: need other cofounders, not investors or consultants
+        MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER},
+        # Service providers: need clients, not investors/cofounders/mentees
+        MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
+        # Job seekers: need hiring companies, not investors
+        MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER},
+        # Hiring: only see job seekers and networkers
+        MatchIntent.TALENT_SEEKING: {MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
     }
 
     # mentor_mentee users should ONLY see mentee_mentor candidates
@@ -483,6 +489,7 @@ class EnhancedMatchingService:
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
             (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
             (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),  # SPs need clients, not other SPs
         }
         if (user_intent, candidate_intent) in same_need_pairs:
             return True
@@ -846,6 +853,14 @@ class EnhancedMatchingService:
                          "looking for a role", "open to", "available", "seeking new"],
             "label": "cofounder availability",
             "check_field": "both",
+        },
+        "service_provider": {
+            "keywords": ["help with", "struggling with", "challenge", "problem", "outsource",
+                         "consultant", "advisory", "expertise needed", "gap in", "lack of",
+                         "fractional", "hire a", "need a", "bring in", "engage",
+                         "external", "third party", "support with", "guidance on"],
+            "label": "service need",
+            "check_field": "requirements",
         },
     }
 

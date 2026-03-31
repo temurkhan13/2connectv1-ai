@@ -111,33 +111,39 @@ Mandatory fallback behavior:
 - For any missing fields, output the string "Not specified".
 - Do not infer or fabricate details beyond the given input.
 
+IMPORTANT — USE BOTH SOURCES FOR ALL FIELDS:
+When a resume/CV is provided, use it to ENRICH every persona field — not just offerings.
+- designation: Extract EXACT job title from resume (e.g., "VP of Engineering at Stripe") instead of generic titles
+- experience: Extract EXACT years and companies from resume work history
+- focus: Combine resume expertise areas with Q&A stated interests
+- profile_essence: Weave resume achievements into the narrative
+- strategy: Inform from both stated goals (Q&A) and demonstrated track record (resume)
+- The resume makes the persona SPECIFIC and CREDIBLE instead of generic
+
 Generate the following outputs:
 
 1. persona:
    - name: Concise, creative title reflecting their ACTUAL role (e.g., "The Growth-Focused Founder" for founders, NOT "The Strategic Investor")
    - archetype: Descriptive classification matching their role
-   - designation: Explicit job title from input; if missing, "Not specified"
-   - experience: EXACT years/description from input ONLY. If user said "7 years", write "7 years". If not explicitly stated, write "Not specified". NEVER inflate or round up.
-   - focus: Key areas separated by " | "
-   - profile_essence: 3–4 sentences, grounded in input, accurately reflecting their role
-   - strategy: 3–4 bullet points describing their approach (business strategy for founders, investment thesis for investors)
-   - what_theyre_looking_for: What they ACTUALLY seek (investors for founders, deals for investors)
+   - designation: Explicit job title from resume or input; if missing, "Not specified". Prefer resume title over Q&A.
+   - experience: EXACT years/description from resume work history or input. If resume shows 3 jobs spanning 2018-2026, write "8 years". If not explicitly stated anywhere, write "Not specified". NEVER inflate.
+   - focus: Key areas separated by " | " — combine resume skills/domains with Q&A stated interests
+   - profile_essence: 3–4 sentences, grounded in input. If resume available, reference specific companies, roles, or achievements.
+   - strategy: 3–4 bullet points describing their approach. Use resume track record to inform strategy (e.g., "Previously scaled X from 10 to 200 people" informs hiring strategy).
+   - what_theyre_looking_for: What they ACTUALLY seek (from Q&A primarily)
    - engagement_style: Preferred communication or collaboration approach
 
 2. requirements: 3–4 sentences focusing on what this individual ACTIVELY SEEKS from connections
-   CRITICAL DISTINCTION:
-   - Extract ONLY from their stated GOALS, NEEDS, and what they're LOOKING FOR in answers
-   - These are GAPS they want to FILL - things they DON'T have
-   - Examples: "looking for investors", "need help with marketing", "seeking advisors", "want introductions to X"
-   - NEVER include capabilities from their resume or background here - that's offerings!
+   - Extract primarily from Q&A stated GOALS, NEEDS, and what they're LOOKING FOR
+   - These are GAPS they want to FILL — things they DON'T have
+   - Resume context helps qualify requirements (e.g., resume shows Series A stage → requirement for Series B investors is credible)
    - RULE: If it describes what they CAN DO or HAVE DONE, it's offerings, NOT requirements
 
 3. offerings: 3–4 sentences focusing on what this individual can PROVIDE to connections
-   CRITICAL DISTINCTION:
-   - Extract from their BACKGROUND, EXPERIENCE, SKILLS, ACHIEVEMENTS, and NETWORK
-   - These come from their resume/CV and professional history
-   - Examples: "connections to VCs", "built companies that raised $XM", "expertise in X", "experience in payment systems"
-   - These are capabilities they ALREADY HAVE - value they bring to others
+   - Extract from RESUME primarily: work history, skills, achievements, companies, education, network
+   - Also include capabilities mentioned in Q&A answers
+   - Be SPECIFIC: "10 years scaling B2B SaaS at Salesforce and HubSpot" beats "experience in SaaS"
+   - Include: industry connections, domain expertise, technical skills, leadership experience, specific achievements
    - RULE: If it describes what they WANT or NEED, it's requirements, NOT offerings
 
 Generation rules:
@@ -148,6 +154,7 @@ Generation rules:
 - Keep requirements and offerings distinct.
 - Always follow the JSON schema exactly.
 - For any missing details, use "Not specified".
+- When resume is available, the persona should be noticeably RICHER and MORE SPECIFIC than without one.
 
 Combined Input Data:
 {combined_data}
@@ -282,17 +289,18 @@ def combine_user_data(questions: list, resume_text: str) -> str:
     """
     Combine user questions and resume text into a single string.
 
-    IMPORTANT: Sections are clearly marked to help LLM distinguish:
-    - Q&A Section: Contains user's stated goals/needs → PRIMARY SOURCE for REQUIREMENTS
-    - Resume Section: Contains background/experience → PRIMARY SOURCE for OFFERINGS
+    Both sources should be used to enrich ALL persona fields:
+    - Q&A: User's stated goals, needs, preferences → primary for REQUIREMENTS
+    - Resume: Background, experience, skills, achievements → primary for OFFERINGS
+    - Both sources together inform: designation, experience, focus, industry, strategy
     """
     combined = []
 
-    # Add questions section with clear labeling
+    # Add questions section
     if questions:
         combined.append("=" * 60)
-        combined.append("USER Q&A RESPONSES (SOURCE: Extract REQUIREMENTS from this section)")
-        combined.append("What they said they're looking for, need, want to achieve")
+        combined.append("USER Q&A RESPONSES")
+        combined.append("Their stated goals, needs, preferences, and what they're looking for")
         combined.append("=" * 60)
         for i, q in enumerate(questions, 1):
             if isinstance(q, dict):
@@ -303,11 +311,11 @@ def combine_user_data(questions: list, resume_text: str) -> str:
                 combined.append(f"{i}. {q}")
         combined.append("")
 
-    # Add resume section with clear labeling
+    # Add resume section
     if resume_text:
         combined.append("=" * 60)
-        combined.append("RESUME/BACKGROUND (SOURCE: Extract OFFERINGS from this section)")
-        combined.append("What they have done, can do, their expertise and network")
+        combined.append("RESUME / CV / PROFESSIONAL BACKGROUND")
+        combined.append("Their work history, skills, achievements, education, and expertise")
         combined.append("=" * 60)
         combined.append(resume_text)
 

@@ -1231,6 +1231,17 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             # Log but don't fail - DynamoDB profile was created successfully
             logger.warning(f"Failed to update PostgreSQL onboarding_status: {e}")
 
+        # Publish onboarding_complete event for push notification
+        try:
+            from app.events.publisher import event_publisher
+            event_publisher.publish_onboarding_complete(
+                user_id=user_id,
+                session_id=session_id,
+                slots_filled=len(questions)
+            )
+        except Exception as e:
+            logger.warning(f"Failed to publish onboarding_complete event: {e}")
+
         # Create user_summary for Discover page + AI Summary display
         # BUG-007 FIX: Generate markdown summary for frontend display instead of JSON
         try:

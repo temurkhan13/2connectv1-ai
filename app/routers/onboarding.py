@@ -728,12 +728,15 @@ async def chat(request: ChatMessageRequest):
 
         # is_complete already computed above (BUG-001 fix)
 
+        # Fix: show 100% when onboarding is complete (not the raw slot-based percentage)
+        display_completion = 100.0 if is_complete else completion
+
         return ChatMessageResponse(
             session_id=session_id,
             ai_response=ai_response,
             extracted_slots=newly_extracted,
             all_slots=all_slots,
-            completion_percent=completion,
+            completion_percent=display_completion,
             next_questions=next_questions,
             phase=context.phase.value,
             is_complete=is_complete,

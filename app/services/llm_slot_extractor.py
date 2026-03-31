@@ -268,10 +268,9 @@ SLOT_DEFINITIONS = {
     },
     # COFOUNDER-specific slots - MUST match SlotSchema for progress tracking
     "skills_have": {
-        "description": "Skills the user brings to a co-founder partnership",
-        "type": "multi_select",
-        "options": ["Technical/Engineering", "Product Management", "Sales/Business Development", "Marketing/Growth", "Finance/Operations", "Design/UX", "Domain Expertise", "Fundraising Experience"],
-        "extraction_hint": "Map their stated skills: 'backend developer' → Technical/Engineering, 'sold products' → Sales/Business Development"
+        "description": "Specific skills, expertise, and capabilities the user brings",
+        "type": "list",
+        "extraction_hint": "Extract SPECIFIC skills from all conversation turns. Be detailed, not generic. Examples: 'payment infrastructure at scale', 'distributed team management across 4 time zones', 'FDA regulatory clearance', 'React Native mobile development', 'Series A fundraising'. NEVER use just 'Technical/Engineering' — always include the specific domain."
     },
     "skills_need": {
         "description": "Skills the user needs in a co-founder",
@@ -1538,7 +1537,8 @@ Return ONLY the follow-up question, nothing else."""
         already_filled_slots: Optional[Dict[str, Any]] = None,
         target_slots: Optional[List[str]] = None,
         session_id: Optional[str] = None,
-        resume_context: Optional[str] = None
+        resume_context: Optional[str] = None,
+        priority_extract_slots: Optional[List[str]] = None
     ) -> LLMExtractionResult:
         """
         Extract slot values from user message using LLM comprehension.
@@ -1550,12 +1550,14 @@ Return ONLY the follow-up question, nothing else."""
             target_slots: Specific slots to focus on (None = all)
             session_id: Session ID for logging
             resume_context: Optional extracted resume text to inform extraction
+            priority_extract_slots: Deferred slots from earlier turns to prioritize
 
         Returns:
             LLMExtractionResult with extracted slots and follow-up
         """
         already_filled = already_filled_slots or {}
         history = conversation_history or []
+        self._priority_extract_slots = priority_extract_slots or []
 
         # ISSUE-1 FIX: Log if we have resume context
         if resume_context:
@@ -2568,16 +2570,24 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
                 logger.info(f"[BUG-090] Prioritizing forced slots: {forced_first}")
 
             # Select top 3 slots by priority order
+            # BUG-088 FIX: Previously deferred slots get priority — they don't count toward the limit
             limited_slots = {}
             slots_added = 0
             acknowledged_slots = []
 
+            # Zero pass: add previously deferred slots (these bypass the 3-slot limit)
+            deferred_priority = getattr(self, '_priority_extract_slots', [])
+            for deferred_slot in deferred_priority:
+                if deferred_slot in extracted_slots:
+                    limited_slots[deferred_slot] = extracted_slots[deferred_slot]
+                    logger.info(f"[BUG-088] Recovered deferred slot: {deferred_slot}")
+
             # First pass: add slots that are in priority order
             for priority_slot in priority_slots:
-                if priority_slot in extracted_slots and slots_added < MAX_SLOTS_PER_TURN:
+                if priority_slot in extracted_slots and priority_slot not in limited_slots and slots_added < MAX_SLOTS_PER_TURN:
                     limited_slots[priority_slot] = extracted_slots[priority_slot]
                     slots_added += 1
-                elif priority_slot in extracted_slots:
+                elif priority_slot in extracted_slots and priority_slot not in limited_slots:
                     acknowledged_slots.append(priority_slot)
 
             # Second pass: add remaining slots if we haven't hit limit

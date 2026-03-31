@@ -458,6 +458,13 @@ class ContextManager:
             except Exception as e:
                 logger.debug(f"Could not fetch resume context: {e}")
 
+            # BUG-088 FIX: Include deferred slots as priority extraction targets
+            # These were mentioned by the user in earlier turns but not formally extracted
+            deferred = self._deferred_slots.get(context.session_id, [])
+            priority_slots = [s for s in deferred if s not in already_filled]
+            if priority_slots:
+                logger.info(f"[BUG-088] Passing deferred slots as priority targets: {priority_slots}")
+
             # Use LLM to extract slots with full comprehension
             # CRITICAL: Always call LLM even on cache hit to generate fresh personalized question
             llm_result = self.llm_extractor.extract_slots(
@@ -465,7 +472,8 @@ class ContextManager:
                 conversation_history=conversation_history,
                 already_filled_slots=already_filled,
                 session_id=context.session_id,
-                resume_context=resume_context
+                resume_context=resume_context,
+                priority_extract_slots=priority_slots if priority_slots else None
             )
 
             logger.info(f"LLM returned slots: {list(llm_result.extracted_slots.keys())}")

@@ -534,6 +534,24 @@ class EnhancedMatchingService:
 
         return dealbreakers
 
+    # Complementary intent pairs that get a score boost.
+    # These pairs have inherently low embedding similarity because their language
+    # is complementary (one describes needs, the other describes capabilities).
+    COMPLEMENTARY_INTENT_BOOSTS = {
+        (MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING): 0.15,  # Hiring ↔ Job seeker
+        (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.TALENT_SEEKING): 0.15,
+        (MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR): 0.10,   # Investor ↔ Founder
+        (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER): 0.10,
+        (MatchIntent.RECRUITER, MatchIntent.OPPORTUNITY_SEEKING): 0.12,       # Recruiter ↔ Job seeker
+        (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.RECRUITER): 0.12,
+        (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR): 0.10,        # Mentor ↔ Mentee
+        (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE): 0.10,
+    }
+
+    def _get_complementary_intent_boost(self, user_intent: MatchIntent, match_intent: MatchIntent) -> float:
+        """Return score boost for known complementary intent pairs."""
+        return self.COMPLEMENTARY_INTENT_BOOSTS.get((user_intent, match_intent), 0.0)
+
     # Match cap — max matches returned per user
     MAX_MATCHES_PER_USER = 15
 
@@ -712,6 +730,14 @@ class EnhancedMatchingService:
 
                 # IQ = 1.0 for all non-blocked pairs (Mar 30, 2026)
                 intent_quality = 1.0
+
+                # COMPLEMENTARY INTENT BOOST (Apr 1, 2026):
+                # Hiring↔job seeker embeddings have low similarity because language is
+                # complementary not similar ("we need a CTO" vs "I am a CTO").
+                # Boost these high-value pairs so they don't get filtered by score threshold.
+                complementary_boost = self._get_complementary_intent_boost(user_intent, match_intent)
+                if complementary_boost > 0:
+                    combined_score += complementary_boost
 
                 # Dimensional alignment
                 dimension_score = self._calculate_dimensional_score(

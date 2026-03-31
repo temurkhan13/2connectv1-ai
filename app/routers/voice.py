@@ -71,20 +71,27 @@ async def transcribe_audio(file: UploadFile = File(...)):
     }
     ext = ext_map.get(content_type, ".webm")
 
+    tmp_path = None
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.error("[VOICE] OPENAI_API_KEY not set")
+            raise HTTPException(status_code=500, detail="Voice service not configured")
 
-        # Write to temp file (Whisper API needs a file object with extension)
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=True) as tmp:
-            tmp.write(audio_data)
-            tmp.flush()
-            tmp.seek(0)
+        client = OpenAI(api_key=api_key)
 
+        # Write to temp file (Whisper API needs a file path with correct extension)
+        tmp_fd = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        tmp_path = tmp_fd.name
+        tmp_fd.write(audio_data)
+        tmp_fd.close()
+
+        with open(tmp_path, "rb") as audio_file:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
-                file=tmp,
+                file=audio_file,
                 response_format="text",
             )
 
@@ -92,6 +99,11 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
         return {"text": transcript.strip()}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"[VOICE] Transcription failed: {e}")
-        raise HTTPException(status_code=500, detail="Transcription failed. Please try again.")
+        logger.error(f"[VOICE] Transcription failed: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)[:100]}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)

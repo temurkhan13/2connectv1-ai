@@ -468,6 +468,8 @@ class EnhancedMatchingService:
         # Investors: only see founders raising money
         MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP, MatchIntent.COFOUNDER},
         MatchIntent.MENTOR_MENTEE: {MatchIntent.TALENT_SEEKING},
+        # Mentors offering guidance: see mentees, founders, job seekers — not investors/SPs/recruiters/partners
+        MatchIntent.MENTEE_MENTOR: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER, MatchIntent.RECRUITER, MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING},
         # Cofounders: need other cofounders, not investors or consultants
         MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER},
         # Service providers: need clients, not investors/cofounders/mentees

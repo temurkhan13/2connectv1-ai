@@ -169,12 +169,12 @@ class LLMExtractionResult:
 SLOT_DEFINITIONS = {
     "user_type": {
         "description": "The user's primary role in the startup ecosystem",
-        "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider", "Job Seeker/Candidate"],
-        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups. If user mentions 'looking for a job', 'new role', 'career change', 'find new job', 'next opportunity', classify as JOB SEEKER/CANDIDATE."
+        "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider", "Recruiter", "Job Seeker/Candidate"],
+        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups. If user mentions 'looking for a job', 'new role', 'career change', 'find new job', 'next opportunity', classify as JOB SEEKER/CANDIDATE. If user runs a recruitment firm, staffing agency, or does headhunting/talent acquisition, classify as RECRUITER not Service Provider."
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
-        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Offer Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
+        "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Offer Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Recruit", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
         "extraction_hint": "KEYWORD-TO-GOAL MAPPING (extract on first match): "
                           "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
                           "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
@@ -185,9 +185,11 @@ SLOT_DEFINITIONS = {
                           "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
                           "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
                           "• 'network', 'connections', 'meet people', 'expand my network' → 'Seek Networking'. "
-                          "• 'hiring', 'recruit', 'build team', 'need talent', 'looking for developers', 'need engineers' → 'Hire Talent'. "
+                          "• 'hiring', 'build team', 'need talent', 'looking for developers', 'need engineers' → 'Hire Talent'. "
+                          "• 'recruiter', 'recruitment firm', 'staffing', 'headhunter', 'talent acquisition', 'placing candidates', 'executive search' → 'Recruit'. "
                           "• 'launch', 'go-to-market', 'GTM', 'product launch', 'market entry', 'release product' → 'Launch Product'. "
                           "• 'services', 'consulting', 'agency', 'freelance', 'offer expertise', 'provide services' → 'Offer Services'. "
+                          "IMPORTANT: A recruiter/recruitment firm is NOT a generic service provider. If someone runs a recruitment/staffing/headhunting business, use 'Recruit' not 'Offer Services'. "
                           "CRITICAL: If user says 'I need a technical co-founder' or 'looking for someone to build with', extract 'Find Co-founder' IMMEDIATELY. "
                           "ALWAYS extract something - never leave blank if ANY goal-related intent is mentioned."
     },

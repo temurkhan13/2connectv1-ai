@@ -786,6 +786,15 @@ def get_template(objective: str) -> UseCaseTemplate:
         "candidate": ObjectiveType.JOB_SEARCH,
         "executive candidate": ObjectiveType.JOB_SEARCH,
         "looking for opportunities": ObjectiveType.JOB_SEARCH,
+        # Recruiter keywords (uses SERVICES template for slots, but MatchIntent.RECRUITER for matching)
+        "recruit": ObjectiveType.SERVICES,
+        "recruiter": ObjectiveType.SERVICES,
+        "recruitment": ObjectiveType.SERVICES,
+        "staffing": ObjectiveType.SERVICES,
+        "headhunter": ObjectiveType.SERVICES,
+        "talent acquisition": ObjectiveType.SERVICES,
+        "placing candidates": ObjectiveType.SERVICES,
+        "executive search": ObjectiveType.SERVICES,
         # BUG-075: Service provider keywords
         "service": ObjectiveType.SERVICES,
         "services": ObjectiveType.SERVICES,

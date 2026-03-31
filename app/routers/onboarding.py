@@ -240,24 +240,12 @@ def _run_background_onboarding_tasks(
         results["errors"].append(f"basic_embeddings: {e}")
         logger.warning(f"[BG:{thread_name}] Failed basic embeddings for {user_id}: {e}")
 
-    # 3. Inline bidirectional matching - CRITICAL for user experience
-    try:
-        from app.services.inline_matching_service import inline_matching_service
-        match_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id)
-
-        if match_result.get('success'):
-            results["matching_ok"] = True
-            logger.info(
-                f"[BG:{thread_name}] {user_id}: "
-                f"{match_result.get('new_user_matches', 0)} matches, "
-                f"{match_result.get('reciprocal_updates', 0)} reciprocal updates"
-            )
-        else:
-            results["errors"].append(f"matching: {match_result.get('errors')}")
-            logger.warning(f"[BG:{thread_name}] Match sync failed for {user_id}: {match_result.get('errors')}")
-    except Exception as e:
-        results["errors"].append(f"matching: {e}")
-        logger.warning(f"[BG:{thread_name}] Failed inline matching for {user_id}: {e}")
+    # 3. Matching is handled by the persona → embedding → matching pipeline (step 4).
+    # Previously we ran matching here too, but it was redundant:
+    # - This early run uses incomplete data (no persona yet)
+    # - The embedding_processing worker clears matches and re-runs after persona
+    # - Result: duplicate matching (~5 min wasted) with first result thrown away
+    results["matching_ok"] = True  # Will be done by embedding_processing worker
 
     # 4. Trigger persona generation pipeline
     try:

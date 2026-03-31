@@ -476,6 +476,8 @@ class EnhancedMatchingService:
         MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER},
         # Hiring: only see job seekers and networkers
         MatchIntent.TALENT_SEEKING: {MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
+        # Recruiters: see hiring companies + job seekers + founders, not SPs/mentors
+        MatchIntent.RECRUITER: {MatchIntent.SERVICE_PROVIDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR, MatchIntent.PARTNERSHIP},
     }
 
     # mentor_mentee users should ONLY see mentee_mentor candidates

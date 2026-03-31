@@ -472,10 +472,12 @@ class EnhancedMatchingService:
         MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER},
         # Service providers: need clients, not investors/cofounders/mentees
         MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
-        # Job seekers: need hiring companies, not investors
-        MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER},
+        # Job seekers: need hiring companies, not investors or partners
+        MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP},
         # Hiring: only see job seekers and networkers
         MatchIntent.TALENT_SEEKING: {MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
+        # Partnership: need other partners/founders/SPs, not job seekers/mentees/investors
+        MatchIntent.PARTNERSHIP: {MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR, MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING},
         # Recruiters: see hiring companies + job seekers + founders, not SPs/mentors
         MatchIntent.RECRUITER: {MatchIntent.SERVICE_PROVIDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR, MatchIntent.PARTNERSHIP},
     }

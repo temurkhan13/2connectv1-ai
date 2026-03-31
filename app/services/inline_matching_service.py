@@ -70,7 +70,7 @@ class InlineMatchingService:
         # BUG FIX: Increased default from 0.3 to 0.5 for more meaningful matches
         # 0.3 was too permissive, causing everyone to match with everyone
         self.threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.5"))
-        self.max_matches = int(os.getenv("MAX_INLINE_MATCHES", "50"))
+        self.max_matches = int(os.getenv("MAX_INLINE_MATCHES", "15"))
 
     def calculate_and_sync_matches_bidirectional(
         self,
@@ -718,6 +718,7 @@ class InlineMatchingService:
             enhanced_matches = []
             blocked_count = 0
             dealbreaker_count = 0
+            user_slots = enhanced_matching_service._get_user_slots(user_id)
 
             for mv_match in multi_vector_matches:
                 candidate_id = mv_match.user_id
@@ -786,10 +787,7 @@ class InlineMatchingService:
                 # NOTE: Removed archetype-based intent override (Mar 30, 2026).
                 # Primary goal always takes precedence over archetype.
 
-                # 5b. Check intent complementarity
-                intent_quality = self._get_intent_quality(user_intent, candidate_intent)
-
-                # 5c. Check same-objective blocking
+                # 5b. Check same-objective + cross-intent blocking
                 if enhanced_matching_service.block_same_objective:
                     if self._should_block_same_objective(user_intent, candidate_intent):
                         blocked_count += 1
@@ -807,70 +805,56 @@ class InlineMatchingService:
                             dealbreaker_count += 1
                             continue
 
-                # 5e. Bidirectional scoring now handled via reverse_scores dict (Step 1b)
-                # No need for per-candidate enhanced_matching_service call
+                # 5e. Structured pre-filters (industry/geography/stage/capability)
+                cand_slots = enhanced_matching_service._get_user_slots(candidate_id)
+                cand_offerings = (getattr(candidate_persona, 'offerings', '') or '') if candidate_persona else ''
+                cand_requirements = (getattr(candidate_persona, 'requirements', '') or '') if candidate_persona else ''
+                cand_goal = cand_slots.get('primary_goal', '')
+                if not enhanced_matching_service._passes_structured_filters(
+                    user_slots, cand_slots, user_intent, candidate_intent,
+                    cand_offerings, cand_requirements, cand_goal
+                ):
+                    continue
 
-                # 5f. Calculate activity boost
+                # 5f. Activity and temporal boosts
                 activity_boost = enhanced_matching_service._calculate_activity_boost(candidate_id)
-
-                # 5g. Calculate temporal boost
                 temporal_boost = enhanced_matching_service._calculate_temporal_boost(candidate_id)
 
-                # STEP 6: Calculate final hybrid score
-                # UPGRADED (Mar 27, 2026): Intent as hard multiplier + asymmetry penalty + spread
-                #
-                # Base formula: core×0.40 + dimensions×0.35 + signals×0.10 = base_total (0-0.85)
-                # Then: final = base_total × intent_multiplier + intent_quality × 0.15
-                #
-                # This means bad intent pairs (< 0.5) CRUSH the final score instead of
-                # just being a mild 25% additive penalty that gets drowned by embedding similarity.
+                # STEP 6: Forward-only scoring with reverse bonus
                 forward_score = base_score
-                reverse_score_val = reverse_scores.get(candidate_id, base_score * 0.8)  # Fallback: 80% of forward
-                core_score = math.sqrt(forward_score * reverse_score_val)
+                reverse_score_val = reverse_scores.get(candidate_id, 0.0)
+                core_score = forward_score
+                if reverse_score_val > 0.35:
+                    core_score += reverse_score_val * 0.15  # Reverse bonus
+
                 core_score = max(0.0, min(1.0, core_score))
 
-                # --- Fwd-Rev asymmetry penalty ---
-                # Large asymmetry = one-sided match (I need them but they don't need me)
-                fwd_rev_diff = abs(forward_score - reverse_score_val)
-                if fwd_rev_diff > 0.15:
-                    # Penalize core_score: reduce by up to 30% for highly asymmetric matches
-                    asymmetry_penalty = 1.0 - min(0.3, (fwd_rev_diff - 0.15) * 1.5)
-                    core_score *= asymmetry_penalty
-
-                # --- Same-persona mirror match penalty ---
-                # Two users with identical archetypes have the same gaps — they can't help each other
+                # Mirror match penalty
                 if user_persona and candidate_persona:
                     user_arch = getattr(user_persona, 'archetype', None) or ''
                     cand_arch = getattr(candidate_persona, 'archetype', None) or ''
                     if user_arch and cand_arch and user_arch.lower() == cand_arch.lower():
-                        core_score *= 0.70  # 30% penalty for mirror matches
+                        core_score *= 0.70
 
-                # Same-ROLE mirror match penalty (expanded from archetype-only)
-                # Corp dev matched to corp dev, advisor matched to advisor, etc.
+                # Same-role penalty
                 if user_persona and candidate_persona:
                     user_desig = (getattr(user_persona, 'designation', '') or '').lower()
                     cand_desig = (getattr(candidate_persona, 'designation', '') or '').lower()
-                    # Check for role keyword overlap in designation
                     role_groups = [
                         ['corporate development', 'corp dev', 'business development', 'acquisitions'],
                         ['advisor', 'board member', 'advisory'],
                         ['consultant', 'consulting'],
                     ]
                     for group in role_groups:
-                        user_has = any(kw in user_desig for kw in group)
-                        cand_has = any(kw in cand_desig for kw in group)
-                        if user_has and cand_has:
-                            core_score *= 0.50  # 50% penalty for same-role matches
+                        if any(kw in user_desig for kw in group) and any(kw in cand_desig for kw in group):
+                            core_score *= 0.50
                             break
 
-                # Role-overlap penalty: a service provider matched with someone who already holds
-                # that role gets penalized. E.g., fractional CTO matched with an existing CTO.
+                # Role-overlap penalty for service providers
                 if user_intent == MatchIntent.SERVICE_PROVIDER and candidate_persona:
                     user_offerings = (getattr(user_persona, 'offerings', '') or '').lower() if user_persona else ''
                     cand_designation = (getattr(candidate_persona, 'designation', '') or '').lower()
-                    cand_arch = (getattr(candidate_persona, 'archetype', '') or '').lower()
-
-                    # Check if the candidate already holds the role the service provider offers
+                    cand_arch_str = (getattr(candidate_persona, 'archetype', '') or '').lower()
                     role_keywords = []
                     if 'cto' in user_offerings or 'technical leadership' in user_offerings:
                         role_keywords = ['cto', 'chief technology', 'vp engineering', 'head of engineering']
@@ -878,67 +862,45 @@ class InlineMatchingService:
                         role_keywords = ['cmo', 'chief marketing', 'vp marketing', 'head of marketing']
                     elif 'cfo' in user_offerings or 'financial' in user_offerings:
                         role_keywords = ['cfo', 'chief financial', 'vp finance', 'head of finance']
-
                     if role_keywords:
-                        cand_text = f"{cand_designation} {cand_arch}"
+                        cand_text = f"{cand_designation} {cand_arch_str}"
                         if any(kw in cand_text for kw in role_keywords):
-                            core_score *= 0.50  # 50% penalty — they already have this role
+                            core_score *= 0.50
 
-                # Normalize activity/temporal to 0-1 range
+                # Activity/temporal signals
                 activity_normalized = max(0.7, min(1.0, activity_boost))
                 temporal_normalized = max(0.8, min(1.0, temporal_boost))
                 signal_score = (activity_normalized * 0.6) + (temporal_normalized * 0.4)
 
-                dimension_score = base_score  # Forward multi-vector (req→off) as dimensional alignment
+                dimension_score = base_score
 
-                # Seniority bonus for mentorship matches
+                # Seniority bonus for mentorship
                 seniority_bonus = 1.0
                 if user_intent in (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE):
                     seniority_bonus = self._calculate_mentorship_seniority_bonus(candidate_persona)
 
-                # Product launch relevance bonus
+                # Product launch bonus
                 launch_bonus = self._calculate_product_launch_relevance_bonus(user_persona, candidate_persona)
                 if launch_bonus > 1.0:
                     seniority_bonus = max(seniority_bonus, launch_bonus)
 
-                # --- Intent as hard multiplier ---
+                # Final score (IQ=1.0 for all non-blocked pairs)
                 base_total = (
-                    core_score       * 0.40 +    # Bidirectional (boosted from 0.35)
-                    dimension_score  * 0.35 +    # Dimensional alignment (boosted from 0.30)
-                    signal_score     * 0.10      # Activity + recency
+                    core_score       * 0.40 +
+                    dimension_score  * 0.35 +
+                    signal_score     * 0.10
                 )
-
-                # Apply seniority bonus for mentorship matches
                 if seniority_bonus > 1.0:
                     base_total = base_total * seniority_bonus
 
-                # Intent multiplier: only truly bad pairs (< 0.50) get crushed.
-                # Pairs in 0.50-0.65 range (service/partnership) get mild scaling, not destruction.
-                if intent_quality < 0.50:
-                    intent_multiplier = intent_quality / 0.50  # Maps 0→0, 0.50→1.0
-                    final_score = base_total * intent_multiplier + intent_quality * 0.15
-                elif intent_quality >= 0.95:
-                    # PERFECT pair (1.0): boost score so good matches break above 75%
-                    final_score = base_total * 1.15 + intent_quality * 0.15
-                else:
-                    # GOOD/MODERATE pair: standard additive formula
-                    final_score = base_total + intent_quality * 0.15
+                final_score = base_total * 1.15 + 1.0 * 0.15  # IQ always 1.0
 
-                # --- Score spread enhancement ---
+                # Power scaling for score spread
                 final_score = max(0.0, min(1.0, final_score))
                 if final_score > 0:
-                    final_score = final_score ** 0.85  # Gentle spread enhancement
+                    final_score = final_score ** 0.85
 
-                # Intent ceiling — different for mentorship vs transactional
-                is_mentee = user_intent in (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE)
-                is_general = user_intent == MatchIntent.GENERAL
-                if (is_mentee or is_general) and intent_quality < 0.95:
-                    # Softened ceiling: profile quality can push past IQ
-                    hard_ceiling = min(final_score, intent_quality)
-                    soft_ceiling = intent_quality * 0.60 + base_total * 0.40
-                    final_score = max(hard_ceiling, min(final_score, soft_ceiling))
-                else:
-                    final_score = min(final_score, intent_quality)
+                fwd_rev_diff = abs(forward_score - reverse_score_val)
 
                 # Only include if above threshold
                 if final_score >= threshold:
@@ -946,18 +908,16 @@ class InlineMatchingService:
                         "user_id": candidate_id,
                         "similarity_score": round(final_score, 4),
                         "match_type": "hybrid_full",
-                        # Multi-vector components
                         "base_score": round(base_score, 4),
                         "tier": mv_match.tier.value,
                         "dimension_scores": [
                             {"dimension": ds.dimension, "score": round(ds.weighted_score, 4)}
                             for ds in mv_match.dimension_scores
                         ],
-                        # Formula component scores (for analysis)
                         "core_score": round(core_score, 4),
                         "dimension_score": round(dimension_score, 4),
                         "signal_score": round(signal_score, 4),
-                        "intent_quality": round(intent_quality, 2),
+                        "intent_quality": 1.0,
                         "user_intent": user_intent.value,
                         "candidate_intent": candidate_intent.value,
                         "forward_score": round(forward_score, 4),
@@ -965,22 +925,14 @@ class InlineMatchingService:
                         "activity_boost": round(activity_boost, 2),
                         "temporal_boost": round(temporal_boost, 2),
                         "fwd_rev_diff": round(fwd_rev_diff, 4),
-                        "intent_multiplier_applied": intent_quality < 0.5,
-                        "bidirectional_factor": round(core_score / dimension_score if dimension_score > 0 else 1.0, 2),
                         "explanation": self._generate_hybrid_explanation(
-                            mv_match, user_intent, candidate_intent, intent_quality
+                            mv_match, user_intent, candidate_intent, 1.0
                         )
                     }
                     enhanced_matches.append(match_data)
 
-            # Tiered sort: for transactional intents, perfect complementary matches
-            # (IQ>=0.95) always rank above non-complementary, then by score within tier.
-            transactional = user_intent in (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER,
-                                            MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING)
-            if transactional:
-                enhanced_matches.sort(key=lambda x: (-int(x.get("intent_quality", 0) >= 0.95), -x["similarity_score"]))
-            else:
-                enhanced_matches.sort(key=lambda x: -x["similarity_score"])
+            # Sort by score (IQ is always 1.0, no tiered sort needed)
+            enhanced_matches.sort(key=lambda x: -x["similarity_score"])
 
             # Limit to max_matches
             enhanced_matches = enhanced_matches[:self.max_matches]
@@ -1103,23 +1055,11 @@ class InlineMatchingService:
 
     def _should_block_same_objective(self, user_intent: 'MatchIntent', candidate_intent: 'MatchIntent') -> bool:
         """
-        UPGRADED (Mar 30, 2026): Only block truly same-need pairs.
-
-        ONLY block when both users have the exact same unidirectional need
-        and neither can provide what the other seeks.
-        Everything else is allowed — let IQ scores and profile quality decide.
+        UPGRADED (Mar 31, 2026): Same-need pairs + cross-intent blocks.
+        Delegates to enhanced_matching_service which has the full block logic.
         """
-        from app.services.enhanced_matching_service import MatchIntent
-
-        same_need_pairs = {
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
-            (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
-        }
-
-        return (user_intent, candidate_intent) in same_need_pairs
+        from app.services.enhanced_matching_service import enhanced_matching_service
+        return enhanced_matching_service._is_same_objective_blocked(user_intent, candidate_intent)
 
     def _generate_hybrid_explanation(
         self,

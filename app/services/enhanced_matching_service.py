@@ -453,27 +453,50 @@ class EnhancedMatchingService:
         }
         return variations_map.get(dealbreaker, [])
 
+    # Cross-intent blocks (from Mar 31 audit):
+    # Certain candidate intents should never appear in certain user lists.
+    CROSS_INTENT_BLOCKS = {
+        # talent_seeking (hiring) should only appear for job seekers
+        MatchIntent.FOUNDER_INVESTOR: {MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING},
+        MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING},
+        MatchIntent.MENTOR_MENTEE: {MatchIntent.TALENT_SEEKING},
+        MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING},
+        # investors shouldn't appear in service provider lists
+        MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER},
+    }
+
+    # mentor_mentee users should ONLY see mentee_mentor candidates
+    MENTOR_MENTEE_WHITELIST = {MatchIntent.MENTEE_MENTOR}
+
     def _is_same_objective_blocked(self, user_intent: MatchIntent, candidate_intent: MatchIntent) -> bool:
         """
-        UPGRADED (Mar 30, 2026): Only block truly same-need pairs.
+        UPGRADED (Mar 31, 2026): Same-need pairs + cross-intent blocks.
 
-        Old model blocked 20+ pairs assuming rigid role-based incompatibility
-        (e.g., investor↔service_provider, mentee↔partnership). Wrong — users
-        can have any objective regardless of role.
-
-        New model: ONLY block when both users have the exact same unidirectional
-        need and neither can provide what the other seeks.
-        Everything else is allowed — let IQ scores and profile quality decide ranking.
+        1. Same-need: both users have identical unidirectional need
+        2. Cross-intent: certain candidate intents blocked from certain user lists
+        3. Mentor whitelist: mentor_mentee users only see mentee_mentor
         """
+        # Same-need pairs
         same_need_pairs = {
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),      # Both deploying capital, neither raising
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),      # Both raising, neither investing
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING), # Both seeking jobs, neither hiring
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),            # Both seeking mentors, neither mentoring
-            (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),          # Both hiring, neither is a candidate
+            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
+            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),
+            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
+            (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
         }
+        if (user_intent, candidate_intent) in same_need_pairs:
+            return True
 
-        return (user_intent, candidate_intent) in same_need_pairs
+        # Mentor whitelist: mentees only see explicit mentors
+        if user_intent == MatchIntent.MENTOR_MENTEE and candidate_intent not in self.MENTOR_MENTEE_WHITELIST:
+            return True
+
+        # Cross-intent blocks
+        blocked_cand_intents = self.CROSS_INTENT_BLOCKS.get(user_intent, set())
+        if candidate_intent in blocked_cand_intents:
+            return True
+
+        return False
 
     def _get_user_dealbreakers(self, persona) -> List[str]:
         """Extract dealbreakers from user's onboarding data."""
@@ -493,15 +516,29 @@ class EnhancedMatchingService:
 
         return dealbreakers
 
+    # Match cap — max matches returned per user
+    MAX_MATCHES_PER_USER = 15
+
+    # Reverse bonus weight — reward bidirectional matches without requiring them
+    REVERSE_BONUS_WEIGHT = 0.15
+
     def find_bidirectional_matches(
         self,
         user_id: str,
         threshold: float = None,
-        limit: int = 50,
+        limit: int = None,
         include_explanations: bool = True
     ) -> List[BidirectionalMatch]:
-        """Find matches where both parties benefit."""
+        """Find matches using forward-only scoring with reverse bonus.
+
+        UPGRADED (Mar 31, 2026): Forward-only + structured pre-filters + capability checks.
+        - Forward: my requirements → their offerings (drives match appearance)
+        - Reverse: my offerings → their requirements (bonus only, not required)
+        - Pre-filters: industry, geography, stage compatibility
+        - Capability: candidate must have what user's intent needs
+        """
         threshold = threshold or self.base_threshold
+        limit = limit or self.MAX_MATCHES_PER_USER
 
         try:
             # Get user's embeddings
@@ -529,64 +566,58 @@ class EnhancedMatchingService:
             if user_dealbreakers and self.enforce_hard_dealbreakers:
                 logger.info(f"User {user_id} has {len(user_dealbreakers)} dealbreakers: {user_dealbreakers[:5]}...")
 
+            # Get user's onboarding slots for structured pre-filters
+            user_slots = self._get_user_slots(user_id)
+
             # Step 1: Find forward matches (my requirements → their offerings)
+            # This is the PRIMARY match direction — user sees people who offer what they need
             forward_matches = {}
             if user_embeddings.get('requirements'):
                 req_vector = user_embeddings['requirements']['vector_data']
                 forward_results = postgresql_adapter.find_similar_users(
                     query_vector=req_vector,
                     embedding_type='offerings',
-                    threshold=threshold * 0.5,  # Lower threshold, will filter later
+                    threshold=0.35,  # Forward threshold
                     exclude_user_id=user_id
                 )
                 for match in forward_results:
                     forward_matches[match['user_id']] = match['similarity_score']
 
-            # Step 2: Find reverse matches (my offerings → their requirements)
+            # Step 2: Pre-compute reverse scores for bonus calculation
             reverse_matches = {}
             if user_embeddings.get('offerings'):
                 off_vector = user_embeddings['offerings']['vector_data']
                 reverse_results = postgresql_adapter.find_similar_users(
                     query_vector=off_vector,
                     embedding_type='requirements',
-                    threshold=threshold * 0.5,
+                    threshold=0.35,
                     exclude_user_id=user_id
                 )
                 for match in reverse_results:
                     reverse_matches[match['user_id']] = match['similarity_score']
 
-            # Step 3: Find bidirectional matches (appear in both)
-            bidirectional_user_ids = set(forward_matches.keys()) & set(reverse_matches.keys())
-
             logger.info(
-                f"Found {len(forward_matches)} forward, {len(reverse_matches)} reverse, "
-                f"{len(bidirectional_user_ids)} bidirectional for user {user_id}"
+                f"Found {len(forward_matches)} forward, {len(reverse_matches)} reverse for user {user_id}"
             )
 
-            # Step 4: Score and rank bidirectional matches
+            # Step 3: Score forward matches with filters and reverse bonus
             bidirectional_matches = []
             scoring_config = INTENT_SCORING_CONFIGS.get(user_intent, INTENT_SCORING_CONFIGS[MatchIntent.GENERAL])
 
             # Counters for logging
             dealbreaker_filtered = 0
             same_objective_filtered = 0
+            prefilter_filtered = 0
 
-            for match_user_id in bidirectional_user_ids:
-                forward_score = forward_matches[match_user_id]
-                reverse_score = reverse_matches[match_user_id]
+            for match_user_id, forward_score in forward_matches.items():
 
-                # Geometric mean (rewards balanced mutual matches)
-                combined_score = math.sqrt(forward_score * reverse_score)
+                # Reverse score (bonus only — not required)
+                reverse_score = reverse_matches.get(match_user_id, 0.0)
 
-                # Fwd-Rev asymmetry penalty (Mar 27, 2026)
-                fwd_rev_diff = abs(forward_score - reverse_score)
-                if fwd_rev_diff > 0.15:
-                    asymmetry_penalty = 1.0 - min(0.3, (fwd_rev_diff - 0.15) * 1.5)
-                    combined_score *= asymmetry_penalty
-
-                # Skip if below threshold
-                if combined_score < threshold:
-                    continue
+                # Forward-only core with reverse bonus
+                combined_score = forward_score
+                if reverse_score > 0.35:
+                    combined_score += reverse_score * self.REVERSE_BONUS_WEIGHT
 
                 # Get matched user's data
                 try:
@@ -598,61 +629,57 @@ class EnhancedMatchingService:
                     match_intent = MatchIntent.GENERAL
                     match_intent_confidence = 0.5
 
-                # NOTE: Removed archetype-based intent override (Mar 30, 2026).
-                # A founder who says "Find New Job" IS an opportunity seeker.
-                # Primary goal always takes precedence over archetype.
-
-                # HARD FILTER 1: Dealbreaker check (Feb 2026)
+                # HARD FILTER 1: Dealbreaker check
                 if self.enforce_hard_dealbreakers and user_dealbreakers and match_persona:
                     has_violation, violated = self._check_dealbreaker_violation(user_dealbreakers, match_persona)
                     if has_violation:
                         dealbreaker_filtered += 1
-                        logger.debug(f"Filtered {match_user_id}: dealbreaker violation {violated}")
                         continue
 
-                # HARD FILTER 2: Same-objective blocking (Feb 2026)
+                # HARD FILTER 2: Same-objective + cross-intent blocking
                 if self.block_same_objective:
                     if self._is_same_objective_blocked(user_intent, match_intent):
                         same_objective_filtered += 1
-                        logger.debug(f"Filtered {match_user_id}: same objective ({user_intent.value})")
                         continue
 
+                # HARD FILTER 3: Structured pre-filters (industry/geography/stage/capability)
+                cand_slots = self._get_user_slots(match_user_id)
+                cand_offerings = (getattr(match_persona, 'offerings', '') or '') if match_persona else ''
+                cand_requirements = (getattr(match_persona, 'requirements', '') or '') if match_persona else ''
+                cand_goal = cand_slots.get('primary_goal', '')
+                if not self._passes_structured_filters(
+                    user_slots, cand_slots, user_intent, match_intent,
+                    cand_offerings, cand_requirements, cand_goal
+                ):
+                    prefilter_filtered += 1
+                    continue
+
                 # PENALTY: Same-persona mirror match detection
-                # Two users with identical archetypes have the same gaps — they can't help each other
                 if user_persona and match_persona:
                     user_archetype = getattr(user_persona, 'archetype', None) or ''
                     match_archetype = getattr(match_persona, 'archetype', None) or ''
                     if user_archetype and match_archetype and user_archetype.lower() == match_archetype.lower():
-                        combined_score *= 0.70  # 30% penalty for mirror matches
-                        logger.debug(f"Mirror match penalty for {match_user_id}: same archetype '{user_archetype}'")
+                        combined_score *= 0.70
 
-                # Same-ROLE mirror match penalty (expanded from archetype-only)
-                # Corp dev matched to corp dev, advisor matched to advisor, etc.
+                # Same-ROLE mirror match penalty
                 if user_persona and match_persona:
                     user_desig = (getattr(user_persona, 'designation', '') or '').lower()
                     cand_desig = (getattr(match_persona, 'designation', '') or '').lower()
-                    # Check for role keyword overlap in designation
                     role_groups = [
                         ['corporate development', 'corp dev', 'business development', 'acquisitions'],
                         ['advisor', 'board member', 'advisory'],
                         ['consultant', 'consulting'],
                     ]
                     for group in role_groups:
-                        user_has = any(kw in user_desig for kw in group)
-                        cand_has = any(kw in cand_desig for kw in group)
-                        if user_has and cand_has:
-                            combined_score *= 0.50  # 50% penalty for same-role matches
-                            logger.debug(f"Same-role penalty for {match_user_id}: designation overlap in group {group}")
+                        if any(kw in user_desig for kw in group) and any(kw in cand_desig for kw in group):
+                            combined_score *= 0.50
                             break
 
-                # Role-overlap penalty: a service provider matched with someone who already holds
-                # that role gets penalized. E.g., fractional CTO matched with an existing CTO.
+                # Role-overlap penalty for service providers
                 if user_intent == MatchIntent.SERVICE_PROVIDER and match_persona:
                     user_offerings = (getattr(user_persona, 'offerings', '') or '').lower() if user_persona else ''
                     cand_designation = (getattr(match_persona, 'designation', '') or '').lower()
                     cand_arch = (getattr(match_persona, 'archetype', '') or '').lower()
-
-                    # Check if the candidate already holds the role the service provider offers
                     role_keywords = []
                     if 'cto' in user_offerings or 'technical leadership' in user_offerings:
                         role_keywords = ['cto', 'chief technology', 'vp engineering', 'head of engineering']
@@ -660,24 +687,20 @@ class EnhancedMatchingService:
                         role_keywords = ['cmo', 'chief marketing', 'vp marketing', 'head of marketing']
                     elif 'cfo' in user_offerings or 'financial' in user_offerings:
                         role_keywords = ['cfo', 'chief financial', 'vp finance', 'head of finance']
-
                     if role_keywords:
                         cand_text = f"{cand_designation} {cand_arch}"
                         if any(kw in cand_text for kw in role_keywords):
-                            combined_score *= 0.50  # 50% penalty — they already have this role
-                            logger.debug(f"Role-overlap penalty for {match_user_id}: candidate already holds offered role")
+                            combined_score *= 0.50
 
-                # Calculate intent match quality
-                intent_quality = self._calculate_intent_match_quality(
-                    user_intent, match_intent, user_intent_confidence, match_intent_confidence
-                )
+                # IQ = 1.0 for all non-blocked pairs (Mar 30, 2026)
+                intent_quality = 1.0
 
-                # Calculate dimensional alignment (NEW — uses all 15 stored embeddings)
+                # Dimensional alignment
                 dimension_score = self._calculate_dimensional_score(
                     user_id, match_user_id, scoring_config
                 )
 
-                # Calculate temporal and activity boosts
+                # Activity and temporal boosts
                 activity_boost = self._calculate_activity_boost(match_profile if match_persona else None)
                 temporal_boost = self._calculate_temporal_boost(match_profile if match_persona else None)
 
@@ -689,9 +712,9 @@ class EnhancedMatchingService:
                 # Product launch relevance bonus
                 launch_bonus = self._calculate_product_launch_relevance_bonus(user_persona, match_persona)
                 if launch_bonus > 1.0:
-                    seniority_bonus = max(seniority_bonus, launch_bonus)  # Use the higher bonus, don't stack
+                    seniority_bonus = max(seniority_bonus, launch_bonus)
 
-                # Calculate final score with all factors (additive weighted)
+                # Calculate final score
                 final_score, dim_score_stored, signal_score_stored = self._calculate_final_score(
                     combined_score=combined_score,
                     intent_quality=intent_quality,
@@ -707,7 +730,6 @@ class EnhancedMatchingService:
                 # Generate explanations
                 match_reasons = []
                 potential_gaps = []
-
                 if include_explanations:
                     match_reasons, potential_gaps = self._generate_match_explanation(
                         user_persona=user_persona,
@@ -739,27 +761,210 @@ class EnhancedMatchingService:
                 ))
 
             # Log filter results
-            if dealbreaker_filtered > 0 or same_objective_filtered > 0:
-                logger.info(
-                    f"Hard filters applied for {user_id}: "
-                    f"{dealbreaker_filtered} dealbreaker violations, "
-                    f"{same_objective_filtered} same-objective blocks"
-                )
+            logger.info(
+                f"Filters for {user_id}: {dealbreaker_filtered} dealbreaker, "
+                f"{same_objective_filtered} same-objective, {prefilter_filtered} pre-filter"
+            )
 
-            # Tiered sort: for transactional intents, perfect complementary matches
-            # (IQ>=0.95) always rank above non-complementary, then by score within tier.
-            transactional = user_intent in (MatchIntent.FOUNDER_INVESTOR, MatchIntent.INVESTOR_FOUNDER,
-                                            MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING)
-            if transactional:
-                bidirectional_matches.sort(key=lambda m: (-int(m.intent_match_quality >= 0.95), -m.final_score))
-            else:
-                bidirectional_matches.sort(key=lambda m: m.final_score, reverse=True)
-            logger.info(f"Returning {len(bidirectional_matches[:limit])} matches for {user_id}")
-            return bidirectional_matches[:limit]
+            # Sort by final score (IQ is always 1.0 so no tiered sort needed)
+            bidirectional_matches.sort(key=lambda m: m.final_score, reverse=True)
+            result = bidirectional_matches[:limit]
+            logger.info(f"Returning {len(result)} matches for {user_id}")
+            return result
 
         except Exception as e:
             logger.error(f"Error finding bidirectional matches for {user_id}: {e}")
             return []
+
+    # ================================================================
+    # Structured Pre-Filters (Mar 31, 2026)
+    # Applied BEFORE embedding scoring to eliminate irrelevant matches
+    # ================================================================
+
+    INDUSTRY_ALIASES = {
+        'healthtech': ['healthtech', 'healthcare/biotech', 'healthcare', 'biotech', 'health', 'medtech'],
+        'healthcare/biotech': ['healthtech', 'healthcare/biotech', 'healthcare', 'biotech', 'health', 'medtech'],
+        'healthcare': ['healthtech', 'healthcare/biotech', 'healthcare', 'biotech', 'health', 'medtech'],
+        'biotech': ['healthtech', 'healthcare/biotech', 'healthcare', 'biotech', 'health', 'medtech'],
+        'fintech': ['fintech', 'financial', 'payments', 'banking'],
+        'ai/ml': ['ai/ml', 'ai', 'ml', 'artificial intelligence', 'machine learning', 'deep tech'],
+        'saas': ['saas', 'technology/saas', 'b2b saas', 'software'],
+        'technology/saas': ['saas', 'technology/saas', 'b2b saas', 'software', 'tech'],
+        'e-commerce': ['e-commerce', 'ecommerce', 'consumer', 'retail', 'marketplace'],
+        'consumer': ['consumer', 'e-commerce', 'b2c', 'dtc'],
+        'edtech': ['edtech', 'education', 'learning'],
+        'cleantech': ['cleantech', 'climate', 'sustainability', 'clean tech', 'green'],
+        'agritech': ['agritech', 'agriculture', 'farming', 'food tech'],
+        'supply chain': ['supply chain', 'logistics', 'operations'],
+        'enterprise': ['enterprise', 'b2b'],
+        'proptech': ['proptech', 'real estate', 'property'],
+        'cybersecurity': ['cybersecurity', 'security', 'infosec'],
+    }
+
+    CAPABILITY_KEYWORDS = {
+        "founder_investor": {
+            "keywords": ["invest", "capital", "fund ", "funding", "check size", "portfolio",
+                         "deploy", "angel", "venture", "back founders", "seed funding",
+                         "$", "million", "pilot program", "strategic investment"],
+            "label": "investment/capital",
+            "check_field": "offerings",
+        },
+        "investor_founder": {
+            "keywords": ["raising", "raise funding", "seeking investment", "seeking funding", "need funding",
+                         "need capital", "seed round", "series a funding", "series b funding", "pre-seed funding",
+                         "looking for investors", "fundraising", "capital raise"],
+            "label": "fundraising",
+            "check_field": "requirements",
+            "require_goal": ["Raise Funding", "raise funding", "Seeking Investment"],
+        },
+        "opportunity_seeking": {
+            "keywords": ["hiring", "recruit", "open role", "looking for", "need engineer",
+                         "need developer", "team expansion", "building team", "position",
+                         "competitive comp", "join our"],
+            "label": "hiring/employment",
+            "check_field": "offerings",
+        },
+        "talent_seeking": {
+            "keywords": ["seeking", "looking for", "open to", "available",
+                         "years of experience", "years in", "engineer", "developer",
+                         "led teams", "managed", "track record of building",
+                         "technical leadership", "product management"],
+            "label": "available talent",
+            "check_field": "offerings",
+            "require_goal": ["Find New Job", "Find Job", "find new job", "Find Co-founder"],
+        },
+        "mentee_mentor": {
+            "keywords": ["mentor", "advise", "guide", "coach", "advisory", "guidance",
+                         "counsel", "teach", "share knowledge", "years of experience",
+                         "led teams", "built", "scaled"],
+            "label": "mentorship/advisory",
+            "check_field": "offerings",
+        },
+        "cofounder": {
+            "keywords": ["co-founder", "cofounder", "looking for a partner", "seeking a partner",
+                         "find co-founder", "technical co-founder", "business co-founder",
+                         "looking for a role", "open to", "available", "seeking new"],
+            "label": "cofounder availability",
+            "check_field": "both",
+        },
+    }
+
+    STAGE_ALIASES = {
+        'idea': ['idea', 'pre-seed', 'pre-revenue'],
+        'mvp': ['mvp', 'pre-seed', 'seed'],
+        'product-market fit': ['product-market fit', 'pmf', 'seed', 'series a'],
+        'scaling': ['scaling', 'series a', 'series b', 'series b+', 'growth'],
+        'established': ['established', 'growth', 'series b+', 'series c+', 'late stage'],
+    }
+
+    def _get_user_slots(self, user_id: str) -> Dict[str, str]:
+        """Fetch all onboarding slot values for a user."""
+        try:
+            from app.adapters.postgresql import postgresql_adapter as pg
+            rows = pg.execute_query(
+                "SELECT slot_name, value FROM onboarding_answers WHERE user_id = %s AND value IS NOT NULL",
+                (user_id,)
+            )
+            return {row['slot_name']: row['value'] for row in rows} if rows else {}
+        except Exception as e:
+            logger.debug(f"Could not fetch slots for {user_id}: {e}")
+            return {}
+
+    @staticmethod
+    def _parse_slot_list(value) -> List[str]:
+        """Parse a slot value that may be a string, list, or JSON array."""
+        import ast
+        if not value:
+            return []
+        if isinstance(value, list):
+            return [v.strip().lower() for v in value if v]
+        s = str(value).strip()
+        if s.startswith('['):
+            try:
+                parsed = ast.literal_eval(s)
+                if isinstance(parsed, list):
+                    return [str(v).strip().lower() for v in parsed if v]
+            except Exception:
+                pass
+        parts = s.replace(';', ',').split(',')
+        return [p.strip().lower() for p in parts if p.strip()]
+
+    def _passes_structured_filters(
+        self, user_slots: Dict, cand_slots: Dict,
+        user_intent: MatchIntent, cand_intent: MatchIntent,
+        cand_offerings: str = "", cand_requirements: str = "", cand_goal: str = ""
+    ) -> bool:
+        """Check industry, geography, stage, and capability filters."""
+        # Industry overlap (with aliases)
+        user_ind = self._parse_slot_list(user_slots.get('industry_focus'))
+        cand_ind = self._parse_slot_list(cand_slots.get('industry_focus'))
+        if user_ind and cand_ind:
+            user_exp = set()
+            for i in user_ind:
+                user_exp.add(i)
+                user_exp.update(self.INDUSTRY_ALIASES.get(i, []))
+            cand_exp = set()
+            for i in cand_ind:
+                cand_exp.add(i)
+                cand_exp.update(self.INDUSTRY_ALIASES.get(i, []))
+            if not (user_exp & cand_exp):
+                return False
+
+        # Geography overlap
+        user_geo = self._parse_slot_list(user_slots.get('geography'))
+        cand_geo = self._parse_slot_list(cand_slots.get('geography'))
+        if user_geo and cand_geo:
+            if not any('global' in g or 'remote' in g for g in user_geo + cand_geo):
+                if not (set(user_geo) & set(cand_geo)):
+                    return False
+
+        # Stage compatibility (founder→investor only)
+        ui_val = user_intent.value if isinstance(user_intent, MatchIntent) else str(user_intent)
+        ci_val = cand_intent.value if isinstance(cand_intent, MatchIntent) else str(cand_intent)
+        if ui_val == "founder_investor" and ci_val == "investor_founder":
+            user_stage = (user_slots.get('company_stage') or '').strip().lower()
+            cand_stage_pref = self._parse_slot_list(cand_slots.get('stage_preference'))
+            if user_stage and cand_stage_pref:
+                if not any('any' in s for s in cand_stage_pref):
+                    compatible = self.STAGE_ALIASES.get(user_stage, [user_stage])
+                    if not any(c in compatible for c in cand_stage_pref):
+                        return False
+
+        # Capability filter
+        cap = self.CAPABILITY_KEYWORDS.get(ui_val)
+        if cap:
+            required_goals = cap.get("require_goal")
+            if required_goals:
+                goal_lower = (cand_goal or "").lower()
+                if goal_lower and any(rg.lower() in goal_lower for rg in required_goals):
+                    return True  # Goal matches — pass
+                # Fallback to keyword check
+                check_field = cap.get("check_field", "offerings")
+                if check_field == "offerings":
+                    text = (cand_offerings or "").lower()
+                elif check_field == "requirements":
+                    text = (cand_requirements or "").lower()
+                else:
+                    text = f"{cand_offerings or ''} {cand_requirements or ''}".lower()
+                if text.strip() and any(kw in text for kw in cap["keywords"]):
+                    return True
+                return False
+            else:
+                check_field = cap.get("check_field", "offerings")
+                if check_field == "offerings":
+                    text = (cand_offerings or "").lower()
+                elif check_field == "requirements":
+                    text = (cand_requirements or "").lower()
+                elif check_field == "both":
+                    text = f"{cand_offerings or ''} {cand_requirements or ''}".lower()
+                else:
+                    text = (cand_offerings or "").lower()
+                if not text.strip():
+                    return False
+                if not any(kw in text for kw in cap["keywords"]):
+                    return False
+
+        return True
 
     def _classify_user_intent(self, persona, user_id: str = None) -> Tuple[MatchIntent, float]:
         """Classify user intent from persona + onboarding slots.
@@ -1040,65 +1245,35 @@ class EnhancedMatchingService:
     ) -> tuple:
         """Combine all scoring factors into final score.
 
-        UPGRADED (Mar 27, 2026): Intent as hard multiplier + asymmetry penalty + spread.
-        UPGRADED (Mar 29, 2026): Mentorship seniority bonus + softened ceiling for mentees.
-
-        Intent < 0.5 now CRUSHES the score (multiplier) instead of mild additive penalty.
-        Forward-reverse asymmetry penalizes one-sided matches.
-        Power scaling spreads scores apart for better ranking signal.
+        UPGRADED (Mar 31, 2026): Simplified — IQ is always 1.0 (blocking handles bad pairs).
+        Forward-only core + dimensional alignment + activity signals.
+        Power scaling spreads scores for better ranking.
 
         Returns: (final_score, dimension_score, signal_score) tuple for analysis storage
         """
-        import math as _math
-
-        # Normalize activity and temporal to 0-1 range for additive formula
+        # Normalize activity and temporal to 0-1 range
         activity_score = max(0.7, min(1.0, activity_boost))
         temporal_score = max(0.8, min(1.0, temporal_boost))
         signal_score = (activity_score * 0.6) + (temporal_score * 0.4)
 
-        # Base formula (without intent)
+        # Additive formula: forward-only core + dimensions + signals + IQ bonus
         base_total = (
-            combined_score   * 0.40 +    # Layer 1: Bidirectional core (boosted from 0.35)
-            dimension_score  * 0.35 +    # Layer 2: Dimensional alignment (boosted from 0.30)
+            combined_score   * 0.40 +    # Layer 1: Forward-only core (+ reverse bonus)
+            dimension_score  * 0.35 +    # Layer 2: Dimensional alignment
             signal_score     * 0.10      # Layer 3: Activity + recency
         )
 
-        # Apply seniority bonus for mentorship matches (boosts base before intent)
+        # Seniority bonus for mentorship matches
         if seniority_bonus > 1.0:
             base_total = base_total * seniority_bonus
 
-        # Intent multiplier: only truly bad pairs (< 0.50) get crushed.
-        # Pairs in 0.50-0.65 range (service/partnership) get mild scaling, not destruction.
-        if intent_quality < 0.50:
-            intent_multiplier = intent_quality / 0.50  # Maps 0→0, 0.50→1.0
-            final = base_total * intent_multiplier + intent_quality * 0.15
-        elif intent_quality >= 0.95:
-            # PERFECT pair: boost so good matches break above 75%
-            final = base_total * 1.15 + intent_quality * 0.15
-        else:
-            # GOOD/MODERATE pair: standard additive formula
-            final = base_total + intent_quality * 0.15
+        # IQ is 1.0 for all non-blocked pairs, so boost and add
+        final = base_total * 1.15 + intent_quality * 0.15
 
-        # Score spread enhancement (power scaling)
+        # Power scaling for score spread
         final = max(0.0, min(1.0, final))
         if final > 0:
             final = final ** 0.85
-
-        # Intent ceiling — different behavior for mentorship vs transactional
-        is_mentee = user_intent in (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTOR_MENTEE) if user_intent else False
-        is_general = user_intent == MatchIntent.GENERAL if user_intent else False
-
-        if (is_mentee or is_general) and intent_quality < 0.95:
-            # SOFTENED ceiling for mentorship: profile quality can push past IQ
-            # A VP of Product (high base) should score higher than a junior engineer
-            # even when both have the same IQ score
-            # Blend: 60% IQ ceiling + 40% profile quality
-            hard_ceiling = min(final, intent_quality)
-            soft_ceiling = intent_quality * 0.60 + base_total * 0.40
-            final = max(hard_ceiling, min(final, soft_ceiling))
-        else:
-            # Standard hard ceiling for transactional intents
-            final = min(final, intent_quality)
 
         return final, dimension_score, signal_score
 

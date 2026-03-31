@@ -254,6 +254,7 @@ def _run_background_onboarding_tasks(
         from app.workers.persona_processing import generate_persona_task
 
         # Check if resume was uploaded during session
+        # Try Redis first (direct AI service upload), then PostgreSQL (backend upload to S3)
         resume_data = None
         try:
             redis_client = _get_redis_client()
@@ -265,10 +266,45 @@ def _run_background_onboarding_tasks(
                     "filename": resume_meta.get("filename", "resume.pdf"),
                     "content_type": resume_meta.get("content_type", "application/pdf")
                 }
-                logger.info(f"[BG:{thread_name}] Found resume for session {session_id}")
+                logger.info(f"[BG:{thread_name}] Found resume in Redis for session {session_id}")
                 redis_client.delete(f"resume:{session_id}", f"resume_meta:{session_id}")
         except Exception as e:
-            logger.warning(f"[BG:{thread_name}] Could not retrieve resume: {e}")
+            logger.warning(f"[BG:{thread_name}] Could not retrieve resume from Redis: {e}")
+
+        # Fallback: check if resume was uploaded via backend (stored in PostgreSQL user_documents table)
+        if not resume_data:
+            try:
+                from app.adapters.postgresql import postgresql_adapter
+                conn = postgresql_adapter.get_backend_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT url, title FROM user_documents WHERE user_id = %s AND type = 'resume' ORDER BY created_at DESC LIMIT 1",
+                    (user_id,)
+                )
+                row = cursor.fetchone()
+                cursor.close()
+                conn.close()
+
+                if row and row[0]:
+                    resume_url = row[0]
+                    resume_filename = row[1] or "resume.pdf"
+                    logger.info(f"[BG:{thread_name}] Found resume in PostgreSQL for user {user_id}: {resume_filename}")
+
+                    # Download from S3 URL and encode as base64
+                    import requests as req_lib
+                    resp = req_lib.get(resume_url, timeout=30)
+                    if resp.status_code == 200:
+                        import base64
+                        resume_data = {
+                            "content": base64.b64encode(resp.content).decode('utf-8'),
+                            "filename": resume_filename,
+                            "content_type": "application/pdf"
+                        }
+                        logger.info(f"[BG:{thread_name}] Downloaded resume from S3 ({len(resp.content)} bytes)")
+                    else:
+                        logger.warning(f"[BG:{thread_name}] Failed to download resume from S3: HTTP {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"[BG:{thread_name}] Could not retrieve resume from PostgreSQL: {e}")
 
         workflow = chain(
             process_resume_task.s(user_id, resume_data),

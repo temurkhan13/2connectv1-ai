@@ -661,10 +661,15 @@ class EnhancedMatchingService:
                     bidirectional_filtered += 1
                     continue
 
-                # Combined score: forward is primary, reverse is bonus
-                combined_score = forward_score
-                if reverse_score > 0.35:
-                    combined_score += reverse_score * self.REVERSE_BONUS_WEIGHT
+                # Combined score: geometric mean (env-flag rollback available)
+                scoring_mode = os.environ.get("SCORING_MODE", "geometric_mean")
+                if scoring_mode == "geometric_mean":
+                    combined_score = math.sqrt(forward_score * reverse_score) if forward_score > 0 and reverse_score > 0 else 0.0
+                else:
+                    # Legacy: forward + bonus (set SCORING_MODE=forward_bonus to revert)
+                    combined_score = forward_score
+                    if reverse_score > 0.35:
+                        combined_score += reverse_score * self.REVERSE_BONUS_WEIGHT
 
                 # Get matched user's data
                 try:

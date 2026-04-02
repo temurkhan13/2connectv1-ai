@@ -647,12 +647,21 @@ class EnhancedMatchingService:
             same_objective_filtered = 0
             prefilter_filtered = 0
 
+            bidirectional_filtered = 0
+
             for match_user_id, forward_score in forward_matches.items():
 
-                # Reverse score (bonus only — not required)
+                # Reverse score: my offerings → their requirements
                 reverse_score = reverse_matches.get(match_user_id, 0.0)
 
-                # Forward-only core with reverse bonus
+                # HARD FILTER 0: Bidirectional check — skip if other side gets nothing
+                # Minimum reverse threshold ensures both sides benefit from the match
+                REVERSE_MIN_THRESHOLD = 0.20
+                if scoring_config.bidirectional_required and reverse_score < REVERSE_MIN_THRESHOLD:
+                    bidirectional_filtered += 1
+                    continue
+
+                # Combined score: forward is primary, reverse is bonus
                 combined_score = forward_score
                 if reverse_score > 0.35:
                     combined_score += reverse_score * self.REVERSE_BONUS_WEIGHT
@@ -808,7 +817,8 @@ class EnhancedMatchingService:
 
             # Log filter results
             logger.info(
-                f"Filters for {user_id}: {dealbreaker_filtered} dealbreaker, "
+                f"Filters for {user_id}: {bidirectional_filtered} bidirectional, "
+                f"{dealbreaker_filtered} dealbreaker, "
                 f"{same_objective_filtered} same-objective, {prefilter_filtered} pre-filter"
             )
 

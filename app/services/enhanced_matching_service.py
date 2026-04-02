@@ -360,7 +360,7 @@ INTENT_SCORING_CONFIGS = {
         industry_match_weight=2.0,
         stage_match_weight=0.7,
         geography_weight=0.5,
-        bidirectional_required=False  # Service providers seek clients
+        bidirectional_required=True   # Ensure other side actually needs the service
     )
 }
 
@@ -557,8 +557,8 @@ class EnhancedMatchingService:
     # Match cap — max matches returned per user
     MAX_MATCHES_PER_USER = 15
 
-    # Reverse bonus weight — reward bidirectional matches without requiring them
-    REVERSE_BONUS_WEIGHT = 0.15
+    # Reverse bonus weight — reward bidirectional matches, penalize one-sided matches
+    REVERSE_BONUS_WEIGHT = 0.30
 
     def find_bidirectional_matches(
         self,

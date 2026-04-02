@@ -1815,3 +1815,35 @@ async def hard_delete_user(user_id: str, request: dict = None):
         "message": "User completely deleted" if success else "User partially deleted (see errors)",
         "result": result
     }
+
+
+@router.post("/admin/reembed-all-users")
+async def reembed_all_users(request: dict, background_tasks: BackgroundTasks):
+    """
+    Re-embed all user profiles using the currently configured embedding model.
+    One-time migration endpoint for switching from all-mpnet-base-v2 to Gemini text-embedding-004.
+
+    Pass dry_run=true in body to count profiles without generating embeddings.
+    Pass batch_size to control rate limiting (default 10).
+    """
+    import os
+    from app.services.reembed_script import run_reembedding
+
+    admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
+    if request.get("admin_key") != admin_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+
+    dry_run = request.get("dry_run", True)
+    batch_size = request.get("batch_size", 10)
+
+    if dry_run:
+        result = run_reembedding(dry_run=True)
+        return {"code": 200, "status": "dry_run", "result": result}
+
+    # Run in background to avoid HTTP timeout
+    background_tasks.add_task(run_reembedding, dry_run=False, batch_size=batch_size)
+    return {
+        "code": 200,
+        "status": "started",
+        "message": f"Re-embedding started in background (batch_size={batch_size}). Check Render logs for progress."
+    }

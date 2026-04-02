@@ -26,12 +26,11 @@ logger = logging.getLogger(__name__)
 # Each 768-dim embedding is ~6KB, so 1000 entries = ~6MB max
 LOCAL_CACHE_MAX_SIZE = int(os.getenv('EMBEDDING_LOCAL_CACHE_SIZE', '1000'))
 
-# Use Gemini embeddings (primary, best quality)
+# Use Gemini embeddings (primary — should always be true in production)
 USE_GEMINI_EMBEDDINGS = os.getenv('USE_GEMINI_EMBEDDINGS', 'false').lower() == 'true'
 
-# Use OpenAI API embeddings instead of local SentenceTransformers
-# Set to 'true' for low-memory deployments (e.g., Render free tier)
-USE_OPENAI_EMBEDDINGS = os.getenv('USE_OPENAI_EMBEDDINGS', 'false').lower() == 'true'
+# OpenAI embeddings DISABLED — removed in favor of Gemini text-embedding-004
+# SentenceTransformers (local) kept as emergency fallback only if Gemini key is missing
 
 # Lazy import to avoid circular dependency
 _versioning_service = None
@@ -58,28 +57,24 @@ class EmbeddingService:
         # Read similarity threshold and model config from environment
         self.similarity_threshold = float(os.getenv('SIMILARITY_THRESHOLD', '0.7'))
         self.use_gemini = USE_GEMINI_EMBEDDINGS
-        self.use_openai = USE_OPENAI_EMBEDDINGS
+        self.use_openai = False  # DISABLED — OpenAI embeddings no longer used
         self.gemini_model = None
         self.openai_client = None
         self.st_model = None
 
         if self.use_gemini:
-            # Gemini embedding mode — best quality, free tier
+            # Gemini embedding mode — primary model
             import google.generativeai as genai
             genai.configure(api_key=os.getenv('GEMINI_EMBEDDINGS_KEY'))
             self.model_name = os.getenv('GEMINI_EMBEDDING_MODEL', 'models/text-embedding-004')
             self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
             self.gemini_model = genai
             logger.info(f"Using Gemini embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
-        elif self.use_openai:
-            # OpenAI API mode - no local model loading
-            from openai import OpenAI
-            self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
-            self.model_name = os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
-            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
-            logger.info(f"Using OpenAI embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
         else:
-            # SentenceTransformers local mode (fallback)
+            # No Gemini key — this should not happen in production
+            # SentenceTransformers as emergency local fallback only
+            logger.warning("GEMINI EMBEDDINGS NOT CONFIGURED — falling back to local SentenceTransformers. "
+                          "Set USE_GEMINI_EMBEDDINGS=true and GEMINI_EMBEDDINGS_KEY in env vars.")
             from sentence_transformers import SentenceTransformer
             self.model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-mpnet-base-v2')
             self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
@@ -142,23 +137,15 @@ class EmbeddingService:
             # Generate new embedding
             try:
                 if self.use_gemini:
-                    # Gemini text-embedding-004
+                    # Gemini text-embedding-004 (primary)
                     result = self.gemini_model.embed_content(
                         model=self.model_name,
                         content=cleaned_text,
                         task_type="SEMANTIC_SIMILARITY",
                     )
                     embedding_vector = result['embedding']
-                elif self.use_openai:
-                    # OpenAI API embeddings with configurable dimension
-                    response = self.openai_client.embeddings.create(
-                        model=self.model_name,
-                        input=cleaned_text,
-                        dimensions=self.embedding_dimension  # Support dimension reduction
-                    )
-                    embedding_vector = response.data[0].embedding
                 else:
-                    # SentenceTransformers local model
+                    # SentenceTransformers local model (emergency fallback only)
                     embedding_vector = self.st_model.encode(cleaned_text).tolist()
             except Exception as e:
                 logger.error(f"Failed to generate embedding: {str(e)}")

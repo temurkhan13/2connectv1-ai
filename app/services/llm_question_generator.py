@@ -208,14 +208,19 @@ Return ONLY the question. No preamble, no explanation."""
 
             logger.info(f"[QuestionGenerator] Generating question for session {session_id[:8] if session_id else 'unknown'}...")
 
-            response = self.client.messages.create(
-                model=self.question_model,
-                max_tokens=150,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7  # Higher temperature for variety
-            )
-
-            question = response.content[0].text.strip()
+            _msgs = [{"role": "user", "content": prompt}]
+            try:
+                response = self.client.messages.create(
+                    model=self.question_model, max_tokens=150, messages=_msgs, temperature=0.7
+                )
+                question = response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                question = fallback_from_anthropic_error(
+                    service="extraction", error=api_err, system_prompt=None, messages=_msgs, max_tokens=150, temperature=0.7
+                )
+                if not question:
+                    raise api_err
 
             # Clean up any quotes if the model wrapped the question
             if question.startswith('"') and question.endswith('"'):
@@ -233,10 +238,8 @@ Return ONLY the question. No preamble, no explanation."""
             # Return a safe fallback with human-readable slot name
             if missing_slots:
                 slot = missing_slots[0]
-                # Use mapped name or gracefully convert snake_case
                 display_name = SLOT_DISPLAY_NAMES.get(
-                    slot,
-                    slot.replace('_', ' ')  # Fallback: just replace underscores
+                    slot, slot.replace('_', ' ')
                 )
                 return f"Could you tell me more about your {display_name}?"
             return "What else would be helpful for me to know about what you're looking for?"

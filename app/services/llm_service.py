@@ -127,8 +127,19 @@ Respond with a JSON object containing:
                 HumanMessage(content=user_prompt)
             ]
 
-            response = await chat_model.ainvoke(messages)
-            content = response.content.strip()
+            try:
+                response = await chat_model.ainvoke(messages)
+                content = response.content.strip()
+            except Exception as api_err:
+                # Fallback to GPT-5.4/Gemini with exact same prompts
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                content = fallback_from_anthropic_error(
+                    service="matching", error=api_err, system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    max_tokens=1024, temperature=self.temperature
+                )
+                if not content:
+                    raise api_err
 
             # Parse JSON response
             if content.startswith("```json"):
@@ -150,7 +161,6 @@ Respond with a JSON object containing:
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse LLM response as JSON: {e}")
-            # Return template fallback
             return self._fallback_explanation(user_a, user_b)
         except Exception as e:
             logger.error(f"LLM generation failed: {e}")
@@ -229,8 +239,18 @@ Respond with a JSON object:
                 HumanMessage(content=user_prompt)
             ]
 
-            response = await chat_model.ainvoke(messages)
-            content = response.content.strip()
+            try:
+                response = await chat_model.ainvoke(messages)
+                content = response.content.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                content = fallback_from_anthropic_error(
+                    service="matching", error=api_err, system_prompt=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}],
+                    max_tokens=1024, temperature=self.temperature
+                )
+                if not content:
+                    raise api_err
 
             # Parse JSON response
             if content.startswith("```json"):

@@ -188,22 +188,28 @@ IMPORTANT: Same industry/sector is NOT enough! They must be able to HELP each ot
 Respond ONLY in JSON:
 {{"alignment_score": <15-85>, "alignment_type": "<fully_aligned|partially_aligned|misaligned>", "reason": "<Can A help B? Can B help A?>", "should_continue_chat": <false if misaligned>, "common_ground": "<specific match or 'none'>"}}"""
 
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=250,
-                system="You are an alignment analyzer. Respond ONLY in valid JSON, no other text.",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3
-            )
+            _sys = "You are an alignment analyzer. Respond ONLY in valid JSON, no other text."
+            _msgs = [{"role": "user", "content": prompt}]
+            try:
+                response = self.client.messages.create(
+                    model=self.model, max_tokens=250, system=_sys, messages=_msgs, temperature=0.3
+                )
+                result_text = response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                result_text = fallback_from_anthropic_error(
+                    service="chat", error=api_err, system_prompt=_sys, messages=_msgs, max_tokens=250, temperature=0.3
+                )
+                if not result_text:
+                    raise api_err
 
-            result_text = response.content[0].text.strip()
             # Clean up potential markdown formatting
             if result_text.startswith("```"):
                 result_text = result_text.split("```")[1]
                 if result_text.startswith("json"):
                     result_text = result_text[4:]
             result_text = result_text.strip()
-            
+
             result = json.loads(result_text)
             logger.info(f"Alignment check result: {result}")
             return result
@@ -319,16 +325,23 @@ Respond ONLY in JSON:
             system_content = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
             user_messages = [m for m in messages if m.get("role") != "system"]
 
+            _msgs = user_messages if user_messages else [{"role": "user", "content": "Continue the conversation."}]
             # Try up to 3 times to get a non-repetitive response
             for attempt in range(3):
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system_content,
-                    messages=user_messages if user_messages else [{"role": "user", "content": "Continue the conversation."}],
-                    temperature=0
-                )
-                response_text = response.content[0].text.strip()
+                try:
+                    response = self.client.messages.create(
+                        model=self.model, max_tokens=max_tokens, system=system_content,
+                        messages=_msgs, temperature=0
+                    )
+                    response_text = response.content[0].text.strip()
+                except Exception as api_err:
+                    from app.services.llm_fallback import fallback_from_anthropic_error
+                    response_text = fallback_from_anthropic_error(
+                        service="chat", error=api_err, system_prompt=system_content,
+                        messages=_msgs, max_tokens=max_tokens, temperature=0
+                    )
+                    if not response_text:
+                        raise api_err
 
                 # Check if response is too similar to previous messages
                 if not self.is_too_similar(response_text, conversation_history):
@@ -636,15 +649,21 @@ Write a summary with CLEAR CONCLUSION:
 
 Keep it concise and professional. The verdict is already decided based on the score."""
 
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=250,
-                system="You are a match summary writer. The verdict is already decided based on the score. Your job is to explain WHY the match has this score and provide supporting analysis. Do not contradict the given verdict.",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
-            )
-
-            return response.content[0].text.strip()
+            _sys = "You are a match summary writer. The verdict is already decided based on the score. Your job is to explain WHY the match has this score and provide supporting analysis. Do not contradict the given verdict."
+            _msgs = [{"role": "user", "content": prompt}]
+            try:
+                response = self.client.messages.create(
+                    model=self.model, max_tokens=250, system=_sys, messages=_msgs, temperature=0.2
+                )
+                return response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                result = fallback_from_anthropic_error(
+                    service="chat", error=api_err, system_prompt=_sys, messages=_msgs, max_tokens=250, temperature=0.2
+                )
+                if result:
+                    return result
+                raise api_err
         except Exception as e:
             logger.error(f"Error generating conversation summary: {str(e)}")
             if alignment_type == 'misaligned' or score < 40:
@@ -714,15 +733,20 @@ Did they find real alignment? → Higher score
 Respond ONLY in JSON:
 {{"score": <15-85>, "confidence": "<high|medium|low>", "reason": "<Can they help each other? YES/NO>"}}"""
 
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=150,
-                system="You are a compatibility analyzer. Two people seeking the same thing = NO MATCH (0-25). But when one OFFERS what the other SEEKS, that's a MATCH (76-100). Mentor seeking mentees + mentee seeking mentor = FULL MATCH because both achieve their goals. Investor seeking startups + startup seeking funding = FULL MATCH. Respond ONLY in valid JSON.",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2
-            )
-
-            result_text = response.content[0].text.strip()
+            _sys = "You are a compatibility analyzer. Two people seeking the same thing = NO MATCH (0-25). But when one OFFERS what the other SEEKS, that's a MATCH (76-100). Mentor seeking mentees + mentee seeking mentor = FULL MATCH because both achieve their goals. Investor seeking startups + startup seeking funding = FULL MATCH. Respond ONLY in valid JSON."
+            _msgs = [{"role": "user", "content": prompt}]
+            try:
+                response = self.client.messages.create(
+                    model=self.model, max_tokens=150, system=_sys, messages=_msgs, temperature=0.2
+                )
+                result_text = response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                result_text = fallback_from_anthropic_error(
+                    service="chat", error=api_err, system_prompt=_sys, messages=_msgs, max_tokens=150, temperature=0.2
+                )
+                if not result_text:
+                    raise api_err
             # Clean up potential markdown
             if "```" in result_text:
                 result_text = result_text.split("```")[1]

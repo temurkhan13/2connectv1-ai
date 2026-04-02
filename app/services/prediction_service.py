@@ -153,17 +153,21 @@ Please generate a friendly, concise message (1-2 sentences) informing the user t
 
 Return only the message text, nothing else."""
         
+        _msgs = [{"role": "user", "content": user_prompt}]
         try:
-            # Anthropic API: system prompt is separate from messages
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=100,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.7
+                model=self.model, max_tokens=100, system=system_prompt, messages=_msgs, temperature=0.7
             )
-
             fallback_text = response.content[0].text.strip()
+        except Exception as api_err:
+            from app.services.llm_fallback import fallback_from_anthropic_error
+            fallback_text = fallback_from_anthropic_error(
+                service="prediction", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=100, temperature=0.7
+            )
+            if not fallback_text:
+                logger.error(f"Error generating fallback text: {str(api_err)}")
+                return f"Your input '{user_response}' doesn't match any available options. Please select from: {options_text}"
+        try:
             # Remove any quotes if present
             fallback_text = fallback_text.strip('"').strip("'").strip()
             return fallback_text

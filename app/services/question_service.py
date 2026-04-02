@@ -134,26 +134,26 @@ STYLE GUIDELINES:
 - If options are provided, include them naturally in Markdown format (preferably as a bulleted list) within the question
 - Return ONLY the question text - no introductions, no explanations, just the friendly question itself"""
 
+        _msgs = [{"role": "user", "content": user_prompt}]
         try:
-            # Anthropic API: system prompt is separate from messages
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=500,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.7
+                model=self.model, max_tokens=500, system=system_prompt, messages=_msgs, temperature=0.7
             )
-
             result = response.content[0].text.strip()
+        except Exception as api_err:
+            from app.services.llm_fallback import fallback_from_anthropic_error
+            result = fallback_from_anthropic_error(
+                service="chat", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=500, temperature=0.7
+            )
+            if not result:
+                logger.error(f"Claude API error: {str(api_err)}")
+                raise api_err
 
-            # Clean up any unwanted introductory phrases (for first call only)
-            if not user_message and not context:
-                result = self._clean_introductory_text(result)
+        # Clean up any unwanted introductory phrases (for first call only)
+        if not user_message and not context:
+            result = self._clean_introductory_text(result)
 
-            return result
-        except Exception as e:
-            logger.error(f"Claude API error: {str(e)}")
-            raise
+        return result
     
     def _clean_introductory_text(self, text: str) -> str:
         """Remove common introductory phrases and meta-commentary that LLM might add."""
@@ -239,23 +239,23 @@ Create a concise, friendly follow-up question with a soft, frank tone that:
 
 Return only the question text, nothing else."""
 
+        _msgs = [{"role": "user", "content": user_prompt}]
         try:
-            # Anthropic API: system prompt is separate from messages
             response = self.client.messages.create(
-                model=self.model,
-                max_tokens=500,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                temperature=0.7
+                model=self.model, max_tokens=500, system=system_prompt, messages=_msgs, temperature=0.7
             )
-
             followup = response.content[0].text.strip()
-            # Remove any quotes if present
-            followup = followup.strip('"').strip("'").strip()
-            return followup
-        except Exception as e:
-            logger.error(f"Error generating follow-up question: {str(e)}")
-            raise
+        except Exception as api_err:
+            from app.services.llm_fallback import fallback_from_anthropic_error
+            followup = fallback_from_anthropic_error(
+                service="chat", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=500, temperature=0.7
+            )
+            if not followup:
+                logger.error(f"Error generating follow-up question: {str(api_err)}")
+                raise api_err
+        # Remove any quotes if present
+        followup = followup.strip('"').strip("'").strip()
+        return followup
     
     def build_conversation_context(self, previous_responses: List[Any]) -> Optional[str]:
         """Build conversation context from previous responses."""

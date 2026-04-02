@@ -779,18 +779,20 @@ CRITICAL: Only return the JSON object. No explanatory text."""
             # BUG-043 FIX: Use Sonnet (personalization_model) for resume extraction
             # Rationale: Resume extraction happens ONCE at upload time, user expects wait.
             # Sonnet handles nuances better (career transitions, complex backgrounds).
-            response = self.client.messages.create(
-                model=self.personalization_model,
-                max_tokens=1500,  # Increased for more detailed extraction
-                system=system_prompt,
-                messages=[{
-                    "role": "user",
-                    "content": f"Extract profile information from this resume:\n\n{truncated}"
-                }],
-                temperature=0.1  # Low temperature for factual extraction
-            )
-
-            result_text = response.content[0].text.strip()
+            _msgs = [{"role": "user", "content": f"Extract profile information from this resume:\n\n{truncated}"}]
+            try:
+                response = self.client.messages.create(
+                    model=self.personalization_model, max_tokens=1500, system=system_prompt,
+                    messages=_msgs, temperature=0.1
+                )
+                result_text = response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                result_text = fallback_from_anthropic_error(
+                    service="extraction", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=1500, temperature=0.1
+                )
+                if not result_text:
+                    raise api_err
 
             # Parse JSON response
             try:
@@ -1416,14 +1418,19 @@ Return ONLY the follow-up question, nothing else."""
             logger.info(f"Generating personalized follow-up with {self.personalization_model}")
             logger.info(f"Pattern avoidance: openers={recent_openers}, structures={recent_structures}")
 
-            response = self.client.messages.create(
-                model=self.personalization_model,
-                max_tokens=150,  # Reduced from 200 for faster generation
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6  # Balance: fast enough (not 0.7) but diverse enough (not 0.3)
-            )
-
-            followup = response.content[0].text.strip()
+            _msgs = [{"role": "user", "content": prompt}]
+            try:
+                response = self.client.messages.create(
+                    model=self.personalization_model, max_tokens=150, messages=_msgs, temperature=0.6
+                )
+                followup = response.content[0].text.strip()
+            except Exception as api_err:
+                from app.services.llm_fallback import fallback_from_anthropic_error
+                followup = fallback_from_anthropic_error(
+                    service="extraction", error=api_err, system_prompt=None, messages=_msgs, max_tokens=150, temperature=0.6
+                )
+                if not followup:
+                    raise api_err
 
             # =========================================================
             # HARD CONSTRAINT: Topic Blacklist Validation
@@ -1687,29 +1694,38 @@ RIGHT: {{"is_off_topic": false, "extracted_slots": ...}}
 Your response MUST be parseable JSON. Begin with {{ now."""
 
                 # Use prompt caching for the large system prompt (reduces latency by ~80% on cache hit)
-                # Cache persists for 5 minutes of inactivity
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=1500,
-                    system=[
-                        {
-                            "type": "text",
-                            "text": retry_system,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ],
-                    messages=messages,
-                    temperature=0.1  # Low temperature for consistent extraction
-                )
-
-                # Log full response metadata for debugging (including cache stats)
-                cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
-                cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
-                logger.info(f"Anthropic response: stop_reason={response.stop_reason}, cache_hit={cache_read > 0}, cache_tokens={cache_read or cache_creation}")
+                _sys_cached = [{"type": "text", "text": retry_system, "cache_control": {"type": "ephemeral"}}]
+                try:
+                    response = self.client.messages.create(
+                        model=self.model, max_tokens=1500, system=_sys_cached,
+                        messages=messages, temperature=0.1
+                    )
+                    # Log full response metadata for debugging (including cache stats)
+                    cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
+                    cache_read = getattr(response.usage, 'cache_read_input_tokens', 0)
+                    logger.info(f"Anthropic response: stop_reason={response.stop_reason}, cache_hit={cache_read > 0}, cache_tokens={cache_read or cache_creation}")
+                except Exception as api_err:
+                    from app.services.llm_fallback import fallback_from_anthropic_error
+                    fallback_text = fallback_from_anthropic_error(
+                        service="extraction", error=api_err, system_prompt=_sys_cached,
+                        messages=messages, max_tokens=1500, temperature=0.1
+                    )
+                    if fallback_text:
+                        # Create a mock response object so downstream code works
+                        class _MockContent:
+                            def __init__(self, text): self.text = text
+                        class _MockResponse:
+                            def __init__(self, text):
+                                self.content = [_MockContent(text)]
+                                self.stop_reason = "fallback"
+                        response = _MockResponse(fallback_text)
+                        logger.info(f"Using fallback response for extraction")
+                    else:
+                        raise api_err
 
                 if not response.content:
-                    logger.error("Anthropic returned response with empty content array")
-                    raise ValueError("Anthropic returned empty content array")
+                    logger.error("LLM returned response with empty content array")
+                    raise ValueError("LLM returned empty content array")
 
                 result_text = response.content[0].text
                 logger.info(f"Anthropic response (first 300 chars): {result_text[:300] if result_text else 'EMPTY'}")

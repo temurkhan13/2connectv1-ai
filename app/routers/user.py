@@ -1128,21 +1128,45 @@ async def regenerate_matches(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _run_batch_match_recalculation(completed_users: list, threshold: float):
+    """Background task: recalculate matches for all completed users."""
+    import time
+    from app.services.inline_matching_service import inline_matching_service
+
+    results = {"processed": 0, "success": 0, "failed": 0}
+
+    for i, user_id in enumerate(completed_users):
+        try:
+            logger.info(f"[MATCH-REGEN {i+1}/{len(completed_users)}] Recalculating for {user_id[:8]}")
+            result = inline_matching_service.calculate_and_sync_matches_bidirectional(
+                user_id, threshold=threshold
+            )
+            results["processed"] += 1
+            if result.get("success"):
+                results["success"] += 1
+            else:
+                results["failed"] += 1
+        except Exception as e:
+            results["processed"] += 1
+            results["failed"] += 1
+            logger.error(f"[MATCH-REGEN] Error for {user_id[:8]}: {e}")
+
+        # Rate limit: pause every 10 users
+        if (i + 1) % 10 == 0:
+            time.sleep(1)
+
+    logger.info(f"=== MATCH REGENERATION COMPLETE === {results['success']}/{results['processed']} succeeded, {results['failed']} failed")
+
+
 @router.post("/admin/regenerate-all-matches")
-async def regenerate_all_matches(request: dict):
+async def regenerate_all_matches(request: dict, background_tasks: BackgroundTasks):
     """
     Batch recalculate matches for ALL completed users.
 
-    This fixes the BUG-009 issue where everyone matched with everyone
-    due to 0.0 threshold. Running this will:
-    - Recalculate matches with proper threshold (0.5)
-    - Update all reciprocal match lists
-    - Sync all affected users to backend
-
-    WARNING: This can take several minutes for large user bases.
+    Runs in the background to avoid HTTP timeout on Render.
+    Pass dry_run=true to count users without recalculating.
     """
     import os
-    from app.services.inline_matching_service import inline_matching_service
     from app.adapters.supabase_profiles import UserProfile
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
@@ -1156,7 +1180,6 @@ async def regenerate_all_matches(request: dict):
         # Get all users with completed persona (onboarding complete)
         completed_users = []
         for profile in UserProfile.scan():
-            # persona_status == 'completed' means onboarding is done and persona generated
             if profile.persona_status == "completed":
                 completed_users.append(profile.user_id)
 
@@ -1170,36 +1193,12 @@ async def regenerate_all_matches(request: dict):
                 "threshold": threshold
             }
 
-        results = {
-            "processed": 0,
-            "success": 0,
-            "failed": 0,
-            "errors": []
-        }
-
-        for user_id in completed_users:
-            try:
-                logger.info(f"Recalculating matches for user {user_id}")
-                result = inline_matching_service.calculate_and_sync_matches_bidirectional(
-                    user_id,
-                    threshold=threshold
-                )
-                results["processed"] += 1
-                if result.get("success"):
-                    results["success"] += 1
-                else:
-                    results["failed"] += 1
-                    results["errors"].append({"user_id": user_id, "error": result.get("errors", [])})
-            except Exception as e:
-                results["processed"] += 1
-                results["failed"] += 1
-                results["errors"].append({"user_id": user_id, "error": str(e)})
-                logger.error(f"Error recalculating matches for {user_id}: {e}")
-
+        # Run in background to avoid Render's HTTP timeout
+        background_tasks.add_task(_run_batch_match_recalculation, completed_users, threshold)
         return {
             "code": 200,
-            "message": f"Batch match recalculation complete. {results['success']}/{results['processed']} succeeded.",
-            "result": results
+            "status": "started",
+            "message": f"Match recalculation started in background for {len(completed_users)} users (threshold={threshold}). Check Render logs for progress."
         }
     except Exception as e:
         logger.error(f"Error in batch match recalculation: {e}")

@@ -62,8 +62,9 @@ class LLMQuestionGenerator:
     def __init__(self):
         # Lazy-load client to ensure API key is read at runtime
         self._client = None
-        # Dedicated model for question generation (can be tuned independently)
-        self.question_model = os.getenv("ANTHROPIC_QUESTION_MODEL", "claude-sonnet-4-5-20250929")
+        # Upgraded to Claude Sonnet 4.6 with dedicated extraction key
+        from app.services.llm_fallback import ANTHROPIC_MODEL
+        self.question_model = os.getenv("ANTHROPIC_QUESTION_MODEL", ANTHROPIC_MODEL)
         # Session-specific pattern memory (prevents repetitive questions)
         self._session_patterns = {}
 
@@ -71,10 +72,11 @@ class LLMQuestionGenerator:
     def client(self) -> Anthropic:
         """Lazy-load Anthropic client."""
         if self._client is None:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
+            from app.services.llm_fallback import get_anthropic_key
+            api_key = get_anthropic_key("extraction")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-            logger.info(f"[QuestionGenerator] Initializing Anthropic client")
+                raise ValueError("ANTHROPIC_EXTRACTION_KEY environment variable is required")
+            logger.info(f"[QuestionGenerator] Initializing Anthropic client with extraction key")
             self._client = Anthropic(api_key=api_key)
         return self._client
 

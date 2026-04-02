@@ -18,13 +18,14 @@ class QuestionService:
     """Service for modifying questions with friendly, engaging tone."""
 
     def __init__(self):
-        """Initialize question service with Anthropic Claude."""
-        api_key = os.getenv('ANTHROPIC_API_KEY')
+        """Initialize question service with dedicated Anthropic API key (chat)."""
+        from app.services.llm_fallback import get_anthropic_key, ANTHROPIC_MODEL
+        api_key = get_anthropic_key("chat")
         if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+            raise ValueError("ANTHROPIC_CHAT_KEY environment variable is required")
         self.client = Anthropic(api_key=api_key)
-        # Use Claude Sonnet 4.5 for warm, engaging conversations
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
+        # Use Claude Sonnet 4.6 for warm, engaging conversations
+        self.model = os.getenv('ANTHROPIC_CHAT_MODEL', ANTHROPIC_MODEL)
     
     def format_options_for_prompt(self, options: Optional[Union[str, List[Any]]]) -> str:
         """Format options for prompt."""

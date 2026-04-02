@@ -19,13 +19,14 @@ class AIChatService:
     """Service for managing AI-to-AI chat conversations."""
 
     def __init__(self):
-        """Initialize AI chat service with Anthropic Claude."""
-        self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        """Initialize AI chat service with dedicated Anthropic API key."""
+        from app.services.llm_fallback import get_anthropic_key, ANTHROPIC_MODEL
+        self.api_key = get_anthropic_key("chat")
         if not self.api_key:
-            logger.warning("ANTHROPIC_API_KEY not found in environment variables")
+            logger.warning("ANTHROPIC_CHAT_KEY not found in environment variables")
         self.client = Anthropic(api_key=self.api_key) if self.api_key else None
-        # Use Claude Sonnet 4.5 for AI-to-AI conversations
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-5-20250929')
+        # Use Claude Sonnet 4.6 for AI-to-AI conversations
+        self.model = os.getenv('ANTHROPIC_CHAT_MODEL', ANTHROPIC_MODEL)
     
     def get_persona(self, user_id: str) -> Dict[str, Any]:
         """

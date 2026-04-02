@@ -450,12 +450,11 @@ class LLMSlotExtractor:
     def __init__(self):
         # P0 FIX: Don't initialize client at startup - lazy load to ensure runtime access to API key
         self._client = None
-        # BUG-070 FIX: Switch from Haiku to Sonnet for slot extraction
-        # Haiku was failing to extract slots properly (industry_focus, primary_goal)
-        # Cost increase: ~$0.001/turn → ~$0.015/turn (worth it for quality)
-        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", "claude-sonnet-4-5-20250929")
-        # Use Claude Sonnet 4.5 for personalized follow-up questions (higher quality)
-        self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", "claude-sonnet-4-5-20250929")
+        # Upgraded to Claude Sonnet 4.6 with dedicated extraction key
+        from app.services.llm_fallback import ANTHROPIC_MODEL
+        self.extraction_model = os.getenv("ANTHROPIC_EXTRACTION_MODEL", ANTHROPIC_MODEL)
+        # Use Claude Sonnet 4.6 for personalized follow-up questions
+        self.personalization_model = os.getenv("ANTHROPIC_PERSONALIZATION_MODEL", ANTHROPIC_MODEL)
         # For backwards compatibility
         self.model = self.extraction_model
         # Session-specific pattern memory (keyed by session_id to avoid cross-user pollution)
@@ -471,10 +470,11 @@ class LLMSlotExtractor:
         but not during service initialization.
         """
         if self._client is None:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
+            from app.services.llm_fallback import get_anthropic_key
+            api_key = get_anthropic_key("extraction")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-            logger.info(f"Initializing Anthropic client with API key (first {len(api_key[:4])}... chars)")
+                raise ValueError("ANTHROPIC_EXTRACTION_KEY environment variable is required")
+            logger.info(f"Initializing Anthropic client with extraction key")
             self._client = Anthropic(api_key=api_key)
         return self._client
 

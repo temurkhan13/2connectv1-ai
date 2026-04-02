@@ -1,10 +1,11 @@
 """
-Main embedding service: OpenAI embedding + pgvector storage.
+Main embedding service: Multi-provider embedding + pgvector storage.
 Single, reliable service for all embedding needs.
 
-Supports two modes:
+Supports three modes:
+- Gemini text-embedding-004 (USE_GEMINI_EMBEDDINGS=true) - best quality, free tier
 - OpenAI API embeddings (USE_OPENAI_EMBEDDINGS=true) - low memory, API-based
-- SentenceTransformers local model (default) - high memory, local inference
+- SentenceTransformers local model (default fallback) - high memory, local inference
 """
 import logging
 import os
@@ -24,6 +25,9 @@ logger = logging.getLogger(__name__)
 # Maximum entries in local embedding cache to prevent memory leaks
 # Each 768-dim embedding is ~6KB, so 1000 entries = ~6MB max
 LOCAL_CACHE_MAX_SIZE = int(os.getenv('EMBEDDING_LOCAL_CACHE_SIZE', '1000'))
+
+# Use Gemini embeddings (primary, best quality)
+USE_GEMINI_EMBEDDINGS = os.getenv('USE_GEMINI_EMBEDDINGS', 'false').lower() == 'true'
 
 # Use OpenAI API embeddings instead of local SentenceTransformers
 # Set to 'true' for low-memory deployments (e.g., Render free tier)
@@ -53,20 +57,30 @@ class EmbeddingService:
     def __init__(self):
         # Read similarity threshold and model config from environment
         self.similarity_threshold = float(os.getenv('SIMILARITY_THRESHOLD', '0.7'))
+        self.use_gemini = USE_GEMINI_EMBEDDINGS
         self.use_openai = USE_OPENAI_EMBEDDINGS
+        self.gemini_model = None
+        self.openai_client = None
+        self.st_model = None
 
-        if self.use_openai:
+        if self.use_gemini:
+            # Gemini embedding mode — best quality, free tier
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv('GEMINI_EMBEDDINGS_KEY'))
+            self.model_name = os.getenv('GEMINI_EMBEDDING_MODEL', 'models/text-embedding-004')
+            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
+            self.gemini_model = genai
+            logger.info(f"Using Gemini embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
+        elif self.use_openai:
             # OpenAI API mode - no local model loading
             from openai import OpenAI
             self.openai_client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
             self.model_name = os.getenv('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small')
             self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
-            self.st_model = None
             logger.info(f"Using OpenAI embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
         else:
-            # SentenceTransformers local mode
+            # SentenceTransformers local mode (fallback)
             from sentence_transformers import SentenceTransformer
-            self.openai_client = None
             self.model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-mpnet-base-v2')
             self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
             self.st_model = SentenceTransformer(self.model_name.replace('sentence-transformers/', ''))
@@ -127,7 +141,15 @@ class EmbeddingService:
 
             # Generate new embedding
             try:
-                if self.use_openai:
+                if self.use_gemini:
+                    # Gemini text-embedding-004
+                    result = self.gemini_model.embed_content(
+                        model=self.model_name,
+                        content=cleaned_text,
+                        task_type="SEMANTIC_SIMILARITY",
+                    )
+                    embedding_vector = result['embedding']
+                elif self.use_openai:
                     # OpenAI API embeddings with configurable dimension
                     response = self.openai_client.embeddings.create(
                         model=self.model_name,
@@ -233,7 +255,7 @@ class EmbeddingService:
             versioning = _get_versioning_service()
             version_stats = versioning.get_version_stats() if versioning else {}
 
-            method = 'OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector'
+            method = 'Gemini API + pgvector' if self.use_gemini else ('OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector')
             return {
                 'method': method,
                 'model': self.model_name,
@@ -258,7 +280,7 @@ class EmbeddingService:
             }
         except Exception as e:
             logger.error(f"Error getting stats: {str(e)}")
-            method = 'OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector'
+            method = 'Gemini API + pgvector' if self.use_gemini else ('OpenAI API + pgvector' if self.use_openai else 'SentenceTransformers + pgvector')
             return {
                 'method': method,
                 'error': str(e)

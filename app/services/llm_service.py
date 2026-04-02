@@ -19,14 +19,15 @@ class LLMService:
     """Service for LLM interactions using Claude via LangChain."""
 
     def __init__(self):
-        """Initialize LLM service with Anthropic Claude."""
-        self.api_key = os.getenv('ANTHROPIC_API_KEY')
-        # Use Claude Haiku 3.0 for fast, cost-effective match explanations and ice breakers
-        self.model = os.getenv('ANTHROPIC_MODEL', 'claude-3-haiku-20240307')
+        """Initialize LLM service with dedicated Anthropic API key (matching)."""
+        from app.services.llm_fallback import get_anthropic_key, ANTHROPIC_MODEL
+        self.api_key = get_anthropic_key("matching")
+        # Upgraded from Haiku 3.0 → Sonnet 4.6 for higher quality explanations
+        self.model = os.getenv('ANTHROPIC_MATCHING_MODEL', ANTHROPIC_MODEL)
         self.temperature = float(os.getenv('LLM_TEMPERATURE', '0.7'))
 
         if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+            raise ValueError("ANTHROPIC_MATCHING_KEY environment variable is required")
 
     def get_chat_model(self) -> ChatAnthropic:
         """Get Claude chat model instance via LangChain."""

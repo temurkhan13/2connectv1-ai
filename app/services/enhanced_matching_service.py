@@ -351,7 +351,7 @@ INTENT_SCORING_CONFIGS = {
         industry_match_weight=1.5,    # Industry alignment is key
         stage_match_weight=0.8,       # Stage matters for company clients
         geography_weight=0.6,         # Can work remotely but local helps
-        bidirectional_required=False  # Recruiters can initiate matches
+        bidirectional_required=True   # Both sides must benefit
     ),
     # BUG-040 FIX: Service provider scoring - similar to partnership
     # Industry weight raised 1.3→2.0: out-of-industry consultants are a fundamental quality failure

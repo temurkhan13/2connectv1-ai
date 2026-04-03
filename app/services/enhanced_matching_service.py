@@ -199,76 +199,35 @@ class IntentClassifier:
             logger.info(f"[IntentClassifier] primary_goal was a list, using first element: '{raw_goal}'")
         primary_goal = str(raw_goal).lower().strip()
         if not primary_goal:
-            logger.warning(f"[IntentClassifier] No primary_goal available — falling back to keyword scan. "
-                          f"Available fields: {list(persona_data.keys())}")
-        if primary_goal:
-            # Sort by length descending so more specific matches win
-            # e.g. "offer mentorship" matches before "mentorship"
-            sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
-            for goal_text, intent in sorted_goals:
-                if goal_text in primary_goal:  # Only check if map key is substring of user's goal
-                    # FIX (Mar 30, 2026): Distinguish mentor from mentee
-                    # "Seek Mentorship" is ambiguous — check user_type to determine side
-                    if intent in (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR):
-                        user_type = str(persona_data.get("user_type", "")).lower()
-                        archetype = str(persona_data.get("archetype", "")).lower()
-                        combined_type = f"{user_type} {archetype}"
-                        mentor_keywords = ["mentor", "advisor", "coach", "advisory", "guide"]
-                        is_mentor = any(kw in combined_type for kw in mentor_keywords)
-                        if is_mentor:
-                            intent = MatchIntent.MENTEE_MENTOR  # They ARE a mentor, seeking mentees
-                            logger.info(f"[IntentClassifier] Mentor detected from user_type '{user_type}' -> mentee_mentor")
-                        else:
-                            intent = MatchIntent.MENTOR_MENTEE  # They WANT a mentor
-                            logger.info(f"[IntentClassifier] Mentee detected from user_type '{user_type}' -> mentor_mentee")
-                    logger.info(f"[IntentClassifier] Resolved intent from primary_goal '{primary_goal}' -> {intent.value}")
-                    return intent, 0.95
-
-        # PRIORITY 2: Keyword analysis of persona text (fallback)
-        text_to_analyze = " ".join([
-            str(persona_data.get("what_theyre_looking_for", "")),
-            str(persona_data.get("requirements", "")),
-            str(persona_data.get("offerings", "")),
-            str(persona_data.get("archetype", "")),
-            str(persona_data.get("focus", ""))
-        ]).lower()
-
-        # Score each intent
-        intent_scores = {}
-        for intent, keywords in self.INTENT_KEYWORDS.items():
-            score = sum(1 for kw in keywords if kw in text_to_analyze)
-            if score > 0:
-                intent_scores[intent] = score / len(keywords)
-
-        if not intent_scores:
+            # No primary_goal — classify as GENERAL, no intent filtering.
+            # Better to show all matches than guess wrong from keywords.
+            logger.warning(f"[IntentClassifier] No primary_goal available for user — classifying as GENERAL")
             return MatchIntent.GENERAL, 0.5
 
-        # Tiebreaker priority: when multiple intents score equally,
-        # prefer actionable intents over vague ones.
-        # e.g., "mentor" can appear in both mentor_mentee and talent_seeking contexts —
-        # a founder "mentoring" their team while also hiring should be talent_seeking.
-        INTENT_PRIORITY = {
-            MatchIntent.TALENT_SEEKING: 6,       # Most actionable — hiring
-            MatchIntent.OPPORTUNITY_SEEKING: 6,   # Most actionable — job seeking
-            MatchIntent.INVESTOR_FOUNDER: 5,      # Deploying capital
-            MatchIntent.FOUNDER_INVESTOR: 5,      # Raising capital
-            MatchIntent.RECRUITER: 4,
-            MatchIntent.SERVICE_PROVIDER: 4,
-            MatchIntent.COFOUNDER: 3,
-            MatchIntent.PARTNERSHIP: 3,
-            MatchIntent.MENTOR_MENTEE: 2,         # Vague — often misclassified
-            MatchIntent.MENTEE_MENTOR: 2,
-            MatchIntent.GENERAL: 1,
-        }
+        # Match primary_goal against known goal map
+        # Sort by length descending so more specific matches win
+        sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+        for goal_text, intent in sorted_goals:
+            if goal_text in primary_goal:
+                # Distinguish mentor from mentee
+                if intent in (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR):
+                    user_type = str(persona_data.get("user_type", "")).lower()
+                    archetype = str(persona_data.get("archetype", "")).lower()
+                    combined_type = f"{user_type} {archetype}"
+                    mentor_keywords = ["mentor", "advisor", "coach", "advisory", "guide"]
+                    is_mentor = any(kw in combined_type for kw in mentor_keywords)
+                    if is_mentor:
+                        intent = MatchIntent.MENTEE_MENTOR
+                        logger.info(f"[IntentClassifier] Mentor detected from user_type '{user_type}' -> mentee_mentor")
+                    else:
+                        intent = MatchIntent.MENTOR_MENTEE
+                        logger.info(f"[IntentClassifier] Mentee detected from user_type '{user_type}' -> mentor_mentee")
+                logger.info(f"[IntentClassifier] Resolved intent from primary_goal '{primary_goal}' -> {intent.value}")
+                return intent, 0.95
 
-        # Return highest scoring intent, with priority tiebreaker
-        best_intent = max(
-            intent_scores,
-            key=lambda i: (intent_scores[i], INTENT_PRIORITY.get(i, 0))
-        )
-        confidence = min(0.95, intent_scores[best_intent] * 2)  # Cap at 0.95
-
-        return best_intent, confidence
+        # primary_goal exists but doesn't match any known goal — classify as GENERAL
+        logger.warning(f"[IntentClassifier] primary_goal '{primary_goal}' not in goal map — classifying as GENERAL")
+        return MatchIntent.GENERAL, 0.5
 
 
 @dataclass

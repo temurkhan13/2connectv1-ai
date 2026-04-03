@@ -1282,7 +1282,12 @@ class EnhancedMatchingService:
             user_vec = user_emb.get('vector_data')
             candidate_vec = candidate_emb.get('vector_data')
 
-            if not user_vec or not candidate_vec:
+            # Handle numpy arrays and lists — check length, not truthiness
+            if user_vec is None or candidate_vec is None:
+                continue
+            if hasattr(user_vec, '__len__') and len(user_vec) == 0:
+                continue
+            if hasattr(candidate_vec, '__len__') and len(candidate_vec) == 0:
                 continue
 
             # Cosine similarity

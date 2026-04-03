@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ─── Model Configuration ─────────────────────────────────────────────────────
 
 # Primary: Claude Sonnet 4.6 (all services)
-ANTHROPIC_MODEL = "claude-sonnet-4-6-20250929"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
 
 # Fallback models per service group
 FALLBACK_CONFIG = {
@@ -47,8 +47,8 @@ FALLBACK_CONFIG = {
     "extraction": {"provider": "openai", "model": "gpt-5.4"},
     "question": {"provider": "openai", "model": "gpt-5.4"},
     # Gemini 3.1 Pro fallback for background/lighter services
-    "prediction": {"provider": "gemini", "model": "gemini-3.1-pro"},
-    "matching": {"provider": "gemini", "model": "gemini-3.1-pro"},
+    "prediction": {"provider": "gemini", "model": "gemini-3.1-pro-preview"},
+    "matching": {"provider": "gemini", "model": "gemini-3.1-pro-preview"},
 }
 
 # ─── API Key Mapping ─────────────────────────────────────────────────────────

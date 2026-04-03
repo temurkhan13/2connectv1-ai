@@ -503,26 +503,23 @@ class EnhancedMatchingService:
     # mentor_mentee users should ONLY see mentee_mentor candidates
     MENTOR_MENTEE_WHITELIST = {MatchIntent.MENTEE_MENTOR}
 
+    # Intents where same-intent matching IS valid (e.g., two founders can partner)
+    SAME_INTENT_ALLOWED = {
+        MatchIntent.PARTNERSHIP,   # Two people seeking partnerships CAN partner with each other
+        MatchIntent.COFOUNDER,     # Two cofounder-seekers CAN become cofounders
+        MatchIntent.GENERAL,       # General networking — everyone matches
+    }
+
     def _is_same_objective_blocked(self, user_intent: MatchIntent, candidate_intent: MatchIntent) -> bool:
         """
-        UPGRADED (Apr 3, 2026): Only block same-need pairs.
+        Block any two users with the exact same intent, UNLESS the intent
+        is one where same-intent matching makes sense (partnership, cofounder, general).
 
-        Cross-intent is now a PENALTY (score reduction), not a hard block.
-        Users should see all potential matches — the scoring algorithm handles relevance.
+        No hardcoded pair list — automatically handles new intent types.
         """
-        # Same-need pairs — two users seeking the same thing can't help each other
-        same_need_pairs = {
-            (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
-            (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),
-            (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
-            (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),
-            (MatchIntent.RECRUITER, MatchIntent.RECRUITER),
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),  # Two mentors can't mentor each other
-            (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTOR_MENTEE),  # Two mentees seeking same thing
-        }
-        if (user_intent, candidate_intent) in same_need_pairs:
-            return True
+        if user_intent == candidate_intent:
+            # Same intent — only allow if it's a collaborative intent
+            return user_intent not in self.SAME_INTENT_ALLOWED
 
         return False
 

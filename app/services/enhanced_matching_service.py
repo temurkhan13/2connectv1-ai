@@ -96,9 +96,10 @@ class IntentClassifier:
             "looking for a job", "open to opportunities"
         ],
         MatchIntent.PARTNERSHIP: [
-            "partner", "collaborate", "b2b", "enterprise", "strategic",
-            "alliance", "joint venture", "integration",
-            "strategic partner", "business development"
+            "business partnership", "strategic partnership", "b2b partnership",
+            "joint venture", "channel partner", "distribution partner",
+            "integration partner", "go-to-market partner",
+            "business development partnership", "co-marketing"
         ],
         MatchIntent.RECRUITER: [
             "recruiter", "recruiting", "talent acquisition", "headhunter",
@@ -197,12 +198,15 @@ class IntentClassifier:
             raw_goal = raw_goal[0] if raw_goal else ""
             logger.info(f"[IntentClassifier] primary_goal was a list, using first element: '{raw_goal}'")
         primary_goal = str(raw_goal).lower().strip()
+        if not primary_goal:
+            logger.warning(f"[IntentClassifier] No primary_goal available — falling back to keyword scan. "
+                          f"Available fields: {list(persona_data.keys())}")
         if primary_goal:
             # Sort by length descending so more specific matches win
             # e.g. "offer mentorship" matches before "mentorship"
             sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
             for goal_text, intent in sorted_goals:
-                if goal_text in primary_goal or primary_goal in goal_text:
+                if goal_text in primary_goal:  # Only check if map key is substring of user's goal
                     # FIX (Mar 30, 2026): Distinguish mentor from mentee
                     # "Seek Mentorship" is ambiguous — check user_type to determine side
                     if intent in (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR):
@@ -460,63 +464,57 @@ class EnhancedMatchingService:
         }
         return variations_map.get(dealbreaker, [])
 
-    # Cross-intent blocks (from Mar 31 audit):
-    # Certain candidate intents should never appear in certain user lists.
-    CROSS_INTENT_BLOCKS = {
-        # Founders seeking funding: only see investors + service providers
-        MatchIntent.FOUNDER_INVESTOR: {MatchIntent.TALENT_SEEKING, MatchIntent.OPPORTUNITY_SEEKING},
-        # Investors: only see founders raising money
-        MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.SERVICE_PROVIDER, MatchIntent.PARTNERSHIP, MatchIntent.COFOUNDER},
-        MatchIntent.MENTOR_MENTEE: {MatchIntent.TALENT_SEEKING},
-        # Mentors offering guidance: see mentees, founders, job seekers — not investors/SPs/recruiters/partners
-        MatchIntent.MENTEE_MENTOR: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER, MatchIntent.RECRUITER, MatchIntent.PARTNERSHIP, MatchIntent.TALENT_SEEKING},
-        # Cofounders: need other cofounders, not investors or consultants
-        MatchIntent.COFOUNDER: {MatchIntent.TALENT_SEEKING, MatchIntent.INVESTOR_FOUNDER, MatchIntent.SERVICE_PROVIDER},
-        # Service providers: need clients, not investors/cofounders/mentees
-        MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.COFOUNDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
-        # Job seekers: need hiring companies, not investors or partners
-        MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER, MatchIntent.PARTNERSHIP},
-        # Hiring: only see job seekers and networkers
-        MatchIntent.TALENT_SEEKING: {MatchIntent.COFOUNDER, MatchIntent.INVESTOR_FOUNDER, MatchIntent.FOUNDER_INVESTOR, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR},
-        # Partnership: need other partners/founders/SPs, not job seekers/mentees/investors
-        MatchIntent.PARTNERSHIP: {MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR, MatchIntent.INVESTOR_FOUNDER, MatchIntent.TALENT_SEEKING},
-        # Recruiters: see hiring companies + job seekers + founders, not SPs/mentors
-        MatchIntent.RECRUITER: {MatchIntent.SERVICE_PROVIDER, MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR, MatchIntent.PARTNERSHIP},
+    # Cross-intent PENALTIES (upgraded Apr 3, 2026):
+    # Changed from hard blocks to score penalties. Users should be able to match
+    # with anyone — the user's stated preferences matter more than our assumed
+    # intent pairing. If an investor wants to meet recruiters, they should.
+    # Only SAME-NEED pairs are hard blocked (investor↔investor, job seeker↔job seeker).
+    CROSS_INTENT_PENALTIES = {
+        # Founders seeking funding: slightly penalize non-investor matches
+        MatchIntent.FOUNDER_INVESTOR: {MatchIntent.TALENT_SEEKING: 0.85, MatchIntent.OPPORTUNITY_SEEKING: 0.85},
+        # Investors: slightly penalize non-founder matches (but don't block)
+        MatchIntent.INVESTOR_FOUNDER: {MatchIntent.TALENT_SEEKING: 0.85, MatchIntent.PARTNERSHIP: 0.90},
+        MatchIntent.MENTOR_MENTEE: {MatchIntent.TALENT_SEEKING: 0.90},
+        MatchIntent.MENTEE_MENTOR: {MatchIntent.INVESTOR_FOUNDER: 0.90, MatchIntent.RECRUITER: 0.90},
+        MatchIntent.COFOUNDER: {MatchIntent.INVESTOR_FOUNDER: 0.90},
+        MatchIntent.SERVICE_PROVIDER: {MatchIntent.INVESTOR_FOUNDER: 0.90, MatchIntent.COFOUNDER: 0.90},
+        MatchIntent.OPPORTUNITY_SEEKING: {MatchIntent.INVESTOR_FOUNDER: 0.90},
+        MatchIntent.TALENT_SEEKING: {MatchIntent.INVESTOR_FOUNDER: 0.85, MatchIntent.FOUNDER_INVESTOR: 0.85},
+        MatchIntent.PARTNERSHIP: {MatchIntent.OPPORTUNITY_SEEKING: 0.90},
+        MatchIntent.RECRUITER: {MatchIntent.PARTNERSHIP: 0.90},
     }
+
+    # Legacy alias — kept for backward compatibility with _is_same_objective_blocked
+    CROSS_INTENT_BLOCKS = {}  # Empty — no hard blocks except same-need pairs
 
     # mentor_mentee users should ONLY see mentee_mentor candidates
     MENTOR_MENTEE_WHITELIST = {MatchIntent.MENTEE_MENTOR}
 
     def _is_same_objective_blocked(self, user_intent: MatchIntent, candidate_intent: MatchIntent) -> bool:
         """
-        UPGRADED (Mar 31, 2026): Same-need pairs + cross-intent blocks.
+        UPGRADED (Apr 3, 2026): Only block same-need pairs.
 
-        1. Same-need: both users have identical unidirectional need
-        2. Cross-intent: certain candidate intents blocked from certain user lists
-        3. Mentor whitelist: mentor_mentee users only see mentee_mentor
+        Cross-intent is now a PENALTY (score reduction), not a hard block.
+        Users should see all potential matches — the scoring algorithm handles relevance.
         """
-        # Same-need pairs
+        # Same-need pairs — two users seeking the same thing can't help each other
         same_need_pairs = {
             (MatchIntent.INVESTOR_FOUNDER, MatchIntent.INVESTOR_FOUNDER),
             (MatchIntent.FOUNDER_INVESTOR, MatchIntent.FOUNDER_INVESTOR),
             (MatchIntent.OPPORTUNITY_SEEKING, MatchIntent.OPPORTUNITY_SEEKING),
-            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),
             (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
-            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),  # SPs need clients, not other SPs
+            (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),
+            (MatchIntent.RECRUITER, MatchIntent.RECRUITER),
         }
         if (user_intent, candidate_intent) in same_need_pairs:
             return True
 
-        # Mentor whitelist: mentees only see explicit mentors
-        if user_intent == MatchIntent.MENTOR_MENTEE and candidate_intent not in self.MENTOR_MENTEE_WHITELIST:
-            return True
-
-        # Cross-intent blocks
-        blocked_cand_intents = self.CROSS_INTENT_BLOCKS.get(user_intent, set())
-        if candidate_intent in blocked_cand_intents:
-            return True
-
         return False
+
+    def _get_cross_intent_penalty(self, user_intent: MatchIntent, candidate_intent: MatchIntent) -> float:
+        """Get score multiplier for cross-intent pairs. Returns 1.0 (no penalty) or 0.85-0.90."""
+        penalties = self.CROSS_INTENT_PENALTIES.get(user_intent, {})
+        return penalties.get(candidate_intent, 1.0)
 
     def _get_user_dealbreakers(self, persona) -> List[str]:
         """Extract dealbreakers from user's onboarding data."""
@@ -744,8 +742,11 @@ class EnhancedMatchingService:
                         if any(kw in cand_text for kw in role_keywords):
                             combined_score *= 0.50
 
-                # IQ = 1.0 for all non-blocked pairs (Mar 30, 2026)
+                # IQ = 1.0 base, with cross-intent penalty (Apr 3, 2026)
                 intent_quality = 1.0
+                cross_penalty = self._get_cross_intent_penalty(user_intent, match_intent)
+                if cross_penalty < 1.0:
+                    combined_score *= cross_penalty
 
                 # COMPLEMENTARY INTENT BOOST (Apr 1, 2026):
                 # Hiring↔job seeker embeddings have low similarity because language is

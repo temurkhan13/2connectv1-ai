@@ -185,49 +185,103 @@ class IntentClassifier:
         "grow revenue": MatchIntent.PARTNERSHIP,
     }
 
-    def classify(self, persona_data: Dict[str, Any]) -> Tuple[MatchIntent, float]:
-        """Classify user intent, returns (MatchIntent, confidence_score).
+    # Valid intent values for LLM classification
+    VALID_INTENTS = {i.value for i in MatchIntent}
 
-        Priority: primary_goal slot > keyword analysis of persona text.
-        The primary_goal is the user's own stated objective — it should always win.
+    def classify(self, persona_data: Dict[str, Any]) -> Tuple[MatchIntent, float]:
+        """Classify user intent using LLM with goal map fallback.
+
+        Priority:
+        1. primary_goal → direct goal map lookup (fast, no API call)
+        2. LLM classification from full profile (accurate, handles edge cases)
+        3. GENERAL fallback (no intent filtering)
         """
-        # PRIORITY 1: Use primary_goal slot if available (highest confidence)
+        # PRIORITY 1: Direct goal map lookup (fast path, no API call)
         raw_goal = persona_data.get("primary_goal", "")
-        # Handle case where primary_goal is a list (e.g. ['Validate Product', 'Expand to New Markets'])
         if isinstance(raw_goal, list):
             raw_goal = raw_goal[0] if raw_goal else ""
-            logger.info(f"[IntentClassifier] primary_goal was a list, using first element: '{raw_goal}'")
         primary_goal = str(raw_goal).lower().strip()
-        if not primary_goal:
-            # No primary_goal — classify as GENERAL, no intent filtering.
-            # Better to show all matches than guess wrong from keywords.
-            logger.warning(f"[IntentClassifier] No primary_goal available for user — classifying as GENERAL")
-            return MatchIntent.GENERAL, 0.5
 
-        # Match primary_goal against known goal map
-        # Sort by length descending so more specific matches win
-        sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
-        for goal_text, intent in sorted_goals:
-            if goal_text in primary_goal:
-                # Distinguish mentor from mentee
-                if intent in (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR):
-                    user_type = str(persona_data.get("user_type", "")).lower()
-                    archetype = str(persona_data.get("archetype", "")).lower()
-                    combined_type = f"{user_type} {archetype}"
-                    mentor_keywords = ["mentor", "advisor", "coach", "advisory", "guide"]
-                    is_mentor = any(kw in combined_type for kw in mentor_keywords)
-                    if is_mentor:
-                        intent = MatchIntent.MENTEE_MENTOR
-                        logger.info(f"[IntentClassifier] Mentor detected from user_type '{user_type}' -> mentee_mentor")
-                    else:
-                        intent = MatchIntent.MENTOR_MENTEE
-                        logger.info(f"[IntentClassifier] Mentee detected from user_type '{user_type}' -> mentor_mentee")
-                logger.info(f"[IntentClassifier] Resolved intent from primary_goal '{primary_goal}' -> {intent.value}")
-                return intent, 0.95
+        if primary_goal:
+            sorted_goals = sorted(self.PRIMARY_GOAL_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+            for goal_text, intent in sorted_goals:
+                if goal_text in primary_goal:
+                    # Distinguish mentor from mentee
+                    if intent in (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTEE_MENTOR):
+                        user_type = str(persona_data.get("user_type", "")).lower()
+                        archetype = str(persona_data.get("archetype", "")).lower()
+                        combined_type = f"{user_type} {archetype}"
+                        mentor_keywords = ["mentor", "advisor", "coach", "advisory", "guide"]
+                        is_mentor = any(kw in combined_type for kw in mentor_keywords)
+                        if is_mentor:
+                            intent = MatchIntent.MENTEE_MENTOR
+                        else:
+                            intent = MatchIntent.MENTOR_MENTEE
+                    logger.info(f"[IntentClassifier] Goal map: '{primary_goal}' -> {intent.value}")
+                    return intent, 0.95
 
-        # primary_goal exists but doesn't match any known goal — classify as GENERAL
-        logger.warning(f"[IntentClassifier] primary_goal '{primary_goal}' not in goal map — classifying as GENERAL")
+        # PRIORITY 2: LLM classification from full profile
+        llm_result = self._classify_with_llm(persona_data, primary_goal)
+        if llm_result:
+            return llm_result
+
+        # PRIORITY 3: No data at all
+        logger.warning(f"[IntentClassifier] No primary_goal and LLM failed — classifying as GENERAL")
         return MatchIntent.GENERAL, 0.5
+
+    def _classify_with_llm(self, persona_data: Dict[str, Any], primary_goal: str) -> Optional[Tuple[MatchIntent, float]]:
+        """Use LLM to classify intent from full profile text. Handles edge cases
+        that keyword matching misses (e.g., 'founder who also invests')."""
+        try:
+            from app.services.llm_fallback import call_with_fallback
+
+            # Build profile summary for LLM
+            profile_text = f"""User Profile:
+- Primary Goal: {primary_goal or 'Not specified'}
+- Role/Archetype: {persona_data.get('archetype', 'Not specified')}
+- User Type: {persona_data.get('user_type', 'Not specified')}
+- What they're looking for: {persona_data.get('what_theyre_looking_for', 'Not specified')}
+- Requirements: {persona_data.get('requirements', 'Not specified')}
+- Offerings: {persona_data.get('offerings', 'Not specified')}
+- Focus: {persona_data.get('focus', 'Not specified')}"""
+
+            system_prompt = """You are an intent classifier for a professional networking platform.
+Classify the user's PRIMARY intent into exactly one of these categories:
+
+- investor_founder: They are an INVESTOR looking to invest in/fund startups
+- founder_investor: They are a FOUNDER/STARTUP seeking funding/investment
+- mentor_mentee: They WANT a mentor (seeking guidance)
+- mentee_mentor: They ARE a mentor (offering guidance to others)
+- cofounder: They are looking for a co-founder
+- talent_seeking: They are HIRING / looking for employees
+- opportunity_seeking: They are looking for a JOB / new role
+- partnership: They want B2B partnerships or strategic collaborations
+- recruiter: They are a recruiter placing candidates
+- service_provider: They offer professional services (consulting, agency, fractional)
+- general: General networking, doesn't fit above categories
+
+Respond with ONLY the intent value (e.g., "founder_investor"). Nothing else."""
+
+            response = call_with_fallback(
+                service="matching",
+                system_prompt=system_prompt,
+                messages=[{"role": "user", "content": profile_text}],
+                max_tokens=30,
+                temperature=0.0,
+            )
+
+            intent_str = response.strip().lower().replace('"', '').replace("'", "")
+            if intent_str in self.VALID_INTENTS:
+                intent = MatchIntent(intent_str)
+                logger.info(f"[IntentClassifier] LLM classified: '{primary_goal or 'no goal'}' -> {intent.value}")
+                return intent, 0.90
+
+            logger.warning(f"[IntentClassifier] LLM returned invalid intent: '{intent_str}'")
+            return None
+
+        except Exception as e:
+            logger.warning(f"[IntentClassifier] LLM classification failed: {e}")
+            return None
 
 
 @dataclass

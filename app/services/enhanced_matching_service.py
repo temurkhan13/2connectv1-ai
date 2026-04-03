@@ -518,6 +518,8 @@ class EnhancedMatchingService:
             (MatchIntent.TALENT_SEEKING, MatchIntent.TALENT_SEEKING),
             (MatchIntent.SERVICE_PROVIDER, MatchIntent.SERVICE_PROVIDER),
             (MatchIntent.RECRUITER, MatchIntent.RECRUITER),
+            (MatchIntent.MENTEE_MENTOR, MatchIntent.MENTEE_MENTOR),  # Two mentors can't mentor each other
+            (MatchIntent.MENTOR_MENTEE, MatchIntent.MENTOR_MENTEE),  # Two mentees seeking same thing
         }
         if (user_intent, candidate_intent) in same_need_pairs:
             return True

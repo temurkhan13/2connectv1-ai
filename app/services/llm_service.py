@@ -29,12 +29,18 @@ class LLMService:
         if not self.api_key:
             raise ValueError("ANTHROPIC_MATCHING_KEY environment variable is required")
 
-    def get_chat_model(self) -> ChatAnthropic:
-        """Get Claude chat model instance via LangChain."""
+    def get_chat_model(self, max_tokens: int = 4096) -> ChatAnthropic:
+        """Get Claude chat model instance via LangChain.
+
+        Args:
+            max_tokens: Maximum tokens for response. Default 4096 for rich persona generation.
+                        Previously defaulted to 1024 which truncated AI summaries.
+        """
         return ChatAnthropic(
             model=self.model,
             temperature=self.temperature,
-            anthropic_api_key=self.api_key
+            anthropic_api_key=self.api_key,
+            max_tokens=max_tokens,
         )
 
     def is_available(self) -> bool:

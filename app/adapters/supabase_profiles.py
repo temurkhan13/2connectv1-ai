@@ -70,6 +70,7 @@ class SupabaseUserProfile:
         user_id: str,
         resume_link: Optional[str] = None,
         raw_questions: Optional[List[Dict[str, Any]]] = None,
+        conversation_text: Optional[str] = None,
         resume_text: Optional[str] = None,
         resume_extracted_at: Optional[datetime] = None,
         resume_extraction_method: Optional[str] = None,
@@ -96,6 +97,7 @@ class SupabaseUserProfile:
         self.user_id = user_id
         self.resume_link = resume_link
         self.raw_questions = raw_questions or []
+        self.conversation_text = conversation_text or ""
         self.resume_text = resume_text
         self.resume_extracted_at = resume_extracted_at
         self.resume_extraction_method = resume_extraction_method
@@ -197,6 +199,7 @@ class SupabaseUserProfile:
             user_id=str(row['user_id']),
             resume_link=row.get('resume_link'),
             raw_questions=row.get('raw_questions') or [],
+            conversation_text=row.get('conversation_text') or "",
             resume_text=row.get('resume_text'),
             resume_extracted_at=row.get('resume_extracted_at'),
             resume_extraction_method=row.get('resume_extraction_method'),
@@ -222,7 +225,7 @@ class SupabaseUserProfile:
         )
 
     @classmethod
-    def create_user(cls, user_id: str, resume_link: Optional[str], questions: List[Dict[str, Any]]) -> 'SupabaseUserProfile':
+    def create_user(cls, user_id: str, resume_link: Optional[str], questions: List[Dict[str, Any]], conversation_text: str = "") -> 'SupabaseUserProfile':
         """Create a new user profile (does not save to DB yet)."""
         now = datetime.now(timezone.utc)
         raw_questions = [
@@ -234,6 +237,7 @@ class SupabaseUserProfile:
             user_id=user_id,
             resume_link=resume_link,
             raw_questions=raw_questions,
+            conversation_text=conversation_text,
             processing_status='pending',
             persona_status='not_initiated',
             needs_matchmaking=True,
@@ -280,7 +284,7 @@ class SupabaseUserProfile:
 
             cursor.execute("""
                 INSERT INTO user_profiles (
-                    user_id, resume_link, raw_questions,
+                    user_id, resume_link, raw_questions, conversation_text,
                     resume_text, resume_extracted_at, resume_extraction_method,
                     persona_name, persona_archetype, persona_designation,
                     persona_experience, persona_focus, persona_profile_essence,
@@ -291,11 +295,12 @@ class SupabaseUserProfile:
                     created_at, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON CONFLICT (user_id) DO UPDATE SET
                     resume_link = EXCLUDED.resume_link,
                     raw_questions = EXCLUDED.raw_questions,
+                    conversation_text = EXCLUDED.conversation_text,
                     resume_text = EXCLUDED.resume_text,
                     resume_extracted_at = EXCLUDED.resume_extracted_at,
                     resume_extraction_method = EXCLUDED.resume_extraction_method,
@@ -321,6 +326,7 @@ class SupabaseUserProfile:
                 self.user_id,
                 self.resume_link,
                 Json(self.raw_questions),
+                self.conversation_text or "",
                 self.resume_text,
                 self.resume_extracted_at,
                 self.resume_extraction_method,

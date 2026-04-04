@@ -1248,16 +1248,27 @@ class ContextManager:
                     "confidence": slot.confidence
                 }
 
+        # Build full conversation text for AI summary enrichment
+        # This preserves the rich narrative from user answers instead of just slot labels
+        conversation_text_parts = []
+        for turn in context.turns:
+            if turn.turn_type == TurnType.ASSISTANT:
+                conversation_text_parts.append(f"AI: {turn.content}")
+            elif turn.turn_type == TurnType.USER:
+                conversation_text_parts.append(f"User: {turn.content}")
+        full_conversation_text = "\n".join(conversation_text_parts)
+
         result = {
             "session_id": session_id,
             "user_id": context.user_id,
             "collected_data": collected_data,
+            "conversation_text": full_conversation_text,
             "turn_count": len(context.turns),
             "created_at": context.created_at.isoformat(),
             "completed_at": context.updated_at.isoformat()
         }
 
-        logger.info(f"Finalized session {session_id} with {len(collected_data)} slots")
+        logger.info(f"Finalized session {session_id} with {len(collected_data)} slots, conversation: {len(full_conversation_text)} chars")
         return result
 
 

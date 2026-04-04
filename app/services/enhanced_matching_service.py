@@ -1,5 +1,14 @@
 """
 Enhanced matching with bidirectional scoring and intent classification.
+
+NOTE (Apr 2026): The intent classifier, rule-based penalties/boosts, and
+capability keywords in this file are being superseded by llm_matching_service.py
+which uses cosine pre-filter + LLM pair scoring. This file remains active as
+the current production matching engine. Once llm_matching_service.py is fully
+validated and deployed, the intent classification and rule-based scoring in
+this file should be removed.
+
+TODO: Replace enhanced_matching_service with llm_matching_service when confirmed stable.
 """
 import os
 import math

@@ -23,15 +23,15 @@ class PersonaService:
         """Check if persona service is available."""
         return self.llm_service.is_available()
     
-    async def generate_persona(self, questions: List[Dict[str, Any]], resume_text: str) -> Optional[Dict[str, Any]]:
+    async def generate_persona(self, questions: List[Dict[str, Any]], resume_text: str, conversation_text: str = "") -> Optional[Dict[str, Any]]:
         """Generate persona with requirements and offerings from user data."""
         if not self.is_available():
             logger.warning("OpenAI API not available")
             return None
-        
+
         try:
-            # Combine the data
-            combined_data = combine_user_data(questions, resume_text)
+            # Combine the data — full conversation text produces richer AI summaries
+            combined_data = combine_user_data(questions, resume_text, conversation_text)
             
             if not combined_data.strip():
                 logger.warning("No data provided for persona generation")
@@ -89,15 +89,15 @@ class PersonaService:
             logger.error(f"Error generating persona: {e}")
             return None
     
-    def generate_persona_sync(self, questions: List[Dict[str, Any]], resume_text: str) -> Optional[Dict[str, Any]]:
+    def generate_persona_sync(self, questions: List[Dict[str, Any]], resume_text: str, conversation_text: str = "") -> Optional[Dict[str, Any]]:
         """Synchronous version of generate_persona for Celery workers."""
         if not self.is_available():
             logger.warning("OpenAI API not available")
             return None
-        
+
         try:
-            # Combine the data
-            combined_data = combine_user_data(questions, resume_text)
+            # Combine the data — full conversation text produces richer AI summaries
+            combined_data = combine_user_data(questions, resume_text, conversation_text)
             
             if not combined_data.strip():
                 logger.warning("No data provided for persona generation")

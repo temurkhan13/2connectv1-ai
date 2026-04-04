@@ -3,9 +3,11 @@ Main embedding service: Multi-provider embedding + pgvector storage.
 Single, reliable service for all embedding needs.
 
 Supports three modes:
-- Gemini text-embedding-004 (USE_GEMINI_EMBEDDINGS=true) - best quality, free tier
-- OpenAI API embeddings (USE_OPENAI_EMBEDDINGS=true) - low memory, API-based
+- Gemini gemini-embedding-2-preview (USE_GEMINI_EMBEDDINGS=true) - best quality, 1536 dims, 8K token input
+- Gemini gemini-embedding-001 fallback - text-only, 2K token input
 - SentenceTransformers local model (default fallback) - high memory, local inference
+
+Note: text-embedding-004 is DEPRECATED as of Jan 2026. Replaced by gemini-embedding-2-preview.
 """
 import logging
 import os
@@ -23,13 +25,13 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Maximum entries in local embedding cache to prevent memory leaks
-# Each 768-dim embedding is ~6KB, so 1000 entries = ~6MB max
-LOCAL_CACHE_MAX_SIZE = int(os.getenv('EMBEDDING_LOCAL_CACHE_SIZE', '1000'))
+# Each 1536-dim embedding is ~12KB, so 500 entries = ~6MB max
+LOCAL_CACHE_MAX_SIZE = int(os.getenv('EMBEDDING_LOCAL_CACHE_SIZE', '500'))
 
 # Use Gemini embeddings (primary — should always be true in production)
 USE_GEMINI_EMBEDDINGS = os.getenv('USE_GEMINI_EMBEDDINGS', 'false').lower() == 'true'
 
-# OpenAI embeddings DISABLED — removed in favor of Gemini text-embedding-004
+# OpenAI embeddings DISABLED — removed in favor of Gemini embeddings
 # SentenceTransformers (local) kept as emergency fallback only if Gemini key is missing
 
 # Lazy import to avoid circular dependency
@@ -64,10 +66,13 @@ class EmbeddingService:
 
         if self.use_gemini:
             # Gemini embedding mode — primary model
+            # Default: gemini-embedding-2-preview (8K token input, 1536 dims, multimodal)
+            # Fallback: gemini-embedding-001 (2K token input, 1536 dims, text-only)
             import google.generativeai as genai
             genai.configure(api_key=os.getenv('GEMINI_EMBEDDINGS_KEY'))
-            self.model_name = os.getenv('GEMINI_EMBEDDING_MODEL', 'models/text-embedding-004')
-            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
+            self.model_name = os.getenv('GEMINI_EMBEDDING_MODEL', 'models/gemini-embedding-2-preview')
+            # 1536 dims: same MTEB quality as 3072, compatible with pgvector HNSW index (2000 dim limit)
+            self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
             self.gemini_model = genai
             logger.info(f"Using Gemini embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
         else:
@@ -137,13 +142,32 @@ class EmbeddingService:
             # Generate new embedding
             try:
                 if self.use_gemini:
-                    # Gemini text-embedding-004 (primary)
-                    result = self.gemini_model.embed_content(
-                        model=self.model_name,
-                        content=cleaned_text,
-                        task_type="SEMANTIC_SIMILARITY",
-                    )
+                    # gemini-embedding-2-preview does NOT support task_type parameter
+                    # gemini-embedding-001 does support it, but we use embedding-2 by default
+                    is_embedding_2 = 'embedding-2' in self.model_name
+
+                    embed_kwargs = {
+                        'model': self.model_name,
+                        'content': cleaned_text,
+                    }
+
+                    # Only add task_type for embedding-001 (embedding-2 doesn't support it)
+                    if not is_embedding_2:
+                        embed_kwargs['task_type'] = "SEMANTIC_SIMILARITY"
+
+                    # Force output dimensions to match DB column (embedding-2 defaults to 3072)
+                    if self.embedding_dimension and self.embedding_dimension != 3072:
+                        embed_kwargs['output_dimensionality'] = self.embedding_dimension
+
+                    result = self.gemini_model.embed_content(**embed_kwargs)
                     embedding_vector = result['embedding']
+
+                    # Verify dimension matches expected
+                    if len(embedding_vector) != self.embedding_dimension:
+                        logger.warning(
+                            f"Embedding dimension mismatch: got {len(embedding_vector)}, "
+                            f"expected {self.embedding_dimension}. Using actual dimension."
+                        )
                 else:
                     # SentenceTransformers local model (emergency fallback only)
                     embedding_vector = self.st_model.encode(cleaned_text).tolist()

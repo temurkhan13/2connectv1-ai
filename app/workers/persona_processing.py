@@ -82,21 +82,24 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
         # Get user profile
         user_profile = UserProfile.get(user_id)
         
-        # Extract questions and resume text from user profile
+        # Extract questions, conversation text, and resume text from user profile
         questions = [q.as_dict() for q in user_profile.profile.raw_questions]
+        conversation_text = getattr(user_profile, 'conversation_text', '') or ""
         resume_text = user_profile.resume_text.text if user_profile.resume_text and user_profile.resume_text.text else ""
-        
+
+        if conversation_text:
+            logger.info(f"Full conversation text found for user {user_id}: {len(conversation_text)} chars")
         if not resume_text:
             logger.info(f"No resume text found for user {user_id}, generating persona from questions only")
         else:
             logger.info(f"Resume text found for user {user_id}, generating persona from questions and resume")
-        
+
         # Initialize persona service
         persona_service = PersonaService()
-        
-        # Generate persona using AI
+
+        # Generate persona using AI — pass full conversation for richer AI summary
         logger.info(f"Generating persona for user {user_id}...")
-        persona_data = persona_service.generate_persona_sync(questions, resume_text)
+        persona_data = persona_service.generate_persona_sync(questions, resume_text, conversation_text)
         
         if persona_data:
             # Extract persona from the new structure
@@ -223,6 +226,12 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
             except Exception as embed_error:
                 logger.error(f"Failed to trigger embedding generation for user {user_id}: {embed_error}")
                 # Don't fail the persona task if embedding trigger fails
+
+            # DISABLED: ideal_match_service replaced by llm_matching_service
+            # The LLM matching service scores pairs directly at match time,
+            # so ideal match profile generation at onboarding is no longer needed.
+            # TODO: Remove this block and ideal_match_service.py when confirmed stable.
+            # See: app/services/llm_matching_service.py for the new approach.
 
             # Return result dict for next task in chain
             return {

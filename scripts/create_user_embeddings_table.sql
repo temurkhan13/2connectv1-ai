@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS user_embeddings (
     id SERIAL PRIMARY KEY,
     user_id TEXT NOT NULL,
     embedding_type TEXT NOT NULL,
-    vector_data VECTOR(1536),  -- 1536 dimensions for OpenAI text-embedding-3-small
+    vector_data VECTOR(1536),  -- 1536 dimensions for Gemini gemini-embedding-2-preview
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
     updated_at TIMESTAMPTZ DEFAULT (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),

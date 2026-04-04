@@ -1147,6 +1147,23 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
                 f"(session {session_id} not in memory)"
             )
 
+        # Capture full conversation text before session is cleaned up
+        # This preserves rich narrative from user answers for AI summary enrichment
+        conversation_text = ""
+        try:
+            context = context_manager.get_session(session_id)
+            if context and context.turns:
+                conv_parts = []
+                for turn in context.turns:
+                    if turn.turn_type.value == "assistant":
+                        conv_parts.append(f"AI: {turn.content}")
+                    elif turn.turn_type.value == "user":
+                        conv_parts.append(f"User: {turn.content}")
+                conversation_text = "\n".join(conv_parts)
+                logger.info(f"Captured full conversation text for user {user_id}: {len(conversation_text)} chars")
+        except Exception as e:
+            logger.warning(f"Could not capture conversation text for {user_id}: {e}")
+
         logger.info(f"Completing onboarding for user {user_id}, session {session_id}")
 
         # IDEMPOTENCY CHECK (Sentry 7311102382): Check if user already completed onboarding
@@ -1246,7 +1263,8 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
             user_profile = UserProfile.create_user(
                 user_id=user_id,
                 resume_link=None,
-                questions=questions
+                questions=questions,
+                conversation_text=conversation_text
             )
             user_profile.needs_matchmaking = "true"  # Enable scheduled matching
             user_profile.save()

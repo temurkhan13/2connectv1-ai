@@ -30,7 +30,7 @@ from datetime import datetime
 AI_SERVICE_URL = "https://twoconnectv1-ai.onrender.com/api/v1"
 ADMIN_KEY = "migrate-2connect-2026"
 PROGRESS_FILE = "scripts/.match_regen_progress.json"
-DELAY_BETWEEN_USERS = 5  # seconds — give Render breathing room
+DELAY_BETWEEN_USERS = 180  # 3 minutes — wait for previous match to fully finish on Render
 
 # ─── Progress Tracking ────────────────────────────────────────────────────────
 
@@ -65,11 +65,16 @@ def reset_progress():
 
 def get_all_user_ids():
     """Fetch all completed user IDs from the AI service."""
-    # Use the system-health endpoint to get user count, then scan profiles
-    # The reembed endpoint in dry-run mode gives us the count but not IDs
-    # Use the admin endpoint that lists users
+    # Prefer local file if it exists (curated list of users with matches)
+    manual_file = "scripts/user_ids.txt"
+    if os.path.exists(manual_file):
+        with open(manual_file, "r") as f:
+            ids = [line.strip() for line in f if line.strip()]
+            if ids:
+                print(f"Loaded {len(ids)} user IDs from {manual_file}")
+                return ids
+
     try:
-        # Try the admin system-health to get user count
         resp = requests.get(
             f"{AI_SERVICE_URL}/admin/system-health",
             headers={"X-API-KEY": ADMIN_KEY},
@@ -80,8 +85,6 @@ def get_all_user_ids():
     except Exception as e:
         print(f"Warning: Could not check health: {e}")
 
-    # Get users from the reembed dry-run (it scans all profiles)
-    # We need actual user IDs — let's use the admin endpoint
     try:
         resp = requests.get(
             f"{AI_SERVICE_URL}/admin/users",
@@ -123,22 +126,25 @@ def get_all_user_ids():
             continue
 
     print("\nERROR: Could not fetch user list from any endpoint.")
-    print("You can manually provide user IDs by creating a file 'scripts/user_ids.txt'")
-    print("with one user ID per line.")
-
-    # Try manual file
-    manual_file = "scripts/user_ids.txt"
-    if os.path.exists(manual_file):
-        with open(manual_file, "r") as f:
-            ids = [line.strip() for line in f if line.strip()]
-            if ids:
-                print(f"Loaded {len(ids)} user IDs from {manual_file}")
-                return ids
-
+    print("Create 'scripts/user_ids.txt' with one user ID per line.")
     return []
 
 
 # ─── Regenerate Per User ──────────────────────────────────────────────────────
+
+def wait_for_healthy():
+    """Wait until the AI service is healthy before making a call."""
+    for attempt in range(10):
+        try:
+            resp = requests.get(f"{AI_SERVICE_URL.replace('/api/v1', '')}/health", timeout=10)
+            if resp.status_code == 200:
+                return True
+        except:
+            pass
+        print(f"  Service unhealthy, waiting 60s (attempt {attempt+1}/10)...")
+        time.sleep(60)
+    return False
+
 
 def regenerate_for_user(user_id: str) -> dict:
     """Call the per-user regenerate-matches endpoint."""
@@ -205,6 +211,12 @@ def main():
     for i, user_id in enumerate(remaining):
         idx = len(completed) + i + 1
         print(f"[{idx}/{total}] Regenerating matches for {user_id[:12]}...", end=" ", flush=True)
+
+        # Wait for service to be healthy before calling
+        if not wait_for_healthy():
+            print("Service down for 10 minutes. Saving progress and exiting.")
+            save_progress(completed, total)
+            return
 
         try:
             result = regenerate_for_user(user_id)

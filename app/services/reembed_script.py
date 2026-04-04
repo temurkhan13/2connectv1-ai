@@ -1,9 +1,12 @@
 """
-One-time migration script: Re-embed all user profiles with current embedding model.
+Migration script: Re-embed all user profiles with current embedding model.
 
 Reads all user profiles from Supabase, generates new embeddings using the
-currently configured model (Gemini text-embedding-004), and overwrites
-existing embeddings in pgvector.
+currently configured model (gemini-embedding-2-preview @ 3072 dims), and
+overwrites existing embeddings in pgvector.
+
+IMPORTANT: Run the database migration first to upgrade VECTOR(1536) → VECTOR(3072):
+    supabase/migrations/20260404_upgrade_embeddings_3072.sql
 
 Usage:
     # Dry run (count only)

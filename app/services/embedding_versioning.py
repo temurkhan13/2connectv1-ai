@@ -34,9 +34,9 @@ class EmbeddingVersion:
     @classmethod
     def from_env(cls) -> 'EmbeddingVersion':
         """Create version from current environment settings."""
-        model_name = os.getenv('EMBEDDING_MODEL', 'sentence-transformers/all-mpnet-base-v2')
-        model_version = os.getenv('EMBEDDING_MODEL_VERSION', '1.0.0')
-        dimension = int(os.getenv('EMBEDDING_DIMENSION', '768'))
+        model_name = os.getenv('EMBEDDING_MODEL', 'models/gemini-embedding-2-preview')
+        model_version = os.getenv('EMBEDDING_MODEL_VERSION', '2.0.0')
+        dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
 
         # Create deterministic hash of model configuration
         config_str = f"{model_name}|{model_version}|{dimension}"
@@ -66,7 +66,7 @@ class EmbeddingVersion:
         return cls(
             model_name=data.get("model_name", "unknown"),
             model_version=data.get("model_version", "unknown"),
-            dimension=data.get("dimension", 768),
+            dimension=data.get("dimension", 1536),
             version_hash=data.get("version_hash", ""),
             created_at=datetime.fromisoformat(data.get("created_at", datetime.utcnow().isoformat()))
         )

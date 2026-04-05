@@ -45,16 +45,16 @@ What they need: {user_b_requirements}
 What they offer: {user_b_offerings}
 
 Evaluate:
-1. Does A offer something B specifically needs?
-2. Does B offer something A specifically needs?
+1. Does A offer something B specifically needs? Check their STATED requirements, not assumptions.
+2. Does B offer something A specifically needs? Check their STATED requirements, not assumptions.
 3. Do the specifics align? (industry, geography, stage, check size, role type, seniority)
 4. Would BOTH sides see value in this introduction?
 
-CRITICAL RULES — score 0 for these:
-- Both users are seeking jobs/roles and neither is hiring → score 0 (competitors, not connections)
-- Both users are seeking investment and neither invests → score 0 (both need money, neither has it)
-- Both users offer the same service and neither is a buyer → score 0 (competitors)
-A user seeking a job should ONLY match with: people who are hiring, recruiters, founders building teams, or someone who explicitly offers what the job seeker needs. NOT with other job seekers.
+IMPORTANT: Score based on what each person EXPLICITLY said they need and offer.
+- If User A said they need "a CTO role at a Series A company" — only match with people who can provide that (hiring founders, recruiters, etc.)
+- If User A said they want "to connect with other engineers for networking" — then matching with peers IS valid.
+- Don't assume what people want. Read their requirements literally.
+- General industry overlap alone is NOT a match. There must be a specific value exchange.
 
 Respond with ONLY a JSON object, nothing else — no explanation text before or after:
 {{"score": <0-100>, "reason": "<one sentence>"}}
@@ -63,8 +63,8 @@ Scoring guide:
 90-100: Both sides get exactly what they asked for, specifics align perfectly
 70-89: Strong alignment, one side benefits more or minor specifics differ
 50-69: Some value exists but significant gaps (wrong geography, wrong stage, wrong role)
-30-49: Weak — only surface-level relevance, specifics don't match
-0-29: No meaningful connection — neither side gets what they need"""
+30-49: Weak — only surface-level relevance, no specific value exchange
+0-29: No meaningful connection — neither side gets what they specifically asked for"""
 
 
 @dataclass

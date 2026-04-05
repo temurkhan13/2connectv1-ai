@@ -1106,7 +1106,7 @@ async def regenerate_matches(request: dict):
     - Syncs to backend
     """
     import os
-    from app.services.inline_matching_service import inline_matching_service
+    from app.services.llm_matching_service import find_and_store_matches
 
     admin_key = os.getenv("ADMIN_API_KEY", "migrate-2connect-2026")
     if request.get("admin_key") != admin_key:
@@ -1116,13 +1116,10 @@ async def regenerate_matches(request: dict):
     if not user_id:
         raise HTTPException(status_code=400, detail="user_id required")
 
-    # Optional: allow custom threshold (default 0.5)
-    threshold = request.get("threshold", 0.5)
-
     try:
-        logger.info(f"Manually triggering bidirectional match calculation for user: {user_id} (threshold: {threshold})")
-        result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id, threshold=threshold)
-        return {"code": 200, "message": "Bidirectional match calculation complete", "result": result}
+        logger.info(f"Triggering LLM match calculation for user: {user_id}")
+        result = find_and_store_matches(user_id)
+        return {"code": 200, "message": "LLM match calculation complete", "result": result}
     except Exception as e:
         logger.error(f"Error calculating matches: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1131,16 +1128,14 @@ async def regenerate_matches(request: dict):
 def _run_batch_match_recalculation(completed_users: list, threshold: float):
     """Background task: recalculate matches for all completed users."""
     import time
-    from app.services.inline_matching_service import inline_matching_service
+    from app.services.llm_matching_service import find_and_store_matches
 
     results = {"processed": 0, "success": 0, "failed": 0}
 
     for i, user_id in enumerate(completed_users):
         try:
             logger.info(f"[MATCH-REGEN {i+1}/{len(completed_users)}] Recalculating for {user_id[:8]}")
-            result = inline_matching_service.calculate_and_sync_matches_bidirectional(
-                user_id, threshold=threshold
-            )
+            result = find_and_store_matches(user_id)
             results["processed"] += 1
             if result.get("success"):
                 results["success"] += 1

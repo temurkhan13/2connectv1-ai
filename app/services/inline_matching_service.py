@@ -1,10 +1,11 @@
 """
-Inline Bidirectional Matching Service.
+DISABLED — Replaced by llm_matching_service.py (Apr 2026).
 
-PURPOSE:
---------
-Provides IMMEDIATE match calculation when a user completes onboarding.
-This replaces the old pattern of waiting 4 hours for the cron job.
+This file is kept for reference but should NOT be called.
+All matching now goes through llm_matching_service.find_and_store_matches().
+
+Old purpose: Inline Bidirectional Matching Service.
+Provided IMMEDIATE match calculation when a user completes onboarding.
 
 ARCHITECTURE DECISION (March 2026):
 -----------------------------------

@@ -330,38 +330,24 @@ def generate_embeddings_task(self, user_id: str):
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")
 
-            # Find and store matches using HYBRID service (stores component scores)
-            # Previously used basic matching_service which doesn't store components
+            # Find and store matches using LLM-scored matching service
+            # Cosine pre-filter (req→offerings) finds candidates, LLM scores each pair
+            # Previously used inline_matching_service which overwrote LLM results with old algorithm
             logger.info(f"Finding and storing matches for user {user_id}")
 
             try:
-                from app.services.inline_matching_service import inline_matching_service
-                hybrid_result = inline_matching_service.calculate_and_sync_matches_bidirectional(user_id, threshold=0.5)
+                from app.services.llm_matching_service import find_and_store_matches
+                matches_result = find_and_store_matches(user_id)
 
-                # Convert hybrid result to match the format expected below
-                matches_result = {
-                    'success': hybrid_result.get('success', False),
-                    'total_matches': hybrid_result.get('new_user_matches', hybrid_result.get('total_matches', 0)),
-                    'stored': True,
-                    'requirements_matches': hybrid_result.get('requirements_matches', []),
-                    'offerings_matches': hybrid_result.get('offerings_matches', []),
-                }
-                logger.info(f"Hybrid matching complete: {matches_result['total_matches']} matches with component scores")
-                
-                if matches_result['success']:
-                    logger.info(f"Successfully found and stored {matches_result['total_matches']} matches for user {user_id}")
-                    # Note: Reciprocal updates and backend sync already handled by
-                    # calculate_and_sync_matches_bidirectional — no need to repeat
-                    
-                    # Notification already handled by calculate_and_sync_matches_bidirectional
-                    # which sends matches_ready event via Redis + syncs to backend
-                    logger.info(f"Notifications handled by hybrid matching service for user {user_id}")
+                if matches_result.get('success'):
+                    total = matches_result.get('total_matches', 0)
+                    logger.info(f"LLM matching complete: {total} matches for user {user_id}")
                 else:
                     logger.warning(f"No matches found for user {user_id}")
-                    
+
             except Exception as e:
-                logger.error(f"Error in matching/notification process for user {user_id}: {str(e)}")
-                # Don't fail the entire task if matching/notification fails
+                logger.error(f"Error in LLM matching for user {user_id}: {str(e)}")
+                # Don't fail the entire task if matching fails
                 matches_result = {'success': False, 'total_matches': 0, 'stored': False}
         else:
             logger.error(f"Failed to generate/store embeddings for user {user_id}")

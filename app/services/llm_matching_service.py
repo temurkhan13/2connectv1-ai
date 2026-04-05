@@ -161,10 +161,12 @@ def find_matches(
 
         user_vec = req_data['vector_data']
 
-        # 2. Cosine pre-filter: find top N candidates
+        # 2. Cosine pre-filter: find candidates whose OFFERINGS match our REQUIREMENTS
+        # BUG FIX: was searching 'requirements' (same-direction = people who need same things)
+        # Correct: search 'offerings' (cross-direction = people who offer what we need)
         cosine_results = postgresql_adapter.find_similar_users(
             query_vector=user_vec,
-            embedding_type='requirements',
+            embedding_type='offerings',
             threshold=COSINE_THRESHOLD,
             exclude_user_id=user_id,
         )

@@ -50,8 +50,14 @@ Evaluate:
 3. Do the specifics align? (industry, geography, stage, check size, role type, seniority)
 4. Would BOTH sides see value in this introduction?
 
-Respond with ONLY valid JSON:
-{{"score": <0-100>, "reason": "<one sentence explaining why>"}}
+CRITICAL RULES — score 0 for these:
+- Both users are seeking jobs/roles and neither is hiring → score 0 (competitors, not connections)
+- Both users are seeking investment and neither invests → score 0 (both need money, neither has it)
+- Both users offer the same service and neither is a buyer → score 0 (competitors)
+A user seeking a job should ONLY match with: people who are hiring, recruiters, founders building teams, or someone who explicitly offers what the job seeker needs. NOT with other job seekers.
+
+Respond with ONLY a JSON object, nothing else — no explanation text before or after:
+{{"score": <0-100>, "reason": "<one sentence>"}}
 
 Scoring guide:
 90-100: Both sides get exactly what they asked for, specifics align perfectly
@@ -86,34 +92,60 @@ def _score_pair(
 
         response = call_with_fallback(
             service="matching",
-            system_prompt="You are a match scoring system. Respond with ONLY valid JSON.",
+            system_prompt="You are a match scoring system. Respond with ONLY a JSON object, no other text.",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=100,
+            max_tokens=200,
             temperature=0.0,
         )
 
-        # Parse JSON response
+        # Parse JSON response — handle multiple LLM response formats
+        import re
         text = response.strip()
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
 
-        result = json.loads(text)
-        score = int(result.get("score", 0))
-        reason = str(result.get("reason", ""))
-        return {"score": max(0, min(100, score)), "reason": reason}
+        # Strip markdown code blocks (```json ... ``` or ``` ... ```)
+        code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+        if code_block:
+            text = code_block.group(1)
+        elif text.startswith("```"):
+            # Fallback: split on backticks
+            parts = text.split("```")
+            for part in parts:
+                part = part.strip()
+                if part.startswith("json"):
+                    part = part[4:].strip()
+                if part.startswith("{"):
+                    text = part
+                    break
 
-    except json.JSONDecodeError:
-        # Try to extract score from non-JSON response
+        # Try direct JSON parse
         try:
-            import re
-            score_match = re.search(r'"score"\s*:\s*(\d+)', response)
-            if score_match:
-                return {"score": int(score_match.group(1)), "reason": "parse fallback"}
-        except Exception:
+            result = json.loads(text)
+            score = int(result.get("score", 0))
+            reason = str(result.get("reason", ""))
+            return {"score": max(0, min(100, score)), "reason": reason}
+        except (json.JSONDecodeError, ValueError):
             pass
-        logger.warning(f"LLM returned invalid JSON: {response[:200]}")
+
+        # Extract JSON object from surrounding text (LLM sometimes adds explanation)
+        json_match = re.search(r'\{[^{}]*"score"\s*:\s*\d+[^{}]*\}', text)
+        if json_match:
+            try:
+                result = json.loads(json_match.group(0))
+                score = int(result.get("score", 0))
+                reason = str(result.get("reason", ""))
+                return {"score": max(0, min(100, score)), "reason": reason}
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Last resort: extract score and reason separately via regex
+        score_match = re.search(r'"score"\s*:\s*(\d+)', text)
+        reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', text)
+        if score_match:
+            score = int(score_match.group(1))
+            reason = reason_match.group(1) if reason_match else "parse fallback"
+            return {"score": max(0, min(100, score)), "reason": reason}
+
+        logger.warning(f"LLM returned unparseable response: {response[:200]}")
         return {"score": 0, "reason": "parse_error"}
     except Exception as e:
         logger.error(f"LLM scoring failed: {e}")

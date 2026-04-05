@@ -50,11 +50,13 @@ Evaluate:
 3. Do the specifics align? (industry, geography, stage, check size, role type, seniority)
 4. Would BOTH sides see value in this introduction?
 
-IMPORTANT: Score based on what each person EXPLICITLY said they need and offer.
-- If User A said they need "a CTO role at a Series A company" — only match with people who can provide that (hiring founders, recruiters, etc.)
+IMPORTANT: Score based on what each person needs and offers — both STATED and IMPLIED.
+- Read their stated requirements first.
+- Then look at their Role, Focus, and Background context (in square brackets) to understand implied needs.
+  Example: A "Series B CEO scaling a payments company" implies they need engineers, product leaders, and board members — even if their stated need is "investors."
+  Example: A "VP Engineering seeking a role" implies they need hiring companies and recruiters — not other job seekers.
 - If User A said they want "to connect with other engineers for networking" — then matching with peers IS valid.
-- Don't assume what people want. Read their requirements literally.
-- General industry overlap alone is NOT a match. There must be a specific value exchange.
+- General industry overlap alone is NOT a match. There must be a specific value exchange — stated or clearly implied by their role and stage.
 
 Respond with ONLY a JSON object, nothing else — no explanation text before or after:
 {{"score": <0-100>, "reason": "<one sentence>"}}
@@ -153,15 +155,40 @@ def _score_pair(
 
 
 def _get_profile_text(user_id: str) -> Optional[Dict[str, str]]:
-    """Get requirements and offerings text for a user."""
+    """Get full profile context for a user — not just requirements/offerings."""
     try:
         profile = UserProfile.get(user_id)
         if not profile or not profile.persona:
             return None
         p = profile.persona
+
+        # Build a rich context string so the LLM understands WHO this person is,
+        # not just what they stated they need. A "Series B CEO" implies hiring needs
+        # even if their stated requirement is "investors."
+        context_parts = []
+        designation = getattr(p, 'designation', '') or ''
+        if designation:
+            context_parts.append(f"Role: {designation}")
+        focus = getattr(p, 'focus', '') or ''
+        if focus:
+            context_parts.append(f"Focus: {focus}")
+        essence = getattr(p, 'profile_essence', '') or ''
+        if essence:
+            context_parts.append(f"Background: {essence}")
+
+        context = " | ".join(context_parts) if context_parts else ""
+
+        requirements = getattr(p, 'requirements', '') or ''
+        offerings = getattr(p, 'offerings', '') or ''
+
+        # Prepend context to both so the LLM sees the full picture
+        if context:
+            requirements = f"[{context}]\n{requirements}" if requirements else context
+            offerings = f"[{context}]\n{offerings}" if offerings else context
+
         return {
-            "requirements": getattr(p, 'requirements', '') or '',
-            "offerings": getattr(p, 'offerings', '') or '',
+            "requirements": requirements,
+            "offerings": offerings,
         }
     except Exception:
         return None

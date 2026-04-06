@@ -287,6 +287,20 @@ def generate_embeddings_task(self, user_id: str):
                 if matches_result.get('success'):
                     total = matches_result.get('total_matches', 0)
                     logger.info(f"LLM matching complete: {total} matches for user {user_id}")
+
+                    # Sync matches to backend so frontend can display them
+                    try:
+                        from app.services.match_sync_service import match_sync_service
+                        sync_result = match_sync_service.sync_matches_to_backend(
+                            user_id=user_id,
+                            matches=matches_result
+                        )
+                        if sync_result.get('success'):
+                            logger.info(f"Synced {sync_result.get('count', 0)} matches to backend for user {user_id}")
+                        else:
+                            logger.warning(f"Match sync failed for user {user_id}: {sync_result.get('error')}")
+                    except Exception as sync_err:
+                        logger.warning(f"Match sync error for user {user_id}: {sync_err}")
                 else:
                     logger.warning(f"No matches found for user {user_id}")
 

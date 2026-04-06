@@ -301,19 +301,18 @@ class ResumeService:
                 if not text:
                     raise ValueError("No text extracted from the resume")
 
-                # Store extracted text in DynamoDB
-                # BUG-032 FIX: Initialize resume_text if None to prevent AttributeError
-                if user_profile.resume_text is None:
-                    user_profile.resume_text = {}
-                # Handle both dict and object-style access
-                if isinstance(user_profile.resume_text, dict):
-                    user_profile.resume_text["text"] = text
-                    user_profile.resume_text["extracted_at"] = datetime.utcnow().isoformat()
-                    user_profile.resume_text["extraction_method"] = f"{extraction_method} (conversational_upload)"
-                else:
-                    user_profile.resume_text.text = text
-                    user_profile.resume_text.extracted_at = datetime.utcnow()
-                    user_profile.resume_text.extraction_method = f"{extraction_method} (conversational_upload)"
+                # Store extracted text — update BOTH resume_text and resume_text_data
+                # BUG FIX: Previously only set resume_text (dict), but _sync_from_nested_objects()
+                # overwrites resume_text from resume_text_data during save(). So the extracted
+                # text was always lost. Must update resume_text_data which is the source of truth.
+                user_profile.resume_text = text  # Plain string for DB column
+                user_profile.resume_extracted_at = datetime.utcnow()
+                user_profile.resume_extraction_method = f"{extraction_method} (conversational_upload)"
+                # Also update the nested data object so _sync_from_nested_objects doesn't overwrite
+                if hasattr(user_profile, 'resume_text_data') and user_profile.resume_text_data:
+                    user_profile.resume_text_data.text = text
+                    user_profile.resume_text_data.extracted_at = datetime.utcnow()
+                    user_profile.resume_text_data.extraction_method = f"{extraction_method} (conversational_upload)"
                 user_profile.processing_status = 'completed'
                 user_profile.persona_status = 'pending'
                 user_profile.save()
@@ -392,7 +391,11 @@ class ResumeService:
             try:
                 user_profile = UserProfile.get(user_id)
                 user_profile.processing_status = 'completed'
-                user_profile.resume_text = {"text": "", "extraction_method": "none", "extracted_at": datetime.now()}
+                user_profile.resume_text = ""
+                user_profile.resume_extraction_method = "none"
+                if hasattr(user_profile, 'resume_text_data') and user_profile.resume_text_data:
+                    user_profile.resume_text_data.text = ""
+                    user_profile.resume_text_data.extraction_method = "none"
                 user_profile.save()
                 logger.info(f"User profile updated for {user_id} - no resume processing needed")
                 return {
@@ -490,19 +493,16 @@ class ResumeService:
                 if not text:
                     raise ValueError("No text extracted from the resume.")
 
-                # Store extracted text in DynamoDB
-                # BUG-032 FIX: Initialize resume_text if None to prevent AttributeError
-                if user_profile.resume_text is None:
-                    user_profile.resume_text = {}
-                # Handle both dict and object-style access
-                if isinstance(user_profile.resume_text, dict):
-                    user_profile.resume_text["text"] = text
-                    user_profile.resume_text["extracted_at"] = datetime.utcnow().isoformat()
-                    user_profile.resume_text["extraction_method"] = extraction_method
-                else:
-                    user_profile.resume_text.text = text
-                    user_profile.resume_text.extracted_at = datetime.utcnow()
-                    user_profile.resume_text.extraction_method = extraction_method
+                # Store extracted text — update BOTH resume_text and resume_text_data
+                # BUG FIX: Same fix as base64 path — must update resume_text_data
+                # so _sync_from_nested_objects() doesn't overwrite with None during save()
+                user_profile.resume_text = text  # Plain string for DB column
+                user_profile.resume_extracted_at = datetime.utcnow()
+                user_profile.resume_extraction_method = extraction_method
+                if hasattr(user_profile, 'resume_text_data') and user_profile.resume_text_data:
+                    user_profile.resume_text_data.text = text
+                    user_profile.resume_text_data.extracted_at = datetime.utcnow()
+                    user_profile.resume_text_data.extraction_method = extraction_method
                 user_profile.processing_status = 'completed'
                 user_profile.persona_status = 'pending'
                 user_profile.save()

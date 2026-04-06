@@ -28,6 +28,9 @@ import traceback
 # after the HTTP response is sent, preventing timeout errors
 _onboarding_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="onboarding_bg")
 
+# Idempotency guard: prevent duplicate background tasks for the same user
+_active_bg_users: set = set()
+
 # REC-487: Retry configuration for background tasks
 _BG_MAX_RETRIES = 3
 _BG_RETRY_DELAYS = [60, 120, 240]  # Exponential backoff: 1min, 2min, 4min
@@ -182,41 +185,11 @@ def _run_background_onboarding_tasks(
         "errors": []
     }
 
-    # 1. Generate multi-vector embeddings for 6-dimension matching
-    try:
-        from app.services.multi_vector_matcher import multi_vector_matcher
-
-        persona_data = {
-            "primary_goal": slots.get("primary_goal", {}).get("value", ""),
-            "objective": slots.get("user_type", {}).get("value", ""),
-            "industry": slots.get("industry_focus", {}).get("value", ""),
-            "stage": slots.get("stage_preference", {}).get("value", ""),
-            "investment_stage": slots.get("investment_stage", {}).get("value", ""),
-            "company_stage": slots.get("company_stage", {}).get("value", ""),
-            "geography": slots.get("geography", {}).get("value", ""),
-            "engagement_style": slots.get("engagement_style", {}).get("value", ""),
-            "dealbreakers": slots.get("dealbreakers", {}).get("value", ""),
-            "requirements": slots.get("requirements", {}).get("value", ""),
-            "offerings": slots.get("offerings", {}).get("value", ""),
-        }
-
-        req_results = multi_vector_matcher.store_multi_vector_embeddings(
-            user_id=user_id,
-            persona_data=persona_data,
-            direction="requirements"
-        )
-        off_results = multi_vector_matcher.store_multi_vector_embeddings(
-            user_id=user_id,
-            persona_data=persona_data,
-            direction="offerings"
-        )
-
-        stored_count = sum(1 for v in {**req_results, **off_results}.values() if v)
-        results["multi_vector_ok"] = stored_count > 0
-        logger.info(f"[BG:{thread_name}] Stored {stored_count} multi-vector embeddings for {user_id}")
-    except Exception as e:
-        results["errors"].append(f"multi_vector: {e}")
-        logger.warning(f"[BG:{thread_name}] Failed multi-vector embeddings for {user_id}: {e}")
+    # 1. Multi-vector embeddings SKIPPED — LLM matching only uses basic req/off embeddings
+    # The multi-vector system (28 API calls, ~90s) was used by the old enhanced_matching_service.
+    # The current llm_matching_service only uses the 2 basic embeddings as cosine pre-filter.
+    results["multi_vector_ok"] = True  # Not needed, skip
+    logger.info(f"[BG:{thread_name}] Skipped multi-vector embeddings for {user_id} (LLM matching doesn't use them)")
 
     # 2. Generate basic 2-vector embeddings
     try:
@@ -319,6 +292,19 @@ def _run_background_onboarding_tasks(
 
     logger.info(f"[BG:{thread_name}] Background onboarding tasks completed for {user_id}: {results}")
     return results
+
+
+def _run_background_onboarding_with_guard(
+    user_id: str,
+    session_id: str,
+    slots: Dict[str, Any],
+    diag_dict: Dict[str, Any]
+) -> None:
+    """Wrapper that cleans up the idempotency guard after completion."""
+    try:
+        _run_background_onboarding_with_retry(user_id, session_id, slots, diag_dict)
+    finally:
+        _active_bg_users.discard(user_id)
 
 
 def _run_background_onboarding_with_retry(
@@ -667,14 +653,18 @@ async def chat(request: ChatMessageRequest):
         is_complete = context_manager.is_complete(session_id)
 
         # ISSUE #5 FIX: Enforce MV dimension coverage before allowing completion
-        # Even if user signals completion, don't allow it until 4+ MV dimensions are filled
+        # But NEVER override an explicit user completion signal — if they say "I'm done", respect it.
         mv_override_reason = None
-        if is_complete:
+        llm_result_early = context_manager.get_llm_response(session_id)
+        user_explicitly_done = llm_result_early and llm_result_early.is_completion_signal
+        if is_complete and not user_explicitly_done:
             can_complete, reason = progressive_disclosure.can_complete_onboarding(session_id)
             if not can_complete:
                 logger.info(f"Session {session_id}: Overriding completion - MV coverage insufficient: {reason}")
                 is_complete = False
                 mv_override_reason = reason
+        elif is_complete and user_explicitly_done:
+            logger.info(f"Session {session_id}: User explicitly said done — respecting completion signal, skipping MV check")
 
         # Get LLM result early so we can access is_off_topic for the response
         llm_result = context_manager.get_llm_response(session_id)
@@ -940,61 +930,12 @@ async def upload_resume(
             )
             logger.info(f"ISSUE-1 FIX: Stored extracted resume text for session {session_id}")
 
-            # BUG-043 FIX: Pre-extract slots from resume to accelerate onboarding
-            # This allows the onboarding to skip questions about info already in resume
-            pre_extracted_slots = {}  # Initialize outside try block
-            try:
-                from app.services.llm_slot_extractor import LLMSlotExtractor
-                import json as json_module
-
-                extractor = LLMSlotExtractor()
-                pre_extracted_slots = extractor.extract_slots_from_resume(extracted_text)
-
-                if pre_extracted_slots:
-                    # Store pre-extracted slots in Redis for the session
-                    redis_client.setex(
-                        f"resume_slots:{session_id}",
-                        3600,  # 1 hour TTL
-                        json_module.dumps(pre_extracted_slots)
-                    )
-                    logger.info(f"BUG-043 FIX: Pre-extracted {len(pre_extracted_slots)} slots from resume: {list(pre_extracted_slots.keys())}")
-
-                    # Also load them into the session context immediately
-                    from app.services.slot_extraction import ExtractedSlot, SlotStatus
-                    for slot_name, slot_data in pre_extracted_slots.items():
-                        context.slots[slot_name] = ExtractedSlot(
-                            name=slot_name,
-                            value=slot_data.get("value"),
-                            confidence=slot_data.get("confidence", 0.85),
-                            status=SlotStatus.FILLED,
-                            source_text="[from resume]",
-                            extracted_at=datetime.utcnow()
-                        )
-                    logger.info(f"BUG-043 FIX: Loaded {len(pre_extracted_slots)} slots into session context")
-
-                    # BUG-043: Also persist to Supabase for session resilience
-                    try:
-                        slots_to_save = [
-                            {
-                                "name": slot_name,
-                                "value": str(slot_data.get("value", "")),
-                                "confidence": slot_data.get("confidence", 0.85),
-                                "source_text": "[extracted from resume]",
-                                "extraction_method": "resume_llm",
-                                "status": "filled"
-                            }
-                            for slot_name, slot_data in pre_extracted_slots.items()
-                        ]
-                        saved_count = await supabase_onboarding_adapter.save_slots_batch(
-                            user_id=user_id,
-                            slots=slots_to_save
-                        )
-                        logger.info(f"BUG-043 FIX: Persisted {saved_count} resume-extracted slots to Supabase")
-                    except Exception as persist_error:
-                        logger.warning(f"BUG-043: Could not persist resume slots to Supabase: {persist_error}")
-            except Exception as e:
-                # Don't fail the upload if pre-extraction fails
-                logger.warning(f"BUG-043: Could not pre-extract slots from resume (non-fatal): {e}")
+            # DISABLED: Resume slot extraction was filling slots and skipping onboarding questions.
+            # Resume content should feed the AI summary for richer embeddings, not shortcut onboarding.
+            # The resume text is already stored in Redis (resume:{session_id}) and will be passed
+            # to persona generation via combine_user_data() after onboarding completes.
+            pre_extracted_slots = {}
+            logger.info(f"Resume stored for AI summary enrichment (slot extraction disabled)")
 
         logger.info(f"Resume uploaded for session {session_id}: {file.filename} ({len(contents)} bytes)")
 
@@ -1425,19 +1366,22 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         # Schedule background tasks - runs AFTER this response is sent
         # Uses ThreadPoolExecutor to avoid blocking the HTTP response
         # Wrapper function handles retry (3x) + admin alert on failure
-        try:
-            _onboarding_executor.submit(
-                _run_background_onboarding_with_retry,
-                user_id,
-                session_id,
-                slots,
-                diag.model_dump()
-            )
-            logger.info(f"[REC-487] Scheduled background onboarding tasks for {user_id}")
-        except Exception as e:
-            # If scheduling fails, log but don't fail the request
-            # User still has their profile, matches will sync via cron job
-            logger.error(f"[REC-487] Failed to schedule background tasks for {user_id}: {e}")
+        if user_id in _active_bg_users:
+            logger.info(f"[REC-487] Background tasks already running for {user_id}, skipping duplicate")
+        else:
+            try:
+                _active_bg_users.add(user_id)
+                _onboarding_executor.submit(
+                    _run_background_onboarding_with_guard,
+                    user_id,
+                    session_id,
+                    slots,
+                    diag.model_dump()
+                )
+                logger.info(f"[REC-487] Scheduled background onboarding tasks for {user_id}")
+            except Exception as e:
+                _active_bg_users.discard(user_id)
+                logger.error(f"[REC-487] Failed to schedule background tasks for {user_id}: {e}")
 
         # Return immediately - user sees success in ~3 seconds
         return CompleteOnboardingResponse(

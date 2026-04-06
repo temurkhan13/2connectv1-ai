@@ -4,7 +4,6 @@ Celery worker for embedding generation tasks.
 from celery import current_app
 from app.core.celery import celery_app
 from app.services.embedding_service import embedding_service
-from app.services.multi_vector_embedding_service import multi_vector_service
 from app.services.matching_service import matching_service
 from app.adapters.supabase_profiles import UserProfile, UserMatches, NotifiedMatchPairs
 from app.adapters.supabase_onboarding import supabase_onboarding_adapter
@@ -266,66 +265,12 @@ def generate_embeddings_task(self, user_id: str):
             offerings=offerings or ""
         )
 
-        # Generate multi-vector embeddings with objective-specific dimensions
+        # Multi-vector embeddings SKIPPED — LLM matching only uses basic req/off embeddings.
+        # The multi-vector system (28+ API calls, ~90s) was used by the old enhanced_matching_service.
+        # The current llm_matching_service only uses the 2 basic embeddings as cosine pre-filter.
+        # This saves ~90 seconds and ~28 Gemini API calls per user onboarding.
         if success:
-            try:
-                logger.info(f"Generating multi-vector embeddings for user {user_id} (objective: {objective})")
-                mv_result = multi_vector_service.generate_multi_vector_embeddings(
-                    user_id=user_id,
-                    requirements_text=requirements or "",
-                    offerings_text=offerings or "",
-                    store_in_db=True,
-                    user_type=objective  # user_type param accepts objective for backward compat
-                )
-                dim_count = len(mv_result.get('dimensions', {}))
-                logger.info(f"Generated {dim_count} multi-vector dimension embeddings for user {user_id}")
-            except Exception as mv_error:
-                # Don't fail the task if multi-vector fails - basic embeddings are still good
-                logger.warning(f"Multi-vector embedding generation failed for user {user_id}: {mv_error}")
-
-            # Generate DIRECTIONAL multi-vector embeddings (requirements_X and offerings_X)
-            # These are used by the hybrid matcher for bidirectional scoring
-            try:
-                from app.services.multi_vector_matcher import multi_vector_matcher
-                from app.adapters.supabase_onboarding import SupabaseOnboardingAdapter
-                adapter = SupabaseOnboardingAdapter()
-                slots = adapter.get_user_slots_sync(user_id)
-
-                persona_data = {
-                    "primary_goal": slots.get("primary_goal", {}).get("value", "") if isinstance(slots.get("primary_goal"), dict) else str(slots.get("primary_goal", "")),
-                    "industry": slots.get("industry_focus", {}).get("value", "") if isinstance(slots.get("industry_focus"), dict) else str(slots.get("industry_focus", "")),
-                    "stage": slots.get("company_stage", {}).get("value", "") if isinstance(slots.get("company_stage"), dict) else str(slots.get("company_stage", "")),
-                    "geography": slots.get("geography", {}).get("value", "") if isinstance(slots.get("geography"), dict) else str(slots.get("geography", "")),
-                    "engagement_style": slots.get("engagement_style", {}).get("value", "") if isinstance(slots.get("engagement_style"), dict) else str(slots.get("engagement_style", "")),
-                    "dealbreakers": slots.get("dealbreakers", {}).get("value", "") if isinstance(slots.get("dealbreakers"), dict) else str(slots.get("dealbreakers", "")),
-                    "requirements": requirements or "",
-                    "offerings": offerings or "",
-                }
-
-                req_results = multi_vector_matcher.store_multi_vector_embeddings(
-                    user_id=user_id, persona_data=persona_data, direction="requirements"
-                )
-                off_results = multi_vector_matcher.store_multi_vector_embeddings(
-                    user_id=user_id, persona_data=persona_data, direction="offerings"
-                )
-                dir_count = sum(1 for v in {**req_results, **off_results}.values() if v)
-                logger.info(f"Generated {dir_count} directional multi-vector embeddings for user {user_id}")
-            except Exception as dir_error:
-                logger.warning(f"Directional multi-vector embedding generation failed for user {user_id}: {dir_error}")
-
-            # Generate focus slot embeddings (direct embeddings from extracted slot values)
-            try:
-                focus_slot_count = _generate_focus_slot_embeddings(user_id, objective)
-                if focus_slot_count > 0:
-                    logger.info(f"Generated {focus_slot_count} focus slot embeddings for user {user_id}")
-            except Exception as fs_error:
-                # Don't fail the task if focus slot embeddings fail
-                logger.warning(f"Focus slot embedding generation failed for user {user_id}: {fs_error}")
-
-            # NOTE: Identity slots (achievement, network_strength, skills_have, role_title)
-            # do NOT need separate embeddings. They feed into persona generation which
-            # produces the requirements/offerings narrative → embeddings → matching.
-            # The Q&A answers naturally contain this information.
+            logger.info(f"Skipped multi-vector embeddings for {user_id} (LLM matching doesn't use them)")
 
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")

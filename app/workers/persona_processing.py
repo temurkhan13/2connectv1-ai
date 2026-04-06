@@ -85,7 +85,15 @@ def generate_persona_task(self, user_id: str, send_notification: bool = True):
         # Extract questions, conversation text, and resume text from user profile
         questions = [q.as_dict() for q in user_profile.profile.raw_questions]
         conversation_text = getattr(user_profile, 'conversation_text', '') or ""
-        resume_text = user_profile.resume_text.text if user_profile.resume_text and user_profile.resume_text.text else ""
+
+        # Resume text can be a plain string (Supabase) or an object with .text (DynamoDB legacy)
+        raw_resume = getattr(user_profile, 'resume_text', None)
+        if isinstance(raw_resume, str) and raw_resume.strip():
+            resume_text = raw_resume
+        elif raw_resume and hasattr(raw_resume, 'text') and raw_resume.text:
+            resume_text = raw_resume.text
+        else:
+            resume_text = ""
 
         if conversation_text:
             logger.info(f"Full conversation text found for user {user_id}: {len(conversation_text)} chars")

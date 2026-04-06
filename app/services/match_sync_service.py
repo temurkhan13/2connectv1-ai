@@ -165,12 +165,30 @@ class MatchSyncService:
             # Include match score so backend displays actual AI-calculated scores
             score = m.get('similarity_score', m.get('score', 0.5))
             score_pct = round(score * 100) if score <= 1.0 else round(score)
+
+            # Compute match tier from LLM score
+            llm_score = m.get('llm_score', score_pct)
+            if llm_score >= 85:
+                tier = 'perfect'
+            elif llm_score >= 70:
+                tier = 'strong'
+            elif llm_score >= 55:
+                tier = 'worth_exploring'
+            else:
+                tier = 'low'
+
+            reason = m.get('reason', '')
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',  # Backend requires string, not null
                 'user_b_designation': '',
                 'match_score': score_pct,
+                'explanation': reason,
+                'match_tier': tier,
+                'synergy_areas': [reason] if reason else [],
+                'friction_points': [],
+                'talking_points': [],
             })
 
         # Add offerings matches (what user offers vs others' needs)
@@ -178,27 +196,40 @@ class MatchSyncService:
             target_id = m.get('user_id')
             if not target_id:
                 continue
-            # Skip invalid UUIDs (test data, etc.)
             if not is_valid_uuid(target_id):
                 skipped_invalid += 1
                 continue
-            # Skip users that don't exist in backend
             if target_id not in valid_user_ids:
                 skipped_invalid += 1
                 continue
-            # Skip duplicates
             if target_id in seen_pairs:
                 continue
             seen_pairs.add(target_id)
-            # Include match score so backend displays actual AI-calculated scores
             score = m.get('similarity_score', m.get('score', 0.5))
             score_pct = round(score * 100) if score <= 1.0 else round(score)
+
+            llm_score = m.get('llm_score', score_pct)
+            if llm_score >= 85:
+                tier = 'perfect'
+            elif llm_score >= 70:
+                tier = 'strong'
+            elif llm_score >= 55:
+                tier = 'worth_exploring'
+            else:
+                tier = 'low'
+
+            reason = m.get('reason', '')
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',
                 'user_b_designation': '',
                 'match_score': score_pct,
+                'explanation': reason,
+                'match_tier': tier,
+                'synergy_areas': [reason] if reason else [],
+                'friction_points': [],
+                'talking_points': [],
             })
 
         if skipped_invalid > 0:

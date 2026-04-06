@@ -1119,7 +1119,20 @@ async def regenerate_matches(request: dict):
     try:
         logger.info(f"Triggering LLM match calculation for user: {user_id}")
         result = find_and_store_matches(user_id)
-        return {"code": 200, "message": "LLM match calculation complete", "result": result}
+
+        # Sync LLM-scored matches to backend (with explanations)
+        sync_result = None
+        if result.get("success"):
+            try:
+                from app.services.match_sync_service import match_sync_service
+                sync_result = match_sync_service.sync_matches_to_backend(
+                    user_id=user_id, matches=result
+                )
+                logger.info(f"Synced {sync_result.get('count', 0)} LLM matches to backend for {user_id}")
+            except Exception as sync_err:
+                logger.warning(f"Match sync failed for {user_id}: {sync_err}")
+
+        return {"code": 200, "message": "LLM match calculation complete", "result": result, "sync": sync_result}
     except Exception as e:
         logger.error(f"Error calculating matches: {e}")
         raise HTTPException(status_code=500, detail=str(e))

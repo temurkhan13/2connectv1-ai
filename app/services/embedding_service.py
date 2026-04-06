@@ -71,7 +71,7 @@ class EmbeddingService:
             import google.generativeai as genai
             genai.configure(api_key=os.getenv('GEMINI_EMBEDDINGS_KEY'))
             self.model_name = os.getenv('GEMINI_EMBEDDING_MODEL', 'models/gemini-embedding-2-preview')
-            # 1536 dims: same MTEB quality as 3072, compatible with pgvector HNSW index (2000 dim limit)
+            # 1536 dims: same MTEB quality as 1536, compatible with pgvector HNSW index (2000 dim limit)
             self.embedding_dimension = int(os.getenv('EMBEDDING_DIMENSION', '1536'))
             self.gemini_model = genai
             logger.info(f"Using Gemini embeddings: {self.model_name} with dimension: {self.embedding_dimension}")
@@ -155,8 +155,9 @@ class EmbeddingService:
                     if not is_embedding_2:
                         embed_kwargs['task_type'] = "SEMANTIC_SIMILARITY"
 
-                    # Force output dimensions to match DB column (embedding-2 defaults to 3072)
-                    if self.embedding_dimension and self.embedding_dimension != 3072:
+                    # Force output dimensions to match DB column
+                    # gemini-embedding-2-preview defaults to 3072, so always set explicitly
+                    if self.embedding_dimension:
                         embed_kwargs['output_dimensionality'] = self.embedding_dimension
 
                     result = self.gemini_model.embed_content(**embed_kwargs)

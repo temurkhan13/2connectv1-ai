@@ -2,11 +2,11 @@
 Migration script: Re-embed all user profiles with current embedding model.
 
 Reads all user profiles from Supabase, generates new embeddings using the
-currently configured model (gemini-embedding-2-preview @ 3072 dims), and
+currently configured model (gemini-embedding-2-preview @ 1536 dims), and
 overwrites existing embeddings in pgvector.
 
-IMPORTANT: Run the database migration first to upgrade VECTOR(1536) → VECTOR(3072):
-    supabase/migrations/20260404_upgrade_embeddings_3072.sql
+IMPORTANT: Run the database migration first (clears old embeddings, adds conversation_text):
+    supabase/migrations/20260404_upgrade_embeddings_1536.sql
 
 Usage:
     # Dry run (count only)
@@ -65,36 +65,47 @@ def run_reembedding(dry_run: bool = True, batch_size: int = 10) -> Dict[str, Any
     stats["total_profiles"] = len(profiles)
     logger.info(f"Found {len(profiles)} user profiles")
 
+    # Batch-fetch all AI summaries from user_summaries table
+    # The AI summary is the rich content (1000+ words) that should be embedded,
+    # NOT the thin persona requirements/offerings fields
+    from app.adapters.postgresql import postgresql_adapter
+    ai_summaries = {}
+    try:
+        conn = postgresql_adapter.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT ON (user_id) user_id, summary
+            FROM user_summaries
+            WHERE status = 'approved'
+            ORDER BY user_id, created_at DESC
+        """)
+        for row in cursor.fetchall():
+            ai_summaries[str(row[0])] = row[1]
+        cursor.close()
+        conn.close()
+        logger.info(f"Loaded {len(ai_summaries)} AI summaries from user_summaries")
+    except Exception as e:
+        logger.error(f"Failed to load AI summaries: {e}")
+
     batch_count = 0
 
     for i, profile in enumerate(profiles):
         user_id = profile.user_id
 
-        # Extract text from persona
+        # Use the full AI summary as the embedding source — it contains
+        # profile essence, strategy, focus, requirements, offerings, everything.
+        # This is 1000+ words of rich content vs ~400 words from persona fields alone.
+        ai_summary = ai_summaries.get(user_id, '')
+
+        # Fallback to persona requirements + offerings if no AI summary
         requirements_text = ""
         offerings_text = ""
-        user_type = None
-
-        if profile.persona:
+        if not ai_summary and profile.persona:
             p = profile.persona
             requirements_text = getattr(p, 'requirements', '') or ''
             offerings_text = getattr(p, 'offerings', '') or ''
-            user_type = getattr(p, 'archetype', None) or getattr(p, 'primary_goal', None)
 
-            # If requirements/offerings are empty, try to build from other fields
-            if not requirements_text:
-                parts = []
-                if getattr(p, 'focus', ''): parts.append(f"Focus: {p.focus}")
-                if getattr(p, 'designation', ''): parts.append(f"Role: {p.designation}")
-                requirements_text = ". ".join(parts)
-
-            if not offerings_text:
-                parts = []
-                if getattr(p, 'expertise', ''): parts.append(f"Expertise: {p.expertise}")
-                if getattr(p, 'designation', ''): parts.append(f"Background: {p.designation}")
-                offerings_text = ". ".join(parts)
-
-        if not requirements_text and not offerings_text:
+        if not ai_summary and not requirements_text and not offerings_text:
             stats["profiles_skipped_no_text"] += 1
             logger.debug(f"[{i+1}/{len(profiles)}] Skipping {user_id[:8]} — no text to embed")
             continue
@@ -102,42 +113,36 @@ def run_reembedding(dry_run: bool = True, batch_size: int = 10) -> Dict[str, Any
         stats["profiles_with_persona"] += 1
 
         if dry_run:
-            logger.info(f"[{i+1}/{len(profiles)}] Would re-embed {user_id[:8]} "
-                       f"(req={len(requirements_text)} chars, off={len(offerings_text)} chars, type={user_type})")
+            source = f"AI summary ({len(ai_summary.split())} words)" if ai_summary else f"persona (req={len(requirements_text)}, off={len(offerings_text)} chars)"
+            logger.info(f"[{i+1}/{len(profiles)}] Would re-embed {user_id[:8]} — {source}")
             continue
 
         # === LIVE: Generate and store new embeddings ===
         try:
-            # 1. Basic embeddings (requirements + offerings)
-            success = embedding_service.store_user_embeddings(
-                user_id=user_id,
-                requirements=requirements_text,
-                offerings=offerings_text
-            )
+            if ai_summary:
+                # Embed the full AI summary as both requirements and offerings embedding
+                # The cosine pre-filter searches req→offerings cross-direction,
+                # so both need to exist for bidirectional matching
+                success = embedding_service.store_user_embeddings(
+                    user_id=user_id,
+                    requirements=ai_summary,
+                    offerings=ai_summary
+                )
+            else:
+                # Fallback: use persona fields
+                success = embedding_service.store_user_embeddings(
+                    user_id=user_id,
+                    requirements=requirements_text,
+                    offerings=offerings_text
+                )
 
             if success:
                 stats["embeddings_generated"] += 1
+                source = "AI summary" if ai_summary else "persona"
+                logger.info(f"[{i+1}/{len(profiles)}] Re-embedded {user_id[:8]} from {source}")
             else:
                 stats["embeddings_failed"] += 1
-                logger.warning(f"[{i+1}/{len(profiles)}] Basic embedding failed for {user_id[:8]}")
-                continue
-
-            # 2. Multi-vector dimension embeddings
-            try:
-                mv_result = multi_vector_service.generate_multi_vector_embeddings(
-                    user_id=user_id,
-                    requirements_text=requirements_text,
-                    offerings_text=offerings_text,
-                    store_in_db=True,
-                    user_type=user_type
-                )
-                dim_count = len(mv_result.get("dimensions", {}))
-                stats["multi_vector_generated"] += dim_count
-                logger.info(f"[{i+1}/{len(profiles)}] Re-embedded {user_id[:8]} — "
-                           f"basic=OK, multi_vector={dim_count} dims, type={user_type}")
-            except Exception as mv_err:
-                logger.warning(f"[{i+1}/{len(profiles)}] Multi-vector failed for {user_id[:8]}: {mv_err}")
-                # Basic embedding succeeded, that's enough
+                logger.warning(f"[{i+1}/{len(profiles)}] Embedding failed for {user_id[:8]}")
 
             # Rate limit protection: pause between batches
             batch_count += 1

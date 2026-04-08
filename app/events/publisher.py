@@ -110,13 +110,14 @@ class EventPublisher:
         user_id: str,
         match_count: int,
         algorithm: str = "unknown",
-        reciprocal_updates: int = 0
+        reciprocal_updates: int = 0,
+        trigger: str = "onboarding"
     ) -> bool:
         """
         Publish event when a user's matches are ready.
 
         This triggers:
-        - Push notification to user ("X matches found!")
+        - Push notification to user (message varies by trigger)
         - Real-time update if user is on dashboard
 
         Args:
@@ -124,6 +125,10 @@ class EventPublisher:
             match_count: Number of matches found
             algorithm: Which matching algorithm was used
             reciprocal_updates: How many existing users got reciprocal updates
+            trigger: What caused the match generation:
+                     "onboarding" — first-time after completing onboarding
+                     "cron" — scheduled periodic re-matching
+                     "profile_edit" — user edited their profile/summary
 
         Returns:
             True if published successfully
@@ -133,6 +138,7 @@ class EventPublisher:
             "match_count": match_count,
             "algorithm": algorithm,
             "reciprocal_updates": reciprocal_updates,
+            "trigger": trigger,
             "event_type": "matches_ready"
         })
 

@@ -298,7 +298,24 @@ def generate_embeddings_task(self, user_id: str):
                             matches=matches_result
                         )
                         if sync_result.get('success'):
-                            logger.info(f"Synced {sync_result.get('count', 0)} matches to backend for user {user_id}")
+                            synced = sync_result.get('count', 0)
+                            logger.info(f"Synced {synced} matches to backend for user {user_id}")
+
+                            # Publish matches_ready event for push notification
+                            try:
+                                from app.events.publisher import event_publisher
+                                # Determine trigger: profile_edit if called from /user/profile-updated
+                                # The task doesn't know its caller, so check if user already had matches
+                                # For now, default to "onboarding" — profile_edit trigger is set by caller
+                                trigger = getattr(self.request, '_trigger', 'onboarding') if hasattr(self, 'request') else 'onboarding'
+                                event_publisher.publish_matches_ready(
+                                    user_id=user_id,
+                                    match_count=total,
+                                    algorithm=matches_result.get('algorithm', 'llm_scored'),
+                                    trigger=trigger
+                                )
+                            except Exception as pub_err:
+                                logger.debug(f"Event publish failed for {user_id}: {pub_err}")
                         else:
                             logger.warning(f"Match sync failed for user {user_id}: {sync_result.get('error')}")
                     except Exception as sync_err:

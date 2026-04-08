@@ -170,7 +170,7 @@ SLOT_DEFINITIONS = {
     "user_type": {
         "description": "The user's primary role in the startup ecosystem",
         "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider", "Recruiter", "Job Seeker/Candidate"],
-        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups. If user mentions 'looking for a job', 'new role', 'career change', 'find new job', 'next opportunity', classify as JOB SEEKER/CANDIDATE. If user runs a recruitment firm, staffing agency, or does headhunting/talent acquisition, classify as RECRUITER not Service Provider."
+        "extraction_hint": "IMPORTANT: If user mentions 'looking for investors', 'seeking funding', 'raising a round', they are a FOUNDER seeking investors, NOT an investor themselves. Only classify as investor if they explicitly say they INVEST money in startups. If user mentions 'looking for a job', 'new role', 'career change', 'find new job', 'next opportunity', 'looking for a CTO role', 'seeking a co-founder position', 'want to join as CTO', 'looking for my next challenge', classify as JOB SEEKER/CANDIDATE — even if they mention 'co-founder' or 'CTO' as the TARGET ROLE they're seeking. Only classify as Founder/Entrepreneur if they ALREADY ARE a founder/CEO building their own company. If user runs a recruitment firm, staffing agency, or does headhunting/talent acquisition, classify as RECRUITER not Service Provider."
     },
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
@@ -229,7 +229,7 @@ SLOT_DEFINITIONS = {
         "description": "Geographic regions of interest",
         "type": "multi_select",
         "options": ["UK", "US", "Europe", "Asia", "Middle East", "Latin America", "Africa", "Global/Remote"],
-        "extraction_hint": "Extract mentioned regions or countries. Map specific countries to regions: London/UK → UK, Silicon Valley/US → US, etc."
+        "extraction_hint": "Extract mentioned regions or countries. Map specific countries to regions: London/UK → UK, Silicon Valley/US → US, etc. If user says 'fully remote', 'doesn't matter where', 'location agnostic', 'anywhere', 'geography doesn't matter', 'open to any location', 'no geography preference' → 'Global/Remote'."
     },
     "company_name": {
         "description": "Name of the user's company (if founder/executive)",
@@ -755,7 +755,7 @@ Extract structured slot data from this resume. Focus on factual information that
 1. ONLY extract information explicitly stated in the resume
 2. For requirements, look for "Looking for", "Seeking", "Want to connect with" sections
 3. For offerings, summarize their key skills/expertise in 2-3 sentences
-4. Set confidence based on how explicit the information is (0.9+ for explicit, 0.7-0.9 for implied)
+4. Extract what you can find — focus on accuracy over completeness
 5. For career changers, experience_years should reflect TOTAL professional experience across all roles
 
 ## Response Format
@@ -764,7 +764,6 @@ Return valid JSON:
     "extracted_slots": {
         "slot_name": {
             "value": "extracted value",
-            "confidence": 0.0-1.0,
             "reasoning": "where in resume this was found"
         }
     },
@@ -1671,7 +1670,7 @@ YOU MUST return EXACTLY this structure. NO other text allowed:
 {{
     "is_off_topic": false,
     "extracted_slots": {{
-        "slot_name": {{"value": "extracted value", "confidence": 0.0-1.0, "reasoning": "why"}}
+        "slot_name": {{"value": "extracted value", "reasoning": "why"}}
     }},
     "user_type_inference": "founder|investor|advisor|unknown",
     "understanding_summary": "Brief analysis",
@@ -2129,7 +2128,7 @@ In understanding_summary, note: "User also mentioned $180k+ compensation, remote
 3. NEVER ask for information already collected (see ALREADY COLLECTED section)
 4. NO word limit - ask thoughtful questions that yield rich responses
 5. If user says "looking for investors" or "raising funding" - they are a FOUNDER, not an investor
-6. CEO, Founder, Co-founder = Founder/Entrepreneur
+6. CEO, Founder, Co-founder = Founder/Entrepreneur ONLY if they ARE one. If they are SEEKING a CTO/co-founder/executive ROLE to join = Job Seeker/Candidate
 7. PRIORITIZE questions that can fill multiple missing slots at once
 8. Make them feel like the most interesting person you've talked to today
 
@@ -2144,7 +2143,6 @@ Return valid JSON:
     "extracted_slots": {{
         "slot_name": {{
             "value": "extracted value",
-            "confidence": 0.0-1.0,
             "reasoning": "why you extracted this - include implicit inferences"
         }}
     }},
@@ -2259,12 +2257,12 @@ Response:
 {{
     "is_off_topic": false,
     "extracted_slots": {{
-        "industry_focus": {{"value": ["Technology/SaaS", "Enterprise"], "confidence": 0.95, "reasoning": "B2B SaaS = Technology/SaaS + Enterprise"}},
-        "experience_years": {{"value": "2 years", "confidence": 0.95, "reasoning": "Explicitly stated 'been at it for 2 years'"}},
-        "team_size": {{"value": "small team", "confidence": 0.8, "reasoning": "Mentioned 'small team' - likely 2-10 people"}},
-        "stage_preference": {{"value": "Series A", "confidence": 0.95, "reasoning": "Raising Series A"}},
-        "geography": {{"value": ["Europe"], "confidence": 0.9, "reasoning": "Expanding into Europe - likely current market elsewhere"}},
-        "primary_goal": {{"value": "Raise Funding", "confidence": 0.95, "reasoning": "Looking to raise Series A"}}
+        "industry_focus": {{"value": ["Technology/SaaS", "Enterprise"], "reasoning": "B2B SaaS = Technology/SaaS + Enterprise"}},
+        "experience_years": {{"value": "2 years", "reasoning": "Explicitly stated 'been at it for 2 years'"}},
+        "team_size": {{"value": "small team", "reasoning": "Mentioned 'small team' - likely 2-10 people"}},
+        "stage_preference": {{"value": "Series A", "reasoning": "Raising Series A"}},
+        "geography": {{"value": ["Europe"], "reasoning": "Expanding into Europe - likely current market elsewhere"}},
+        "primary_goal": {{"value": "Raise Funding", "reasoning": "Looking to raise Series A"}}
     }},
     "user_type_inference": "founder",
     "understanding_summary": "B2B SaaS founder in HR tech, 2 years in, small team, raising Series A for European expansion. Likely US/UK based currently.",
@@ -2357,12 +2355,14 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
         for slot_name, slot_data in raw_slots.items():
             if isinstance(slot_data, dict):
                 value = slot_data.get("value")
-                confidence = float(slot_data.get("confidence", 0.8))
+                # Confidence hardcoded — LLM no longer calculates it.
+                # Correctness is handled by end-of-onboarding validation call.
+                confidence = 0.90
                 reasoning = slot_data.get("reasoning", "")
             else:
                 # Handle simple value format
                 value = slot_data
-                confidence = 0.8
+                confidence = 0.90
                 reasoning = ""
 
             # BUG-013 FIX: Convert lists to strings for offerings/requirements
@@ -2418,19 +2418,20 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             # BUG-005 FIX: Validate offerings/requirements are concise, not full message text
             # If LLM returns full sentences/paragraphs, truncate or flag for re-extraction
             if slot_name in ["offerings", "requirements"] and value is not None and isinstance(value, str):
-                # Check if value is suspiciously long (> 150 chars suggests full message text)
-                if len(value) > 150:
+                # Check if value is suspiciously long (> 500 chars suggests full message text copy-paste)
+                # 150-500 chars is reasonable for detailed offerings/requirements
+                if len(value) > 500:
                     logger.warning(
                         f"Extracted {slot_name} is too long ({len(value)} chars), likely full message text. "
-                        f"Truncating to first 150 chars. Original: '{value[:100]}...'"
+                        f"Truncating to first 500 chars. Original: '{value[:100]}...'"
                     )
                     # Truncate at sentence boundary if possible
                     sentences = value.split('.')
-                    if len(sentences) > 1 and len(sentences[0]) < 150:
+                    if len(sentences) > 1 and len(sentences[0]) < 500:
                         value = sentences[0].strip()
                     else:
-                        # Hard truncate at 150 chars
-                        value = value[:150].strip()
+                        # Hard truncate at 500 chars
+                        value = value[:500].strip()
                     # Reduce confidence since we had to intervene
                     confidence = max(0.5, confidence - 0.2)
 

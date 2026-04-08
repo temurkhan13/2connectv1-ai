@@ -265,12 +265,14 @@ def generate_embeddings_task(self, user_id: str):
             offerings=offerings or ""
         )
 
-        # Multi-vector embeddings SKIPPED — LLM matching only uses basic req/off embeddings.
-        # The multi-vector system (28+ API calls, ~90s) was used by the old enhanced_matching_service.
-        # The current llm_matching_service only uses the 2 basic embeddings as cosine pre-filter.
-        # This saves ~90 seconds and ~28 Gemini API calls per user onboarding.
+        # Generate focus slot embeddings for dimension-based cosine pre-filter searches
+        # These enable industry→industry, stage→stage, geography→geography searches
         if success:
-            logger.info(f"Skipped multi-vector embeddings for {user_id} (LLM matching doesn't use them)")
+            try:
+                focus_count = _generate_focus_slot_embeddings(user_id, objective)
+                logger.info(f"Generated {focus_count} focus slot embeddings for {user_id}")
+            except Exception as focus_err:
+                logger.warning(f"Focus slot embeddings failed for {user_id}: {focus_err}")
 
         if success:
             logger.info(f"Successfully generated and stored embeddings for user {user_id}")

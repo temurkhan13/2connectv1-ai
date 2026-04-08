@@ -263,8 +263,34 @@ def find_matches(
 
             logger.info(f"[LLMMatch] {user_id[:12]}... Search 2 (off→req): {len(results_off_req)} candidates")
 
-        # Future: dimension searches (industry, stage, geography) when those embeddings exist
-        # They would use COSINE_THRESHOLD_DIMENSION (0.50) and skip if embedding missing
+        # Dimension searches: industry, stage, geography — skip if user has no embedding for that dimension
+        DIMENSION_SEARCHES = [
+            ('focus_slot_industry_focus', 'focus_slot_industry_focus'),
+            ('focus_slot_stage_preference', 'focus_slot_stage_preference'),
+            ('focus_slot_geography', 'focus_slot_geography'),
+        ]
+        for user_emb_type, search_emb_type in DIMENSION_SEARCHES:
+            dim_data = user_embeddings.get(user_emb_type)
+            if not dim_data:
+                continue  # User has no embedding for this dimension — skip, don't penalize
+            # Check minimum text length (from metadata) — skip thin embeddings
+            text_len = dim_data.get('metadata', {}).get('text_length', 0) if isinstance(dim_data.get('metadata'), dict) else 0
+            if text_len > 0 and text_len < MIN_DIMENSION_WORDS * 5:  # ~15 words * ~5 chars/word
+                continue
+            try:
+                dim_results = postgresql_adapter.find_similar_users(
+                    query_vector=dim_data['vector_data'],
+                    embedding_type=search_emb_type,
+                    threshold=COSINE_THRESHOLD_DIMENSION,
+                    exclude_user_id=user_id,
+                )
+                for r in dim_results:
+                    uid = r['user_id']
+                    candidate_map[uid] = max(candidate_map.get(uid, 0), r['similarity_score'])
+                if dim_results:
+                    logger.info(f"[LLMMatch] {user_id[:12]}... Dimension {user_emb_type}: {len(dim_results)} candidates")
+            except Exception as dim_err:
+                logger.debug(f"[LLMMatch] Dimension search {user_emb_type} failed: {dim_err}")
 
         # 3. Dedup + hard cap
         # Sort by best cosine score, take top CANDIDATE_HARD_CAP

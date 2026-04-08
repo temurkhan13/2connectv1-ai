@@ -138,6 +138,42 @@ async def approve_summary(request: ApproveSummaryRequest):
         )
 
 
+@router.post("/user/profile-updated")
+async def profile_updated(request: ApproveSummaryRequest):
+    """
+    Called by backend when user edits their AI summary/profile.
+
+    Triggers re-embedding and re-matching pipeline:
+    1. Update persona fields from the new summary text
+    2. Re-generate embeddings from updated persona
+    3. Re-run LLM matching with new embeddings
+    4. Sync new matches to backend
+
+    The pipeline runs asynchronously — returns immediately.
+    """
+    try:
+        user_id = request.user_id
+        logger.info(f"[ProfileUpdate] User {user_id} edited profile — triggering re-embed + re-match")
+
+        # Trigger the full embedding + matching pipeline (same as post-persona)
+        task_result = generate_embeddings_task.apply_async(args=[user_id])
+
+        logger.info(f"[ProfileUpdate] Pipeline queued for {user_id}, task_id: {task_result.id}")
+
+        return {
+            "code": 200,
+            "message": "Profile update received. Re-matching in progress.",
+            "result": True
+        }
+
+    except Exception as e:
+        logger.error(f"[ProfileUpdate] Error for {request.user_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"code": 500, "message": str(e), "result": False}
+        )
+
+
 @router.post("/user/feedback")
 async def submit_feedback(
     data: FeedbackRequest,

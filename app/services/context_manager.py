@@ -1258,6 +1258,14 @@ class ContextManager:
                 conversation_text_parts.append(f"User: {turn.content}")
         full_conversation_text = "\n".join(conversation_text_parts)
 
+        # Validation LLM call: review all extracted slots against full conversation
+        # Catches misclassifications (e.g. user_type wrong) and missed extractions (e.g. geography)
+        try:
+            collected_data = self._validate_slots_with_llm(collected_data, full_conversation_text)
+            logger.info(f"Validated slots for session {session_id}")
+        except Exception as e:
+            logger.warning(f"Slot validation failed for session {session_id}, using unvalidated slots: {e}")
+
         result = {
             "session_id": session_id,
             "user_id": context.user_id,
@@ -1270,6 +1278,92 @@ class ContextManager:
 
         logger.info(f"Finalized session {session_id} with {len(collected_data)} slots, conversation: {len(full_conversation_text)} chars")
         return result
+
+    def _validate_slots_with_llm(self, collected_data: Dict[str, Any], conversation_text: str) -> Dict[str, Any]:
+        """
+        End-of-onboarding validation: LLM reviews all extracted slots against the full
+        conversation to catch misclassifications and missed extractions.
+
+        Returns corrected collected_data dict.
+        """
+        from app.services.llm_fallback import call_with_fallback
+        import json
+
+        # Build slot summary for the LLM
+        slot_lines = []
+        for name, data in collected_data.items():
+            slot_lines.append(f"  {name}: {data.get('value', '')}")
+        slots_text = "\n".join(slot_lines)
+
+        prompt = f"""Review these extracted slots against the conversation below. Check for:
+
+1. user_type: Is the classification correct? Someone SEEKING a CTO/co-founder ROLE = Job Seeker, not Founder.
+2. geography: Did the user mention location preferences (e.g. "fully remote", "doesn't matter", specific countries)? If so, what should geography be?
+3. Any slot where the extracted value contradicts what the user actually said.
+4. Any important information the user clearly stated but was not extracted into any slot.
+
+EXTRACTED SLOTS:
+{slots_text}
+
+FULL CONVERSATION:
+{conversation_text}
+
+If ALL slots are correct and nothing is missing, respond with:
+{{"corrections": []}}
+
+If any corrections are needed, respond with:
+{{"corrections": [
+  {{"slot": "slot_name", "old_value": "current value or null", "new_value": "correct value", "reason": "why"}}
+]}}
+
+Respond with ONLY the JSON object."""
+
+        response = call_with_fallback(
+            service="extraction",
+            system_prompt="You are a slot extraction validator. Review extracted data for accuracy. Respond with JSON only.",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            temperature=0.0,
+        )
+
+        try:
+            # Parse corrections
+            import re
+            text = response.strip()
+            # Handle markdown code blocks
+            code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+            if code_block:
+                text = code_block.group(1)
+
+            result = json.loads(text)
+            corrections = result.get("corrections", [])
+
+            if not corrections:
+                logger.info("Slot validation: all slots correct, no corrections needed")
+                return collected_data
+
+            # Apply corrections
+            for correction in corrections:
+                slot_name = correction.get("slot", "")
+                new_value = correction.get("new_value", "")
+                reason = correction.get("reason", "")
+
+                if slot_name and new_value:
+                    if slot_name in collected_data:
+                        old = collected_data[slot_name].get("value", "")
+                        collected_data[slot_name]["value"] = new_value
+                        logger.info(f"Slot validation corrected '{slot_name}': '{old}' → '{new_value}' ({reason})")
+                    else:
+                        # New slot that was missed during extraction
+                        collected_data[slot_name] = {"value": new_value, "confidence": 0.90}
+                        logger.info(f"Slot validation added missing '{slot_name}': '{new_value}' ({reason})")
+
+            logger.info(f"Slot validation applied {len(corrections)} corrections")
+            return collected_data
+
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Slot validation response parse failed: {e}. Using unvalidated slots.")
+            return collected_data
 
 
 # Global instance

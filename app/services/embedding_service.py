@@ -163,6 +163,14 @@ class EmbeddingService:
                     result = self.gemini_model.embed_content(**embed_kwargs)
                     embedding_vector = result['embedding']
 
+                    # L2 normalize for non-3072 dimensions
+                    # Gemini only pre-normalizes 3072-dim output; 1536/768 need manual normalization
+                    if self.embedding_dimension != 3072:
+                        import math
+                        norm = math.sqrt(sum(x * x for x in embedding_vector))
+                        if norm > 0:
+                            embedding_vector = [x / norm for x in embedding_vector]
+
                     # Verify dimension matches expected
                     if len(embedding_vector) != self.embedding_dimension:
                         logger.warning(

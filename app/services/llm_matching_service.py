@@ -24,11 +24,14 @@ from app.services.llm_fallback import call_with_fallback
 logger = logging.getLogger(__name__)
 
 # Configuration
-COSINE_PRE_FILTER_LIMIT = int(os.getenv('LLM_MATCH_PREFILTER_LIMIT', '50'))
-COSINE_THRESHOLD = float(os.getenv('LLM_MATCH_COSINE_THRESHOLD', '0.30'))
+COSINE_THRESHOLD_PRIMARY = float(os.getenv('LLM_MATCH_COSINE_THRESHOLD', '0.30'))
+COSINE_THRESHOLD_SECONDARY = float(os.getenv('LLM_MATCH_COSINE_SECONDARY', '0.40'))
+COSINE_THRESHOLD_DIMENSION = float(os.getenv('LLM_MATCH_COSINE_DIMENSION', '0.50'))
+CANDIDATE_HARD_CAP = int(os.getenv('LLM_MATCH_CANDIDATE_CAP', '60'))
 LLM_SCORE_MIN = int(os.getenv('LLM_MATCH_SCORE_MIN', '30'))
 DEFAULT_MATCH_LIMIT = int(os.getenv('LLM_MATCH_LIMIT', '30'))
 MAX_PARALLEL_LLM = int(os.getenv('LLM_MATCH_PARALLEL', '5'))
+MIN_DIMENSION_WORDS = 15  # Skip dimension embeddings with less than this many words of source text
 
 SCORING_PROMPT = """You are a professional networking match evaluator for a platform where people connect for business — investing, hiring, mentoring, partnerships, consulting, co-founding, and more.
 
@@ -197,55 +200,94 @@ def _get_profile_text(user_id: str) -> Optional[Dict[str, str]]:
 def find_matches(
     user_id: str,
     limit: int = DEFAULT_MATCH_LIMIT,
-    cosine_limit: int = COSINE_PRE_FILTER_LIMIT,
 ) -> List[LLMMatch]:
     """
-    Find matches using cosine pre-filter + LLM scoring.
+    Find matches using multi-direction cosine pre-filter + LLM scoring.
 
-    Step 1: Cosine finds top N candidates in similar space
-    Step 2: LLM reads both profiles, scores each pair
-    Step 3: Dealbreaker filter + rank by LLM score
+    Pre-filter (cosine — free, fast):
+      Search 1: my requirements → their offerings (who offers what I need)
+      Search 2: my offerings → their requirements (who needs what I offer)
+      Future: industry→industry, stage→stage when dimension embeddings exist
+
+    Cosine is FILTER ONLY — pass/fail gate. All candidates that pass go to LLM
+    with equal standing. LLM decides the actual score.
+
+    LLM scoring (Claude API — the only cost):
+      Reads both profiles, scores 0-100, returns reason.
     """
     try:
-        # 1. Get user's embedding for cosine pre-filter
+        # 1. Get user's embeddings
         user_embeddings = postgresql_adapter.get_user_embeddings(user_id)
         if not user_embeddings:
             logger.warning(f"[LLMMatch] No embeddings for {user_id}")
             return []
 
         req_data = user_embeddings.get('requirements')
+        off_data = user_embeddings.get('offerings')
+
         if not req_data:
             logger.warning(f"[LLMMatch] No requirements embedding for {user_id}")
             return []
 
-        user_vec = req_data['vector_data']
+        # 2. Multi-direction cosine pre-filter
+        # Each search is a simple find_similar_users() call — no complex SQL
+        # Cosine is boolean gate only: pass threshold = candidate, fail = skip
+        candidate_map = {}  # user_id → best cosine score (for logging only)
 
-        # 2. Cosine pre-filter: find candidates whose OFFERINGS match our REQUIREMENTS
-        # BUG FIX: was searching 'requirements' (same-direction = people who need same things)
-        # Correct: search 'offerings' (cross-direction = people who offer what we need)
-        cosine_results = postgresql_adapter.find_similar_users(
-            query_vector=user_vec,
+        # Search 1 (PRIMARY): my requirements → their offerings
+        # "Who offers what I need?" — always runs, lowest threshold
+        results_req_off = postgresql_adapter.find_similar_users(
+            query_vector=req_data['vector_data'],
             embedding_type='offerings',
-            threshold=COSINE_THRESHOLD,
+            threshold=COSINE_THRESHOLD_PRIMARY,
             exclude_user_id=user_id,
         )
+        for r in results_req_off:
+            uid = r['user_id']
+            candidate_map[uid] = max(candidate_map.get(uid, 0), r['similarity_score'])
 
-        # Take top N by cosine
-        cosine_results.sort(key=lambda x: x['similarity_score'], reverse=True)
-        candidates = cosine_results[:cosine_limit]
+        logger.info(f"[LLMMatch] {user_id[:12]}... Search 1 (req→off): {len(results_req_off)} candidates")
 
-        logger.info(f"[LLMMatch] {user_id[:12]}...: {len(cosine_results)} cosine results, taking top {len(candidates)}")
+        # Search 2 (SECONDARY): my offerings → their requirements
+        # "Who needs what I offer?" — higher threshold, catches reverse matches
+        if off_data:
+            results_off_req = postgresql_adapter.find_similar_users(
+                query_vector=off_data['vector_data'],
+                embedding_type='requirements',
+                threshold=COSINE_THRESHOLD_SECONDARY,
+                exclude_user_id=user_id,
+            )
+            for r in results_off_req:
+                uid = r['user_id']
+                candidate_map[uid] = max(candidate_map.get(uid, 0), r['similarity_score'])
+
+            logger.info(f"[LLMMatch] {user_id[:12]}... Search 2 (off→req): {len(results_off_req)} candidates")
+
+        # Future: dimension searches (industry, stage, geography) when those embeddings exist
+        # They would use COSINE_THRESHOLD_DIMENSION (0.50) and skip if embedding missing
+
+        # 3. Dedup + hard cap
+        # Sort by best cosine score, take top CANDIDATE_HARD_CAP
+        all_candidates = [
+            {'user_id': uid, 'similarity_score': score}
+            for uid, score in candidate_map.items()
+        ]
+        all_candidates.sort(key=lambda x: x['similarity_score'], reverse=True)
+        candidates = all_candidates[:CANDIDATE_HARD_CAP]
+
+        logger.info(f"[LLMMatch] {user_id[:12]}... Total unique: {len(all_candidates)}, capped to: {len(candidates)}")
 
         if not candidates:
             return []
 
-        # 3. Get user's profile text
+        # 4. Get user's profile text for LLM
         user_profile = _get_profile_text(user_id)
         if not user_profile:
             logger.warning(f"[LLMMatch] No profile text for {user_id}")
             return []
 
-        # 4. LLM score each candidate (parallelized)
+        # 5. LLM score each candidate (parallelized)
+        # Cosine score is NOT passed to LLM — it was just the gate
         matches = []
 
         def score_candidate(candidate):
@@ -282,14 +324,14 @@ def find_matches(
                 except Exception as e:
                     logger.error(f"[LLMMatch] Candidate scoring error: {e}")
 
-        # 5. Dealbreaker filter
+        # 6. Dealbreaker filter
         matches = _apply_dealbreaker_filter(user_id, matches)
 
-        # 6. Rank by LLM score
+        # 7. Rank by LLM score
         matches.sort(key=lambda m: m.llm_score, reverse=True)
         result = matches[:limit]
 
-        logger.info(f"[LLMMatch] {user_id[:12]}...: {len(result)} matches (from {len(candidates)} candidates)")
+        logger.info(f"[LLMMatch] {user_id[:12]}...: {len(result)} final matches (from {len(candidates)} candidates)")
         return result
 
     except Exception as e:

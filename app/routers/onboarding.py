@@ -654,17 +654,21 @@ async def chat(request: ChatMessageRequest):
 
         # ISSUE #5 FIX: Enforce MV dimension coverage before allowing completion
         # But NEVER override an explicit user completion signal — if they say "I'm done", respect it.
+        # Also respect if phase is already COMPLETE from a previous turn (user said done before).
         mv_override_reason = None
         llm_result_early = context_manager.get_llm_response(session_id)
         user_explicitly_done = llm_result_early and llm_result_early.is_completion_signal
-        if is_complete and not user_explicitly_done:
+        context_already_complete = context_manager.get_session(session_id) and context_manager.get_session(session_id).phase.value == "complete"
+
+        if is_complete and (user_explicitly_done or context_already_complete):
+            # User said "I'm done" (this turn or a previous turn) — respect it, skip MV check
+            logger.info(f"Session {session_id}: User explicitly done (signal={user_explicitly_done}, phase_complete={context_already_complete}) — skipping MV check")
+        elif is_complete:
             can_complete, reason = progressive_disclosure.can_complete_onboarding(session_id)
             if not can_complete:
                 logger.info(f"Session {session_id}: Overriding completion - MV coverage insufficient: {reason}")
                 is_complete = False
                 mv_override_reason = reason
-        elif is_complete and user_explicitly_done:
-            logger.info(f"Session {session_id}: User explicitly said done — respecting completion signal, skipping MV check")
 
         # Get LLM result early so we can access is_off_topic for the response
         llm_result = context_manager.get_llm_response(session_id)

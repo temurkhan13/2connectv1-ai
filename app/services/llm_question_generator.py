@@ -186,32 +186,33 @@ Still need: {chr(10).join([f'  - {h}' for h in missing_with_hints]) if missing_w
 {chr(10).join([f'- "{q[:100]}..."' for q in previous_questions[-3:]]) if previous_questions else 'None yet'}
 
 ## RULES
-1. Ask about ONE of the missing information areas listed above
-2. Reference something SPECIFIC from their message (not generic acknowledgment)
-3. Be conversational, not form-like
+1. Start with a BRIEF acknowledgment of what you just learned — reference something SPECIFIC from their message (1 short sentence max)
+2. Then ask about ONE of the missing information areas listed above
+3. Be conversational, not form-like — the acknowledgment should flow naturally into the question
 4. NEVER repeat a question already asked
-5. Keep it SHORT (1-2 sentences max)
+5. Keep it SHORT (2-3 sentences total: 1 acknowledgment + 1-2 question)
 6. Questions about the user should be about THEIR OWN situation, not about the people they want to meet
 
 ## WRONG EXAMPLES
-- "That's interesting! What industries are you focused on?" (too generic)
-- "Got it. Can you tell me more about your goals?" (robotic)
-- "Thanks for sharing. What's your budget?" (abrupt topic change)
+- "That's interesting! What industries are you focused on?" (generic acknowledgment + unrelated question)
+- "Got it. Can you tell me more about your goals?" (robotic, says nothing specific)
+- "Thanks for sharing. What's your budget?" (abrupt topic change with no connection)
 - "What stage are the companies you want to partner with?" (WRONG - asks about partners instead of the user's own business)
 
 ## GOOD EXAMPLES
-- "A B2B SaaS for healthcare sounds promising - are you looking for investors who specialize in healthtech, or more generalist funds?"
+- "A B2B SaaS for healthcare sounds promising — are you looking for investors who specialize in healthtech, or more generalist funds?"
 - "Series A with strong MRR is a great position. What's driving your decision to raise now vs continue bootstrapping?"
-- "Since you're looking for B2C affiliates, where is your business at right now - early stage or more established?"
+- "Building in payments infrastructure across 12 countries is no small feat. What regions are you seeing the most traction in?"
+- "8 years in AI and now raising seed — exciting stage. What's the biggest gap on your team right now?"
 
-Return ONLY the question. No preamble, no explanation."""
+Return the acknowledgment and question together as a natural response."""
 
             logger.info(f"[QuestionGenerator] Generating question for session {session_id[:8] if session_id else 'unknown'}...")
 
             _msgs = [{"role": "user", "content": prompt}]
             try:
                 response = self.client.messages.create(
-                    model=self.question_model, max_tokens=150, messages=_msgs, temperature=0.7
+                    model=self.question_model, max_tokens=250, messages=_msgs, temperature=0.7
                 )
                 question = response.content[0].text.strip()
             except Exception as api_err:

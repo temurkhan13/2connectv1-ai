@@ -191,27 +191,11 @@ def _run_background_onboarding_tasks(
     results["multi_vector_ok"] = True  # Not needed, skip
     logger.info(f"[BG:{thread_name}] Skipped multi-vector embeddings for {user_id} (LLM matching doesn't use them)")
 
-    # 2. Generate basic 2-vector embeddings
-    try:
-        from app.services.embedding_service import embedding_service
-
-        requirements_text = slots.get("requirements", {}).get("value", "")
-        offerings_text = slots.get("offerings", {}).get("value", "")
-
-        if requirements_text or offerings_text:
-            basic_stored = embedding_service.store_user_embeddings(
-                user_id=user_id,
-                requirements=requirements_text,
-                offerings=offerings_text
-            )
-            results["basic_embeddings_ok"] = basic_stored
-            if basic_stored:
-                logger.info(f"[BG:{thread_name}] Stored basic embeddings for {user_id}")
-        else:
-            results["basic_embeddings_ok"] = True  # Nothing to store is OK
-    except Exception as e:
-        results["errors"].append(f"basic_embeddings: {e}")
-        logger.warning(f"[BG:{thread_name}] Failed basic embeddings for {user_id}: {e}")
+    # 2. Skip basic embeddings — persona-based embeddings (generated after persona in
+    # embedding_processing worker) are richer and will overwrite these anyway.
+    # Previously generated thin embeddings from slot text here, wasting 2 API calls.
+    results["basic_embeddings_ok"] = True
+    logger.info(f"[BG:{thread_name}] Skipped basic embeddings for {user_id} (persona-based embeddings will replace them)")
 
     # 3. Matching is handled by the persona → embedding → matching pipeline (step 4).
     # Previously we ran matching here too, but it was redundant:
@@ -1244,110 +1228,11 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         except Exception as e:
             logger.warning(f"Failed to publish onboarding_complete event: {e}")
 
-        # Create user_summary for Discover page + AI Summary display
-        # BUG-007 FIX: Generate markdown summary for frontend display instead of JSON
-        try:
-            import json
-            # Build summary from collected slots
-            def _get_slot_value(slot_name: str) -> str:
-                """Safely extract slot value as string."""
-                slot = slots.get(slot_name, {})
-                val = slot.get("value", "") if isinstance(slot, dict) else ""
-                if isinstance(val, list):
-                    return "; ".join(str(item).strip() for item in val if item)
-                return str(val) if val else ""
-
-            summary_data = {
-                "profile_type": _get_slot_value("user_type") or "Unknown",
-                "industry": _get_slot_value("industry_focus"),
-                "goal": _get_slot_value("primary_goal"),
-                "stage": _get_slot_value("stage_preference") or _get_slot_value("company_stage"),
-                "geography": _get_slot_value("geography") or _get_slot_value("geographic_focus"),
-                "offerings": _get_slot_value("offerings"),
-                "requirements": _get_slot_value("requirements"),
-                # Identity slots
-                "role_title": _get_slot_value("role_title"),
-                "company_name": _get_slot_value("company_name"),
-                "skills": _get_slot_value("skills_have"),
-                "experience": _get_slot_value("experience_years"),
-                "achievement": _get_slot_value("achievement"),
-                "network": _get_slot_value("network_strength"),
-            }
-
-            # Generate markdown summary for frontend display (AI Summary page)
-            profile_type = summary_data["profile_type"] or "User"
-            role_title = summary_data["role_title"]
-            company_name = summary_data["company_name"]
-            industry = summary_data["industry"] or "Not specified"
-            goal = summary_data["goal"] or "Not specified"
-            stage = summary_data["stage"] or "Not specified"
-            geography = summary_data["geography"] or "Not specified"
-            offerings = summary_data["offerings"] or "Not specified"
-            requirements = summary_data["requirements"] or "Not specified"
-            skills = summary_data["skills"]
-            experience = summary_data["experience"]
-            achievement = summary_data["achievement"]
-            network = summary_data["network"]
-
-            # Build identity header
-            identity_line = profile_type
-            if role_title:
-                identity_line = f"{role_title}"
-                if company_name:
-                    identity_line += f" at {company_name}"
-            elif company_name:
-                identity_line = f"{profile_type} at {company_name}"
-
-            # Build optional sections (only show if data exists)
-            optional_sections = ""
-            if skills:
-                optional_sections += f"\n## Skills & Expertise\n{skills}\n"
-            if experience:
-                optional_sections += f"\n## Experience\n{experience} years\n"
-            if achievement:
-                optional_sections += f"\n## Key Achievement\n{achievement}\n"
-            if network:
-                optional_sections += f"\n## Strongest Network\n{network}\n"
-
-            summary_markdown = f"""# {identity_line}
-
-## Primary Goal
-{goal}
-
-## Industry Focus
-{industry}
-
-## Stage
-{stage}
-
-## Geography
-{geography}
-{optional_sections}
-## What I Can Offer
-{offerings}
-
-## What I'm Looking For
-{requirements}
-
----
-
-*This summary was generated based on your onboarding responses. You can update it anytime from your profile settings.*
-"""
-
-            summary_id = postgresql_adapter.create_user_summary(
-                user_id=user_id,
-                summary=summary_markdown,  # Store markdown instead of JSON
-                status='draft',
-                urgency='ongoing'
-            )
-            if summary_id:
-                diag.user_summary_created = True
-                logger.info(f"Created user_summary {summary_id} for user {user_id}")
-            else:
-                logger.warning(f"Could not create user_summary for user {user_id}")
-        except Exception as e:
-            # Log but don't fail - user can still use dashboard
-            logger.warning(f"Failed to create user_summary: {e}")
+        # Skip draft summary creation — persona worker will create the approved version
+        # from rich persona data (with conversation text + resume). Creating a draft here
+        # from thin slot values is wasted work that gets immediately superseded.
+        diag.user_summary_created = True  # Will be created by persona worker
+        logger.info(f"Skipped draft summary for {user_id} — persona worker will create approved version")
 
         # REC-487: RETURN EARLY, PROCESS IN BACKGROUND
         # ==============================================

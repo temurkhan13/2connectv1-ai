@@ -143,22 +143,28 @@ async def profile_updated(request: ApproveSummaryRequest):
     """
     Called by backend when user edits their AI summary/profile.
 
-    Triggers re-embedding and re-matching pipeline:
-    1. Update persona fields from the new summary text
-    2. Re-generate embeddings from updated persona
-    3. Re-run LLM matching with new embeddings
-    4. Sync new matches to backend
-
-    The pipeline runs asynchronously — returns immediately.
+    Triggers re-embedding and re-matching pipeline in background thread.
+    Returns immediately to avoid Render's 30s HTTP timeout.
     """
     try:
         user_id = request.user_id
         logger.info(f"[ProfileUpdate] User {user_id} edited profile — triggering re-embed + re-match")
 
-        # Trigger the full embedding + matching pipeline (same as post-persona)
-        task_result = generate_embeddings_task.apply_async(args=[user_id])
+        # Run in background thread — CELERY_TASK_ALWAYS_EAGER=true makes apply_async
+        # run synchronously which takes 3+ min and causes Render 502 timeout
+        import threading
+        def _run_pipeline():
+            try:
+                generate_embeddings_task.apply(args=[user_id])
+                logger.info(f"[ProfileUpdate] Pipeline completed for {user_id}")
+            except Exception as e:
+                logger.error(f"[ProfileUpdate] Pipeline failed for {user_id}: {e}")
 
-        logger.info(f"[ProfileUpdate] Pipeline queued for {user_id}, task_id: {task_result.id}")
+        thread = threading.Thread(target=_run_pipeline, name=f"profile_update_{user_id[:8]}")
+        thread.daemon = True
+        thread.start()
+
+        logger.info(f"[ProfileUpdate] Pipeline started in background for {user_id}")
 
         return {
             "code": 200,

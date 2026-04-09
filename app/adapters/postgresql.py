@@ -36,7 +36,9 @@ class PostgreSQLAdapter:
 
     def get_connection(self):
         """Get database connection to AI database. Caller is responsible for closing."""
-        return psycopg2.connect(self.database_url)
+        conn = psycopg2.connect(self.database_url)
+        pgvector.psycopg2.register_vector(conn)
+        return conn
 
     def get_backend_connection(self):
         """Get database connection to backend database (for user/match operations).

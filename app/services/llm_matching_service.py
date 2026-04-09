@@ -33,43 +33,50 @@ DEFAULT_MATCH_LIMIT = int(os.getenv('LLM_MATCH_LIMIT', '30'))
 MAX_PARALLEL_LLM = int(os.getenv('LLM_MATCH_PARALLEL', '5'))
 MIN_DIMENSION_WORDS = 15  # Skip dimension embeddings with less than this many words of source text
 
-SCORING_PROMPT = """You are a professional networking match evaluator for a platform where people connect for business — investing, hiring, mentoring, partnerships, consulting, co-founding, and more.
-
-Given two user profiles, evaluate whether introducing them would create mutual value.
+SCORING_PROMPT = """You are a professional networking match evaluator. Score whether introducing two people would create real value based on what they SPECIFICALLY said they need.
 
 USER A:
 What they need: {user_a_requirements}
-
 What they offer: {user_a_offerings}
 
 USER B:
 What they need: {user_b_requirements}
-
 What they offer: {user_b_offerings}
 
-Evaluate:
-1. Does A offer something B specifically needs? Check their STATED requirements, not assumptions.
-2. Does B offer something A specifically needs? Check their STATED requirements, not assumptions.
-3. Do the specifics align? (industry, geography, stage, check size, role type, seniority)
-4. Would BOTH sides see value in this introduction?
+SCORING PROCESS — follow these steps IN ORDER:
 
-IMPORTANT: Score based on what each person needs and offers — both STATED and IMPLIED.
-- Read their stated requirements first.
-- Then look at their Role, Focus, and Background context (in square brackets) to understand implied needs.
-  Example: A "Series B CEO scaling a payments company" implies they need engineers, product leaders, and board members — even if their stated need is "investors."
-  Example: A "VP Engineering seeking a role" implies they need hiring companies and recruiters — not other job seekers.
-- If User A said they want "to connect with other engineers for networking" — then matching with peers IS valid.
-- General industry overlap alone is NOT a match. There must be a specific value exchange — stated or clearly implied by their role and stage.
+STEP 1: What does User A specifically need? Read their requirements literally.
+STEP 2: Does User B OFFER that specific thing? Not something vaguely related — the actual thing.
+STEP 3: What does User B specifically need? Read their requirements literally.
+STEP 4: Does User A OFFER that specific thing?
+STEP 5: Do the specifics align? (industry, geography, stage, check size, role level, etc.)
 
-Respond with ONLY a JSON object, nothing else — no explanation text before or after:
-{{"score": <0-100>, "reason": "<one sentence>"}}
+SCORE BANDS — your score MUST fall in the correct band:
+90-100: BOTH users directly deliver what the other specifically asked for. Specifics align (stage, geography, industry, check size).
+70-89:  ONE user clearly delivers what the other needs. The reverse direction has some but weaker value.
+50-69:  Neither user directly delivers what the other asked for, but there is a plausible indirect connection (e.g., shared industry knowledge, potential introduction to someone else).
+30-49:  Surface-level similarity only. Same industry or geography but no specific value exchange.
+0-29:   No meaningful connection.
 
-Scoring guide:
-90-100: Both sides get exactly what they asked for, specifics align perfectly
-70-89: Strong alignment, one side benefits more or minor specifics differ
-50-69: Some value exists but significant gaps (wrong geography, wrong stage, wrong role)
-30-49: Weak — only surface-level relevance, no specific value exchange
-0-29: No meaningful connection — neither side gets what they specifically asked for"""
+HARD RULES — violations mean automatic score cap:
+1. If BOTH users are seeking the SAME thing (both raising capital, both seeking jobs, both looking for co-founders) and NEITHER offers what the other needs → score MUST be below 35. Peer networking is worth 25-35, not 60+.
+2. If your reason contains words like "misaligned", "neither can fulfill", "both seeking", "no direct overlap" → your score MUST be below 45. Your reason and score must agree.
+3. Do NOT invent relationships neither user asked for. If nobody mentioned mentorship, do not score based on "potential mentorship value." If nobody mentioned networking, do not score based on "peer networking."
+4. Check size / stage mismatch: A $5K-$25K pre-seed investor matched with a Series A founder raising $2M+ → score below 40. The capital gap is too large.
+5. Geography mismatch: If a user specified a required geography (e.g., "must be in Southeast Asia") and the match is elsewhere → score below 40.
+
+SELF-CHECK before responding:
+- Re-read what User A SPECIFICALLY said they need. Does User B offer EXACTLY that? If no → your score should be below 50.
+- Re-read what User B SPECIFICALLY said they need. Does User A offer EXACTLY that? If no → your score should be below 70 (one-directional at best).
+- Does your reason match your score? If your reason describes problems, your score must reflect those problems.
+
+IMPLIED NEEDS (use carefully):
+- A "Series B CEO scaling a company" implies hiring needs — matching with qualified engineers/executives IS valid.
+- A "VP Engineering seeking a role" implies they need hiring companies — NOT other job seekers.
+- Only use implied needs when the implication is obvious from role + stage. Do not stretch.
+
+Respond with ONLY a JSON object:
+{{"score": <0-100>, "reason": "<one sentence explaining the specific value exchange or why it's weak>"}}"""
 
 
 @dataclass

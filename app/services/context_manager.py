@@ -712,7 +712,7 @@ class ContextManager:
                 user_id=context.user_id,
                 slots=slots_to_save
             )
-            logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to Supabase for user {context.user_id[:8]}...")
+            logger.info(f"✅ Persisted {saved_count}/{len(slots_to_save)} slots to PostgreSQL for user {context.user_id[:8]}...")
             # Note: If this succeeds, persistence was validated (slots in database)
 
     def _extract_slots_regex_fallback(

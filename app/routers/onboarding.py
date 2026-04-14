@@ -623,7 +623,7 @@ async def chat(request: ChatMessageRequest):
                         user_id=context.user_id,
                         slots=slots_to_save
                     )
-                    logger.info(f"BUG-027: Persisted {saved_count} newly extracted slots to Supabase for user {context.user_id[:8]}...")
+                    logger.info(f"BUG-027: Persisted {saved_count} newly extracted slots to PostgreSQL for user {context.user_id[:8]}...")
             except Exception as persist_error:
                 # Log but don't fail the request - in-memory session is primary
                 logger.warning(f"BUG-027: Failed to persist slots to Supabase (non-fatal): {persist_error}")

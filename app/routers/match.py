@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from app.services.match_explanation_service import match_explanation_service
 from app.services.llm_service import get_llm_service
-from app.adapters.supabase_profiles import UserProfile
+from app.adapters.supabase_profiles import UserProfile, UserMatches
 from app.adapters.postgresql import postgresql_adapter
 
 logger = logging.getLogger(__name__)
@@ -236,19 +236,57 @@ def _format_user_type_plain(user_type: str) -> str:
 @router.post("/explanation", response_model=MatchExplanationResponse)
 async def get_match_explanation(request: MatchExplanationRequest):
     """
-    Generate AI explanation for why two users matched.
+    Return pre-generated match explanation from storage.
 
-    Returns synergy areas, friction points, and suggested talking points.
-    Uses real LLM to generate contextual explanations from both user profiles.
+    Explanations are generated once at match time and stored alongside
+    the match data. This endpoint reads from storage — no live LLM call.
     """
     try:
-        logger.info(f"Generating LLM explanation for match: {request.match_id}")
+        logger.info(f"Fetching stored explanation for match: {request.match_id}")
 
-        # Get user personas
+        # Try to read pre-generated explanation from match cache
+        stored_explanation = None
+        try:
+            user_matches = UserMatches.get(request.user_a_id)
+            if user_matches and user_matches.matches:
+                for m in user_matches.matches.get('requirements_matches', []):
+                    if m.get('user_id') == request.user_b_id:
+                        if m.get('explanation') and m.get('synergy_areas'):
+                            stored_explanation = {
+                                'summary': m.get('explanation', ''),
+                                'synergy_areas': m.get('synergy_areas', []),
+                                'friction_points': m.get('friction_points', []),
+                                'talking_points': m.get('talking_points', []),
+                            }
+                            logger.info(f"Found stored explanation for {request.user_a_id[:8]}↔{request.user_b_id[:8]}")
+                        break
+        except Exception as e:
+            logger.warning(f"Could not read stored explanation: {e}")
+
+        # Use stored explanation if available
+        if stored_explanation:
+            llm_result = stored_explanation
+        else:
+            # No stored explanation — generate live (for old matches before this change)
+            logger.info(f"No stored explanation found, generating live for {request.match_id}")
+            user_a = _get_user_persona(request.user_a_id)
+            user_b = _get_user_persona(request.user_b_id)
+
+            scores = {
+                "req_to_off": 0.5,
+                "off_to_req": 0.5,
+                "industry_match": 0.7 if user_a["industry"].lower() == user_b["industry"].lower() else 0.4,
+                "overall_score": 0.5,
+            }
+
+            llm_service = get_llm_service()
+            llm_result = await llm_service.generate_match_explanation(user_a, user_b, scores)
+
+        # Get user personas for score breakdown
         user_a = _get_user_persona(request.user_a_id)
         user_b = _get_user_persona(request.user_b_id)
 
-        # Calculate alignment scores (still used for scoring)
+        # Calculate alignment scores for score breakdown
         req_to_off = 0.0
         off_to_req = 0.0
 
@@ -264,22 +302,9 @@ async def get_match_explanation(request: MatchExplanationRequest):
             )
             off_to_req = min(len(common_b) / 5, 1.0) * 0.8 + 0.2
 
-        # Industry match
         industry_match = 0.7 if user_a["industry"].lower() == user_b["industry"].lower() else 0.4
-
-        # Calculate overall score
         overall_score = (req_to_off + off_to_req + industry_match) / 3
         match_tier = _compute_match_tier(overall_score)
-
-        # Generate LLM-powered explanation
-        llm_service = get_llm_service()
-        scores = {
-            "req_to_off": req_to_off,
-            "off_to_req": off_to_req,
-            "industry_match": industry_match
-        }
-
-        llm_result = await llm_service.generate_match_explanation(user_a, user_b, scores)
 
         # Build structured score breakdown matching frontend interface
         # Weights sum to 1.0 across 6 dimensions

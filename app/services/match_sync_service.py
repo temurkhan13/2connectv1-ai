@@ -178,17 +178,23 @@ class MatchSyncService:
                 tier = 'low'
 
             reason = m.get('reason', '')
+            # Use pre-generated explanation data if available (from LLM explanation step)
+            explanation = m.get('explanation', reason)
+            synergy_areas = m.get('synergy_areas', [reason] if reason else [])
+            friction_points = m.get('friction_points', [])
+            talking_points = m.get('talking_points', [])
+
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',  # Backend requires string, not null
                 'user_b_designation': '',
                 'match_score': score_pct,
-                'explanation': reason,
+                'explanation': explanation,
                 'match_tier': tier,
-                'synergy_areas': [reason] if reason else [],
-                'friction_points': [],
-                'talking_points': [],
+                'synergy_areas': synergy_areas,
+                'friction_points': friction_points,
+                'talking_points': talking_points,
             })
 
         # Add offerings matches (what user offers vs others' needs)
@@ -219,17 +225,22 @@ class MatchSyncService:
                 tier = 'low'
 
             reason = m.get('reason', '')
+            explanation = m.get('explanation', reason)
+            synergy_areas = m.get('synergy_areas', [reason] if reason else [])
+            friction_points = m.get('friction_points', [])
+            talking_points = m.get('talking_points', [])
+
             match_pairs.append({
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',
                 'user_b_designation': '',
                 'match_score': score_pct,
-                'explanation': reason,
+                'explanation': explanation,
                 'match_tier': tier,
-                'synergy_areas': [reason] if reason else [],
-                'friction_points': [],
-                'talking_points': [],
+                'synergy_areas': synergy_areas,
+                'friction_points': friction_points,
+                'talking_points': talking_points,
             })
 
         if skipped_invalid > 0:

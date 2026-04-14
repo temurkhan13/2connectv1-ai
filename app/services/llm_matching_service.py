@@ -431,8 +431,70 @@ def find_matches(
         return []
 
 
+def _generate_match_explanations(user_id: str, matches: list) -> list:
+    """Generate LLM explanations for each match pair using full persona data.
+
+    Called once after matching. Explanations are stored with the match
+    so the user sees them instantly without a live LLM call.
+    """
+    from app.routers.match import _get_user_persona
+    from app.services.llm_service import get_llm_service
+    import asyncio
+
+    llm_service = get_llm_service()
+    user_persona = _get_user_persona(user_id)
+
+    for match in matches:
+        try:
+            match_user_id = match['user_id']
+            match_persona = _get_user_persona(match_user_id)
+
+            # Build scores for the prompt
+            scores = {
+                'req_to_off': match.get('similarity_score', 0.5),
+                'off_to_req': match.get('similarity_score', 0.5),
+                'industry_match': 0.7 if user_persona.get('industry', '').lower() == match_persona.get('industry', '').lower() else 0.4,
+                'overall_score': match.get('similarity_score', 0.5),
+            }
+
+            # Run async LLM call synchronously (we're in a background worker)
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        result = pool.submit(
+                            asyncio.run,
+                            llm_service.generate_match_explanation(user_persona, match_persona, scores)
+                        ).result(timeout=30)
+                else:
+                    result = loop.run_until_complete(
+                        llm_service.generate_match_explanation(user_persona, match_persona, scores)
+                    )
+            except RuntimeError:
+                result = asyncio.run(
+                    llm_service.generate_match_explanation(user_persona, match_persona, scores)
+                )
+
+            match['explanation'] = result.get('summary', '')
+            match['synergy_areas'] = result.get('synergy_areas', [])
+            match['friction_points'] = result.get('friction_points', [])
+            match['talking_points'] = result.get('talking_points', [])
+
+            logger.info(f"[LLMMatch] Generated explanation for {user_id[:8]}↔{match_user_id[:8]}")
+
+        except Exception as e:
+            logger.warning(f"[LLMMatch] Failed to generate explanation for match {match.get('user_id', '?')}: {e}")
+            match['explanation'] = match.get('reason', '')
+            match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
+            match['friction_points'] = []
+            match['talking_points'] = []
+
+    return matches
+
+
 def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Dict[str, Any]:
-    """Find matches and store in match cache. Legacy-compatible interface."""
+    """Find matches, generate explanations, and store in match cache."""
     matches = find_matches(user_id, limit=limit)
 
     legacy_matches = []
@@ -443,7 +505,7 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'cosine_score': m.cosine_score,
             'llm_score': m.llm_score,
             'reason': m.reason,
-            'similarity_score': m.llm_score / 100.0,  # legacy compat (0-1 scale)
+            'similarity_score': m.llm_score / 100.0,
             'combined_score': m.llm_score / 100.0,
         })
 
@@ -453,6 +515,10 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'total_matches': 0, 'requirements_matches': [],
             'offerings_matches': [], 'stored': True
         }
+
+    # Generate explanations for each match using full persona data
+    logger.info(f"[LLMMatch] Generating explanations for {len(legacy_matches)} matches of user {user_id[:8]}")
+    legacy_matches = _generate_match_explanations(user_id, legacy_matches)
 
     try:
         stored = UserMatches.store_user_matches(user_id, {

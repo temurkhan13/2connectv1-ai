@@ -116,56 +116,90 @@ def _extract_industry_from_focus(focus: str) -> str:
 
 
 def _get_user_persona(user_id: str) -> dict:
-    """Get user persona from DynamoDB with fallback to PostgreSQL."""
+    """Get full user persona for match explanation LLM.
+
+    Returns the ENTIRE persona as raw text — not compressed fields.
+    Also fetches the real user name from the users table.
+    """
+    # Get real name from users table first
+    real_name = "Unknown"
+    try:
+        conn = postgresql_adapter.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM users WHERE id = %s", (user_id,))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        if row and row[0]:
+            real_name = row[0]
+    except Exception as e:
+        logger.warning(f"Could not fetch real name for {user_id}: {e}")
+
+    # Get full persona from profile
     try:
         user_profile = UserProfile.get(user_id)
         if user_profile and user_profile.persona:
             persona = user_profile.persona
-            # Extract user_type from designation (e.g., "Software Engineer" -> "Software Engineer")
+
             user_type = persona.designation if persona.designation and persona.designation != "Not specified" else None
             if not user_type and persona.archetype:
-                # Fall back to archetype (e.g., "Growth-Focused Founder")
                 user_type = persona.archetype
 
-            # Extract industry from focus areas
             industry = _extract_industry_from_focus(persona.focus or "")
 
+            # Pass the ENTIRE persona — all raw text, uncompressed
             return {
-                "name": persona.name or "Unknown",
+                "name": real_name if real_name != "Unknown" else (persona.name or "Unknown"),
+                "persona_title": persona.name or "",
                 "user_type": user_type or "Professional",
+                "archetype": persona.archetype or "",
+                "designation": persona.designation or "",
+                "experience": persona.experience or "",
                 "industry": industry,
+                "focus": persona.focus or "",
+                "profile_essence": persona.profile_essence or "",
+                "strategy": persona.strategy or "",
+                "what_theyre_looking_for": persona.what_theyre_looking_for or "",
+                "engagement_style": persona.engagement_style or "",
                 "requirements": persona.requirements or "",
                 "offerings": persona.offerings or "",
             }
     except Exception as e:
-        logger.warning(f"DynamoDB lookup failed for {user_id}: {e}")
+        logger.warning(f"Profile lookup failed for {user_id}: {e}")
 
-    # Fallback: try to get basic info from PostgreSQL user table
-    try:
-        conn = postgresql_adapter.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT name, onboarding_status FROM users WHERE id = %s",
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        if row:
-            return {
-                "name": row[0] or "Unknown",
-                "user_type": "Professional",
-                "industry": "General",
-                "requirements": "",
-                "offerings": "",
-            }
-    except Exception as e:
-        logger.warning(f"PostgreSQL lookup failed for {user_id}: {e}")
+    # Fallback: minimal info
+    if real_name != "Unknown":
+        return {
+            "name": real_name,
+            "persona_title": "",
+            "user_type": "Professional",
+            "archetype": "",
+            "designation": "",
+            "experience": "",
+            "industry": "General",
+            "focus": "",
+            "profile_essence": "",
+            "strategy": "",
+            "what_theyre_looking_for": "",
+            "engagement_style": "",
+            "requirements": "",
+            "offerings": "",
+        }
+
 
     return {
         "name": "Unknown",
+        "persona_title": "",
         "user_type": "Professional",
+        "archetype": "",
+        "designation": "",
+        "experience": "",
         "industry": "General",
+        "focus": "",
+        "profile_essence": "",
+        "strategy": "",
+        "what_theyre_looking_for": "",
+        "engagement_style": "",
         "requirements": "",
         "offerings": "",
     }

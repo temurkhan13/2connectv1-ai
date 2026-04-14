@@ -83,48 +83,76 @@ IMPORTANT: This explanation is shown to {name_a} (the viewer). Write from THEIR 
 - Refer to {name_b} by their name: "{name_b}"
 - NEVER say "User A" or "User B" — always use "you" or "{name_b}"
 
-YOU (the viewer):
-- Name: {name_a}
-- Role: {user_a.get('user_type', 'Professional')}
-- Designation: {user_a.get('designation', 'Not specified')}
-- Experience: {user_a.get('experience', 'Not specified')}
-- Focus: {user_a.get('industry', 'General')}
-- What you're looking for: {user_a.get('what_theyre_looking_for', user_a.get('requirements', 'Not specified'))}
-- What you can offer: {user_a.get('offerings', 'Not specified')}
-- Engagement style: {user_a.get('engagement_style', 'Not specified')}
+=== YOU (the viewer): {name_a} ===
+Persona: {user_a.get('persona_title', '')}
+Role: {user_a.get('user_type', 'Professional')}
+Designation: {user_a.get('designation', 'Not specified')}
+Experience: {user_a.get('experience', 'Not specified')}
+Focus Areas: {user_a.get('focus', user_a.get('industry', 'General'))}
 
-{name_b} (the match):
-- Name: {name_b}
-- Role: {user_b.get('user_type', 'Professional')}
-- Designation: {user_b.get('designation', 'Not specified')}
-- Experience: {user_b.get('experience', 'Not specified')}
-- Focus: {user_b.get('industry', 'General')}
-- What they're looking for: {user_b.get('what_theyre_looking_for', user_b.get('requirements', 'Not specified'))}
-- What they can offer: {user_b.get('offerings', 'Not specified')}
-- Engagement style: {user_b.get('engagement_style', 'Not specified')}
+Profile:
+{user_a.get('profile_essence', 'Not available')}
 
-ALIGNMENT SCORES:
-- Your needs → {name_b} offers: {scores.get('req_to_off', 0.5):.0%}
-- {name_b} needs → You offer: {scores.get('off_to_req', 0.5):.0%}
-- Industry overlap: {scores.get('industry_match', 0.5):.0%}
-- Stage alignment: {scores.get('stage_match', 0.5):.0%}
-- Geography overlap: {scores.get('geography_match', 0.5):.0%}
-- Overall match: {scores.get('overall_score', 0.5):.0%}
+Strategy/Approach:
+{user_a.get('strategy', 'Not available')}
+
+What you're looking for:
+{user_a.get('what_theyre_looking_for', user_a.get('requirements', 'Not specified'))}
+
+What you can offer:
+{user_a.get('offerings', 'Not specified')}
+
+Requirements:
+{user_a.get('requirements', 'Not specified')}
+
+Engagement style: {user_a.get('engagement_style', 'Not specified')}
+
+=== {name_b} (the match) ===
+Persona: {user_b.get('persona_title', '')}
+Role: {user_b.get('user_type', 'Professional')}
+Designation: {user_b.get('designation', 'Not specified')}
+Experience: {user_b.get('experience', 'Not specified')}
+Focus Areas: {user_b.get('focus', user_b.get('industry', 'General'))}
+
+Profile:
+{user_b.get('profile_essence', 'Not available')}
+
+Strategy/Approach:
+{user_b.get('strategy', 'Not available')}
+
+What they're looking for:
+{user_b.get('what_theyre_looking_for', user_b.get('requirements', 'Not specified'))}
+
+What they can offer:
+{user_b.get('offerings', 'Not specified')}
+
+Requirements:
+{user_b.get('requirements', 'Not specified')}
+
+Engagement style: {user_b.get('engagement_style', 'Not specified')}
+
+=== ALIGNMENT SCORES ===
+Your needs → {name_b} offers: {scores.get('req_to_off', 0.5):.0%}
+{name_b} needs → You offer: {scores.get('off_to_req', 0.5):.0%}
+Industry overlap: {scores.get('industry_match', 0.5):.0%}
+Stage alignment: {scores.get('stage_match', 0.5):.0%}
+Geography overlap: {scores.get('geography_match', 0.5):.0%}
+Overall match: {scores.get('overall_score', 0.5):.0%}
 
 CRITICAL INSTRUCTIONS:
-1. CITE SPECIFIC DETAILS from their profiles (e.g., "$500K seed", "payment infrastructure", "LATAM", "5 bank clients")
-2. Don't say "Industry match: AI" - say "Both scaling AI models in healthcare (your drug discovery, their diagnostics)"
-3. Don't say "They offer expertise" - say "{name_b} built 3 React Native apps to 100K+ users"
-4. Don't say "Mutually beneficial" - explain WHY and HOW it's beneficial
-5. Focus on VALUE EXCHANGE: what can each person specifically do for the other?
+1. You have FULL profile data for both users above. Use it. CITE SPECIFIC DETAILS — names, numbers, industries, companies, achievements, geographies.
+2. Don't say "Industry match: AI" — say "Both scaling AI models in healthcare (your drug discovery, their diagnostics)"
+3. Don't say "They offer expertise" — say "{name_b} built 3 React Native apps to 100K+ users"
+4. Don't say "Mutually beneficial" — explain WHY and HOW it's beneficial with specifics from their profiles
+5. Focus on VALUE EXCHANGE: what can each person specifically do for the other based on their profile, strategy, offerings, and requirements?
 6. ALWAYS use "you/your" for the viewer and "{name_b}" for the match — NEVER "User A" or "User B"
 
 Respond with a JSON object containing:
 {{
-    "summary": "2-3 sentences citing SPECIFIC details. Use 'you' for {name_a} and '{name_b}' for the match.",
-    "synergy_areas": ["3-4 specific areas with CONCRETE details - no generic phrases"],
-    "friction_points": ["1-2 potential gaps with specifics - or 'No significant gaps identified'"],
-    "talking_points": ["3-4 specific conversation starters with details they can reference"]
+    "summary": "2-3 sentences citing SPECIFIC details from their profiles. Use 'you' for {name_a} and '{name_b}' for the match.",
+    "synergy_areas": ["3-4 specific areas with CONCRETE details from their profiles — no generic phrases"],
+    "friction_points": ["You MUST identify 1-2 real challenges. Every match has friction — geography distance, stage mismatch, experience gap, different working styles, timeline misalignment, different engagement preferences. Cite specifics from their profiles. NEVER return empty or 'no significant gaps'."],
+    "talking_points": ["3-4 specific conversation starters referencing details from their profiles"]
 }}"""
 
         try:
@@ -214,23 +242,25 @@ Always respond in valid JSON format."""
 
         user_prompt = f"""Generate 4 personalized first message options for starting a conversation.
 
-SENDER:
-- Name: {requesting_user.get('name', 'Unknown')}
-- Role: {requesting_user.get('user_type', 'Professional')}
-- Industry: {requesting_user.get('industry', 'General')}
-- Looking for: {requesting_user.get('requirements', 'Not specified')}
-- Can offer: {requesting_user.get('offerings', 'Not specified')}
+SENDER ({requesting_user.get('name', 'Unknown')}):
+Role: {requesting_user.get('user_type', 'Professional')}
+Designation: {requesting_user.get('designation', 'Not specified')}
+Industry: {requesting_user.get('industry', 'General')}
+Profile: {requesting_user.get('profile_essence', 'Not available')}
+Looking for: {requesting_user.get('what_theyre_looking_for', requesting_user.get('requirements', 'Not specified'))}
+Can offer: {requesting_user.get('offerings', 'Not specified')}
 
-RECIPIENT:
-- Name: {other_user.get('name', 'Unknown')}
-- Role: {other_user.get('user_type', 'Professional')}
-- Industry: {other_user.get('industry', 'General')}
-- Looking for: {other_user.get('requirements', 'Not specified')}
-- Can offer: {other_user.get('offerings', 'Not specified')}
+RECIPIENT ({other_user.get('name', 'Unknown')}):
+Role: {other_user.get('user_type', 'Professional')}
+Designation: {other_user.get('designation', 'Not specified')}
+Industry: {other_user.get('industry', 'General')}
+Profile: {other_user.get('profile_essence', 'Not available')}
+Looking for: {other_user.get('what_theyre_looking_for', other_user.get('requirements', 'Not specified'))}
+Can offer: {other_user.get('offerings', 'Not specified')}
 
 Generate 4 distinct opening messages. Each should:
-1. Reference something specific about the recipient
-2. Express genuine interest or offer value
+1. Reference something SPECIFIC about the recipient from their profile above
+2. Express genuine interest or offer value based on what YOU can offer and what THEY need
 3. End with a question or call to action
 4. Sound like a real person, not a template
 

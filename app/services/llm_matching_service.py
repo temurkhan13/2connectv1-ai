@@ -151,11 +151,20 @@ def _score_pair(
 
         # Last resort: extract score and reason separately via regex
         score_match = re.search(r'"score"\s*:\s*(\d+)', text)
-        reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', text)
+        # Try multiple reason patterns: simple quotes, escaped quotes, single quotes
+        reason = ""
+        for pattern in [
+            r'"reason"\s*:\s*"((?:[^"\\]|\\.)*)"',  # handles escaped quotes
+            r'"reason"\s*:\s*"([^"]{1,500})',         # truncated at 500 chars
+            r"'reason'\s*:\s*'([^']*)'",              # single quotes
+        ]:
+            reason_match = re.search(pattern, text, re.DOTALL)
+            if reason_match:
+                reason = reason_match.group(1)
+                break
         if score_match:
             score = int(score_match.group(1))
-            reason = reason_match.group(1) if reason_match else "parse fallback"
-            return {"score": max(0, min(100, score)), "reason": reason}
+            return {"score": max(0, min(100, score)), "reason": reason or "no reason parsed"}
 
         logger.warning(f"LLM returned unparseable response: {response[:200]}")
         return {"score": 0, "reason": "parse_error"}

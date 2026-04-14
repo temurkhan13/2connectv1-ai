@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from app.adapters.postgresql import postgresql_adapter
 from app.adapters.supabase_profiles import UserProfile, UserMatches
+from app.adapters.supabase_onboarding import supabase_onboarding_adapter
 from app.services.llm_fallback import call_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -321,6 +322,55 @@ def find_matches(
 
         if not candidates:
             return []
+
+        # 3.5 CHEAP FILTER: Remove candidates whose user_type doesn't match what this user seeks
+        # Uses seeking_user_types slot (extracted during onboarding) to filter before LLM scoring
+        try:
+            user_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
+            seeking_raw = user_slots.get('seeking_user_types', {}).get('value', '')
+            if seeking_raw:
+                # Parse the seeking types — could be JSON list or semicolon-separated
+                import json as _json
+                try:
+                    seeking_types = _json.loads(seeking_raw) if seeking_raw.startswith('[') else [s.strip() for s in seeking_raw.split(';')]
+                except (ValueError, _json.JSONDecodeError):
+                    seeking_types = [s.strip() for s in seeking_raw.split(';')]
+
+                # Normalize to lowercase for comparison
+                seeking_lower = {s.lower().strip() for s in seeking_types if s}
+
+                if seeking_lower:
+                    pre_filter_count = len(candidates)
+                    filtered = []
+                    for cand in candidates:
+                        cand_slots = supabase_onboarding_adapter.get_user_slots_sync(cand['user_id'])
+                        cand_type_raw = cand_slots.get('user_type', {}).get('value', '')
+                        cand_type = cand_type_raw.lower().strip() if cand_type_raw else ''
+
+                        # Check if candidate's user_type matches any of the seeking types
+                        # Use substring matching: "founder" matches "Founder/Entrepreneur"
+                        match_found = False
+                        for seek in seeking_lower:
+                            # Both directions: "founder" in "founder/entrepreneur" OR "founder/entrepreneur" in "founder"
+                            if seek in cand_type or cand_type in seek:
+                                match_found = True
+                                break
+                            # Also check individual parts: "Founder/Entrepreneur" → check "founder" and "entrepreneur"
+                            for part in cand_type.split('/'):
+                                if seek in part.strip() or part.strip() in seek:
+                                    match_found = True
+                                    break
+                            if match_found:
+                                break
+
+                        if match_found:
+                            filtered.append(cand)
+
+                    candidates = filtered
+                    removed = pre_filter_count - len(candidates)
+                    logger.info(f"[LLMMatch] {user_id[:12]}... Cheap filter: {pre_filter_count} → {len(candidates)} ({removed} removed, seeking: {seeking_types})")
+        except Exception as filter_err:
+            logger.warning(f"[LLMMatch] Cheap filter failed, skipping: {filter_err}")
 
         # 4. Get user's profile text for LLM
         user_profile = _get_profile_text(user_id)

@@ -381,6 +381,26 @@ SLOT_DEFINITIONS = {
         "description": "The user's strongest professional network or community",
         "type": "text",
         "extraction_hint": "Extract their strongest connections/community: 'I know every VC in London' → 'London VC community'; 'deep network in healthcare' → 'Healthcare industry network'; 'well connected in YC alumni' → 'YC alumni network'; 'strong relationships with enterprise CTOs' → 'Enterprise CTO network'. CONCISE: 3-8 words max."
+    },
+    # Match pre-filter slot — WHO the user wants to connect with
+    "seeking_user_types": {
+        "description": "The types of people this user wants to meet on the platform — normalized to standard roles",
+        "type": "multi_select",
+        "options": ["Founder/Entrepreneur", "Angel Investor", "VC Partner", "Corporate Executive", "Mentor/Advisor", "Service Provider", "Recruiter", "Job Seeker/Candidate"],
+        "extraction_hint": "CRITICAL: Extract WHO the user wants to CONNECT WITH, not who they ARE. "
+                          "This is about the TYPE OF PERSON they are seeking. "
+                          "• 'looking for founders' → ['Founder/Entrepreneur'] "
+                          "• 'want to meet investors' → ['Angel Investor', 'VC Partner'] "
+                          "• 'need a mentor' → ['Mentor/Advisor'] "
+                          "• 'hiring engineers' → ['Job Seeker/Candidate'] "
+                          "• 'looking for recruitment partners' → ['Recruiter'] "
+                          "• 'need a marketing agency' → ['Service Provider'] "
+                          "• 'want to connect with other investors' → ['Angel Investor', 'VC Partner'] "
+                          "• If user says 'I invest in startups' with NO mention of wanting to meet investors → ['Founder/Entrepreneur'] (implied: investors seek founders) "
+                          "• If user says 'I want to find a co-founder' → ['Founder/Entrepreneur'] "
+                          "INFER from context if not explicitly stated: an investor looking for deal flow seeks founders. "
+                          "A founder seeking funding seeks investors. A mentor seeks mentees (founders). "
+                          "ALWAYS extract at least one type."
     }
 }
 

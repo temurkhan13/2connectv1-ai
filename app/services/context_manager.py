@@ -555,6 +555,19 @@ class ContextManager:
                         else:
                             safe_extracted[k] = {"value": str(v), "confidence": 0.8}
 
+                    # GOAL CONFIRMATION: Detect if primary_goal was JUST extracted this turn
+                    # If so, ask user to confirm before proceeding with role-specific questions.
+                    # This prevents misclassification (e.g., "connect with investors" → investor vs founder)
+                    goal_confirmation = None
+                    if "primary_goal" in safe_extracted and "primary_goal" not in already_filled:
+                        goal_val = safe_extracted["primary_goal"].get("value", "") if isinstance(safe_extracted["primary_goal"], dict) else str(safe_extracted["primary_goal"])
+                        if goal_val:
+                            goal_confirmation = {
+                                "primary_goal": goal_val,
+                                "user_type": user_type
+                            }
+                            logger.info(f"[GoalConfirm] primary_goal='{goal_val}' just extracted — will ask user to confirm")
+
                     # Pass only truly missing slots (not ones user already mentioned)
                     # The question generator will ask about NEW unknowns first
                     slots_to_ask = truly_missing if truly_missing else actual_missing_slots
@@ -565,7 +578,8 @@ class ContextManager:
                         missing_slots=slots_to_ask if slots_to_ask else ["engagement"],  # Fallback for engagement questions
                         user_type=user_type,
                         session_id=context.session_id,
-                        conversation_history=conversation_history
+                        conversation_history=conversation_history,
+                        goal_confirmation_needed=goal_confirmation
                     )
                     logger.info(f"[QuestionGenerator] Generated follow-up: {follow_up_question[:80] if follow_up_question else 'None'}...")
                 except Exception as qe:

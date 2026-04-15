@@ -88,7 +88,8 @@ class LLMQuestionGenerator:
         missing_slots: List[str],
         user_type: str,
         session_id: Optional[str] = None,
-        conversation_history: Optional[List[Dict[str, str]]] = None
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        goal_confirmation_needed: Optional[Dict[str, str]] = None
     ) -> Optional[str]:
         """
         Generate a personalized follow-up question based on context.
@@ -101,6 +102,8 @@ class LLMQuestionGenerator:
             user_type: Inferred user type (founder, investor, etc.)
             session_id: Session ID for pattern tracking
             conversation_history: Full conversation to avoid repeating questions
+            goal_confirmation_needed: If set, override normal question with goal confirmation.
+                Dict with 'primary_goal' and 'user_type' to confirm with user.
 
         Returns:
             Personalized follow-up question, or None on error
@@ -114,6 +117,69 @@ class LLMQuestionGenerator:
                     'last_topic': None
                 }
                 logger.info(f"[QuestionGenerator] Initialized patterns for session {session_id[:8]}...")
+
+            # GOAL CONFIRMATION: If primary_goal was just extracted, ask user to confirm
+            # before proceeding with role-specific questions. This catches misclassification
+            # (e.g., "I want to connect with investors" classified as investor instead of founder)
+            if goal_confirmation_needed:
+                goal_value = goal_confirmation_needed.get('primary_goal', '')
+                detected_type = goal_confirmation_needed.get('user_type', '')
+
+                confirm_prompt = f"""You are a warm, professional onboarding assistant for a business networking platform.
+
+The user just told you about themselves, and you've detected their primary goal.
+Before asking role-specific questions, you need to CONFIRM you understood correctly.
+
+## CONTEXT
+User just said: "{user_message}"
+Detected goal: {goal_value}
+Detected role: {detected_type}
+
+## YOUR TASK
+Write a brief, natural confirmation question that:
+1. Acknowledges what the user said (1 short sentence referencing something specific)
+2. Restates your understanding of their goal in plain language
+3. Asks them to confirm — giving them the alternative interpretation too
+
+## EXAMPLES
+- "Sounds like you have deep experience in the startup world! Just to make sure I set things up right — you're here to invest in startups, rather than raise funding for your own venture. Is that right?"
+- "Great to have you here! I want to make sure I understand — you're looking for a mentor to guide you, not looking to mentor others. Does that sound right?"
+- "Welcome! Just to confirm — you're looking to find a co-founder to build with, not offering your services as a consultant. Is that correct?"
+- "Thanks for sharing! So you're here to offer mentorship to founders, not seeking mentorship yourself. Do I have that right?"
+
+## RULES
+- Be warm and conversational, not robotic
+- Make the alternative interpretation explicit so the user can correct if wrong
+- Keep it to 2-3 sentences total
+- Do NOT ask about anything else yet — just confirm the goal
+
+Return ONLY the confirmation question."""
+
+                logger.info(f"[QuestionGenerator] Generating goal confirmation for: {goal_value} / {detected_type}")
+
+                _msgs = [{"role": "user", "content": confirm_prompt}]
+                try:
+                    response = self.client.messages.create(
+                        model=self.question_model, max_tokens=200, messages=_msgs, temperature=0.7
+                    )
+                    question = response.content[0].text.strip()
+                except Exception as api_err:
+                    from app.services.llm_fallback import fallback_from_anthropic_error
+                    question = fallback_from_anthropic_error(
+                        service="extraction", error=api_err, system_prompt=None, messages=_msgs, max_tokens=150, temperature=0.7
+                    )
+                    if not question:
+                        # Fallback: generate a simple confirmation
+                        question = f"Just to make sure I understand — you're here to {goal_value.lower()}. Is that right?"
+
+                if question.startswith('"') and question.endswith('"'):
+                    question = question[1:-1]
+
+                if session_id and session_id in self._session_patterns:
+                    self._session_patterns[session_id]['asked_questions'].append(question)
+
+                logger.info(f"[QuestionGenerator] Goal confirmation: {question[:80]}...")
+                return question
 
             # Build context summary
             extracted_summary = ", ".join([

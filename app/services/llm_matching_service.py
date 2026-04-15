@@ -494,7 +494,12 @@ def _generate_match_explanations(user_id: str, matches: list) -> list:
 
 
 def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Dict[str, Any]:
-    """Find matches, generate explanations, and store in match cache."""
+    """Find matches, store immediately (no explanations), then backfill explanations async.
+
+    Split into two phases for fast match display:
+    Phase 1 (immediate): Find + store + sync → user sees matches in <2 min
+    Phase 2 (background): Generate explanations in batches → cached for instant display
+    """
     matches = find_matches(user_id, limit=limit)
 
     legacy_matches = []
@@ -507,6 +512,8 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'reason': m.reason,
             'similarity_score': m.llm_score / 100.0,
             'combined_score': m.llm_score / 100.0,
+            # No explanation yet — will be backfilled async
+            # Backend will generate on-demand if user clicks before backfill completes
         })
 
     if not legacy_matches:
@@ -516,10 +523,8 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'offerings_matches': [], 'stored': True
         }
 
-    # Generate explanations for each match using full persona data
-    logger.info(f"[LLMMatch] Generating explanations for {len(legacy_matches)} matches of user {user_id[:8]}")
-    legacy_matches = _generate_match_explanations(user_id, legacy_matches)
-
+    # Phase 1: Store matches immediately WITHOUT explanations
+    # This allows sync to backend so user sees matches right away
     try:
         stored = UserMatches.store_user_matches(user_id, {
             'requirements_matches': legacy_matches,
@@ -531,12 +536,126 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
         logger.warning(f"[LLMMatch] Failed to store: {e}")
         stored = False
 
+    logger.info(f"[LLMMatch] Phase 1 complete: {len(legacy_matches)} matches stored for {user_id[:8]} (no explanations yet)")
+
+    # Phase 2: Kick off background explanation generation
+    # Runs in a separate thread so find_and_store_matches returns immediately
+    import threading
+    thread = threading.Thread(
+        target=_backfill_explanations_async,
+        args=(user_id, legacy_matches),
+        name=f"explain-{user_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    logger.info(f"[LLMMatch] Phase 2 started: explanation backfill thread for {user_id[:8]}")
+
     return {
         'success': True, 'user_id': user_id,
         'total_matches': len(legacy_matches),
         'requirements_matches': legacy_matches,
         'offerings_matches': [], 'stored': stored,
     }
+
+
+def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 5):
+    """Generate explanations in batches and re-sync to backend after each batch.
+
+    Runs in a background thread. Matches are already visible on the dashboard.
+    As explanations are generated, they get synced so the cached version is available
+    when the user clicks to view them.
+
+    Args:
+        user_id: The user whose matches need explanations
+        matches: List of match dicts (already stored/synced without explanations)
+        batch_size: Number of explanations to generate before re-syncing
+    """
+    import time
+    from app.routers.match import _get_user_persona
+    from app.services.llm_service import get_llm_service
+    import asyncio
+
+    logger.info(f"[ExplainBackfill] Starting for {user_id[:8]}: {len(matches)} matches, batch_size={batch_size}")
+
+    llm_service = get_llm_service()
+    user_persona = _get_user_persona(user_id)
+
+    completed = 0
+    failed = 0
+
+    for i, match in enumerate(matches):
+        try:
+            match_user_id = match['user_id']
+            match_persona = _get_user_persona(match_user_id)
+
+            scores = {
+                'req_to_off': match.get('similarity_score', 0.5),
+                'off_to_req': match.get('similarity_score', 0.5),
+                'industry_match': 0.7 if user_persona.get('industry', '').lower() == match_persona.get('industry', '').lower() else 0.4,
+                'overall_score': match.get('similarity_score', 0.5),
+            }
+
+            # Run async LLM call synchronously
+            try:
+                result = asyncio.run(
+                    llm_service.generate_match_explanation(user_persona, match_persona, scores)
+                )
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                result = loop.run_until_complete(
+                    llm_service.generate_match_explanation(user_persona, match_persona, scores)
+                )
+                loop.close()
+
+            match['explanation'] = result.get('summary', '')
+            match['synergy_areas'] = result.get('synergy_areas', [])
+            match['friction_points'] = result.get('friction_points', [])
+            match['talking_points'] = result.get('talking_points', [])
+            completed += 1
+
+            logger.info(f"[ExplainBackfill] {completed}/{len(matches)} — {user_id[:8]}↔{match_user_id[:8]} done")
+
+        except Exception as e:
+            logger.warning(f"[ExplainBackfill] Failed for {match.get('user_id', '?')}: {e}")
+            match['explanation'] = match.get('reason', '')
+            match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
+            match['friction_points'] = []
+            match['talking_points'] = []
+            failed += 1
+
+        # Re-sync to backend after each batch
+        if (i + 1) % batch_size == 0 or (i + 1) == len(matches):
+            try:
+                # Update the match cache with explanations so far
+                UserMatches.store_user_matches(user_id, {
+                    'requirements_matches': matches,
+                    'offerings_matches': [],
+                    'algorithm': 'llm_scored_v1',
+                    'total_matches': len(matches),
+                })
+
+                # Re-sync to backend — replaces existing match rows with explanation data
+                from app.services.match_sync_service import match_sync_service
+                sync_result = match_sync_service.sync_matches_to_backend(
+                    user_id=user_id,
+                    matches={
+                        'requirements_matches': matches,
+                        'offerings_matches': [],
+                    }
+                )
+                batch_num = (i + 1) // batch_size
+                if sync_result.get('success'):
+                    logger.info(f"[ExplainBackfill] Batch {batch_num} synced: {completed} explanations for {user_id[:8]}")
+                else:
+                    logger.warning(f"[ExplainBackfill] Batch {batch_num} sync failed: {sync_result.get('error')}")
+            except Exception as sync_err:
+                logger.warning(f"[ExplainBackfill] Sync error after batch: {sync_err}")
+
+            # Small delay between batches to avoid API rate limits
+            if (i + 1) < len(matches):
+                time.sleep(1)
+
+    logger.info(f"[ExplainBackfill] Complete for {user_id[:8]}: {completed} generated, {failed} failed out of {len(matches)}")
 
 
 def _apply_dealbreaker_filter(user_id: str, matches: List[LLMMatch]) -> List[LLMMatch]:

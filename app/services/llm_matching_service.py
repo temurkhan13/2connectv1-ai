@@ -343,38 +343,12 @@ def find_matches(
                     pre_filter_count = len(candidates)
                     filtered = []
                     for cand in candidates:
-                        cand_id = cand['user_id']
-
-                        # Try onboarding_answers first
-                        cand_slots = supabase_onboarding_adapter.get_user_slots_sync(cand_id)
+                        cand_slots = supabase_onboarding_adapter.get_user_slots_sync(cand['user_id'])
                         cand_type_raw = cand_slots.get('user_type', {}).get('value', '')
                         cand_type = cand_type_raw.lower().strip() if cand_type_raw else ''
 
-                        # Fallback: if no user_type in onboarding_answers, infer from persona_designation
-                        if not cand_type:
-                            try:
-                                cand_profile = UserProfile.get(cand_id)
-                                if cand_profile and cand_profile.persona:
-                                    desig = (getattr(cand_profile.persona, 'designation', '') or '').lower()
-                                    if any(w in desig for w in ['investor', 'angel', 'venture', 'fund manager', 'lp']):
-                                        cand_type = 'angel investor'
-                                    elif any(w in desig for w in ['vc', 'venture partner', 'general partner']):
-                                        cand_type = 'vc partner'
-                                    elif any(w in desig for w in ['founder', 'ceo', 'co-founder', 'entrepreneur']):
-                                        cand_type = 'founder/entrepreneur'
-                                    elif any(w in desig for w in ['mentor', 'advisor', 'coach']):
-                                        cand_type = 'mentor/advisor'
-                                    elif any(w in desig for w in ['recruiter', 'talent', 'headhunt']):
-                                        cand_type = 'recruiter'
-                                    elif any(w in desig for w in ['cto', 'engineer', 'developer', 'technical']):
-                                        cand_type = 'founder/entrepreneur'  # CTO = likely co-founder
-                                    elif any(w in desig for w in ['corporate', 'director', 'vp', 'executive']):
-                                        cand_type = 'corporate executive'
-                                    # If still empty after persona check, skip — can't determine type
-                            except Exception:
-                                pass
-
-                        # Skip candidates with unknown user_type — can't filter what we can't classify
+                        # No user_type = exclude from results
+                        # All users should have user_type via onboarding or backfill
                         if not cand_type:
                             continue
 

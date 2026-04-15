@@ -482,6 +482,8 @@ def _generate_match_explanations(user_id: str, matches: list) -> list:
                     llm_service.generate_match_explanation(user_persona, match_persona, scores)
                 )
 
+            match['headline'] = result.get('headline', '')
+            match['key_points'] = result.get('key_points', [])
             match['explanation'] = result.get('summary', '')
             match['synergy_areas'] = result.get('synergy_areas', [])
             match['friction_points'] = result.get('friction_points', [])
@@ -491,6 +493,8 @@ def _generate_match_explanations(user_id: str, matches: list) -> list:
 
         except Exception as e:
             logger.warning(f"[LLMMatch] Failed to generate explanation for match {match.get('user_id', '?')}: {e}")
+            match['headline'] = ''
+            match['key_points'] = []
             match['explanation'] = match.get('reason', '')
             match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
             match['friction_points'] = []
@@ -613,6 +617,8 @@ def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 
                 )
                 loop.close()
 
+            match['headline'] = result.get('headline', '')
+            match['key_points'] = result.get('key_points', [])
             match['explanation'] = result.get('summary', '')
             match['synergy_areas'] = result.get('synergy_areas', [])
             match['friction_points'] = result.get('friction_points', [])
@@ -623,6 +629,8 @@ def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 
 
         except Exception as e:
             logger.warning(f"[ExplainBackfill] Failed for {match.get('user_id', '?')}: {e}")
+            match['headline'] = ''
+            match['key_points'] = []
             match['explanation'] = match.get('reason', '')
             match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
             match['friction_points'] = []

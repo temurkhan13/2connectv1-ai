@@ -180,6 +180,8 @@ class MatchSyncService:
             reason = m.get('reason', '')
             # Use pre-generated explanation data if available (from LLM explanation step)
             explanation = m.get('explanation', reason)
+            headline = m.get('headline', '')
+            key_points = m.get('key_points', [])
             synergy_areas = m.get('synergy_areas', [reason] if reason else [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
@@ -191,6 +193,8 @@ class MatchSyncService:
                 'user_b_designation': '',
                 'match_score': score_pct,
                 'explanation': explanation,
+                'headline': headline,
+                'key_points': key_points,
                 'match_tier': tier,
                 'synergy_areas': synergy_areas,
                 'friction_points': friction_points,
@@ -226,6 +230,8 @@ class MatchSyncService:
 
             reason = m.get('reason', '')
             explanation = m.get('explanation', reason)
+            headline = m.get('headline', '')
+            key_points = m.get('key_points', [])
             synergy_areas = m.get('synergy_areas', [reason] if reason else [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
@@ -237,6 +243,8 @@ class MatchSyncService:
                 'user_b_designation': '',
                 'match_score': score_pct,
                 'explanation': explanation,
+                'headline': headline,
+                'key_points': key_points,
                 'match_tier': tier,
                 'synergy_areas': synergy_areas,
                 'friction_points': friction_points,

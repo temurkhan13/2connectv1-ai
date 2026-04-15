@@ -149,6 +149,8 @@ CRITICAL INSTRUCTIONS:
 
 Respond with a JSON object containing:
 {{
+    "headline": "One punchy line under 15 words that sells why this connection matters. Not a summary — a hook. Examples: 'Climate tech co-investor with MENA deal flow access', 'Series A SaaS founder who already scaled what you're building', 'Healthcare VC with 12 portfolio exits in your exact space'",
+    "key_points": ["3-4 SHORT bullet phrases, each under 12 words. These are scannable at a glance. Examples: 'Climate tech exits on both sides (3.5x and 3.8x)', 'MENA angel network — 40 deals per quarter', 'Same style: always co-syndicates, never passive'. Extract the most compelling facts from the synergy areas."],
     "summary": "2-3 sentences citing SPECIFIC details from their profiles. Use 'you' for {name_a} and '{name_b}' for the match.",
     "synergy_areas": ["3-4 specific areas with CONCRETE details from their profiles — no generic phrases"],
     "friction_points": ["You MUST identify 1-2 real challenges. Every match has friction — geography distance, stage mismatch, experience gap, different working styles, timeline misalignment, different engagement preferences. Cite specifics from their profiles. NEVER return empty or 'no significant gaps'."],
@@ -187,6 +189,8 @@ Respond with a JSON object containing:
 
             # Validate response structure
             return {
+                "headline": result.get("headline", ""),
+                "key_points": result.get("key_points", []),
                 "summary": result.get("summary", "This match shows strong potential for collaboration."),
                 "synergy_areas": result.get("synergy_areas", ["Complementary professional backgrounds"]),
                 "friction_points": result.get("friction_points", ["No significant friction points identified"]),

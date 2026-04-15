@@ -126,12 +126,16 @@ def _get_user_persona(user_id: str) -> dict:
     try:
         conn = postgresql_adapter.get_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM users WHERE id = %s", (user_id,))
+        cursor.execute("SELECT first_name, last_name FROM users WHERE id = %s::uuid", (user_id,))
         row = cursor.fetchone()
         cursor.close()
         conn.close()
-        if row and row[0]:
-            real_name = row[0]
+        if row:
+            first_name = row[0] or ""
+            last_name = row[1] or ""
+            full_name = f"{first_name} {last_name}".strip()
+            if full_name:
+                real_name = full_name
     except Exception as e:
         logger.warning(f"Could not fetch real name for {user_id}: {e}")
 

@@ -448,15 +448,11 @@ class ContextManager:
         try:
             logger.info(f"LLM extraction starting. Already filled: {list(already_filled.keys())}")
 
-            # ISSUE-1 FIX: Fetch resume text from Redis if available
-            # This allows the LLM to skip questions about info already in the resume
+            # Resume context is NOT passed to slot extraction — it caused the LLM to
+            # pre-fill slots from resume data, making onboarding too shallow (fewer questions).
+            # Resume is used ONLY during persona generation (via combine_user_data).
+            # Previously: ISSUE-1 FIX passed resume here, but it hurt UX.
             resume_context = None
-            try:
-                resume_context = self._get_resume_text_from_redis(context.session_id)
-                if resume_context:
-                    logger.info(f"ISSUE-1 FIX: Found resume context for session ({len(resume_context)} chars)")
-            except Exception as e:
-                logger.debug(f"Could not fetch resume context: {e}")
 
             # BUG-088 FIX: Include deferred slots as priority extraction targets
             # These were mentioned by the user in earlier turns but not formally extracted
@@ -1208,9 +1204,11 @@ class ContextManager:
         # Requirement 1: ALL required slots must be filled (100%)
         slots_complete = completion_ratio >= 1.0
 
-        # FIX B: Minimum 5 conversation turns (user messages) - increased from 3
+        # Minimum 3 conversation turns (user messages)
+        # Previously 5, but with resume leak fixed users give richer answers
+        # and fill slots naturally across 3-4 turns
         user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
-        min_turns_met = user_turns >= 5  # FIX B: Changed from 3 to 5
+        min_turns_met = user_turns >= 3
 
         is_complete = slots_complete and min_turns_met
 

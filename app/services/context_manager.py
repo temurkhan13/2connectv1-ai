@@ -703,10 +703,12 @@ class ContextManager:
         """
         from app.adapters.supabase_onboarding import SupabasePersistenceError
 
+        # ISSUE-7 FIX: Pass lists/dicts through as-is so _save_slots_sync can json.dumps them.
+        # Previously str() wrapped lists in Python repr ("['Recruiter']") instead of JSON.
         slots_to_save = [
             {
                 "name": slot_name,
-                "value": str(llm_slot.value),
+                "value": llm_slot.value if isinstance(llm_slot.value, (list, dict)) else str(llm_slot.value),
                 "confidence": llm_slot.confidence,
                 "source_text": content[:500],  # Truncate to 500 chars
                 "extraction_method": "llm",
@@ -1100,9 +1102,10 @@ class ContextManager:
 
         Returns True if:
         1. Phase is explicitly set to COMPLETE, OR
-        2. All required slots are filled (progress >= 80%), OR
-        3. User explicitly signals completion ("done", "that's all", etc.), OR
-        4. Max question limit reached AND minimum viable profile exists (3+ slots)
+        2. User explicitly signals completion ("done", "that's all", etc.), OR
+        3. Max question limit reached AND minimum viable profile exists (3+ slots), OR
+        4. Multi-vector coverage 6/6 AND minimum turns met (semantic completion), OR
+        5. All required slots are filled
         """
         context = self.get_session(session_id)
         if not context:
@@ -1124,8 +1127,49 @@ class ContextManager:
             context.phase = ConversationPhase.COMPLETE
             return True
 
+        # ISSUE-5 FIX: Auto-complete when multi-vector 6/6 reached AND minimum turns
+        # Prevents getting stuck on conditional slots (achievement, network_strength) after hitting 100%
+        if self._multi_vector_complete(context):
+            user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
+            if user_turns >= 3:
+                logger.info(f"Session {session_id}: Multi-vector 6/6 reached with {user_turns} user turns, auto-completing")
+                context.phase = ConversationPhase.COMPLETE
+                return True
+
         # Check if enough required slots are filled
         return self._all_required_slots_filled(context)
+
+    def _multi_vector_complete(self, context: 'ConversationContext') -> bool:
+        """
+        Check if all 6 multi-vector dimensions are covered.
+
+        ISSUE-5 FIX: Uses same logic as progressive_disclosure._check_multi_vector_coverage
+        to avoid divergent completion signals.
+        """
+        try:
+            from app.services.progressive_disclosure import MULTI_VECTOR_DIMENSIONS
+        except ImportError:
+            return False
+
+        filled_count = 0
+        total = len(MULTI_VECTOR_DIMENSIONS)
+
+        for dim_name, dim_config in MULTI_VECTOR_DIMENSIONS.items():
+            slot_name = dim_config.get("slot_name")
+            slot = context.slots.get(slot_name) if slot_name else None
+
+            # Check alternative slot names (e.g., company_stage for founders)
+            if not slot or slot.status.value not in ["filled", "confirmed"]:
+                for alt_name in dim_config.get("alt_slot_names", []):
+                    alt_slot = context.slots.get(alt_name)
+                    if alt_slot and alt_slot.status.value in ["filled", "confirmed"]:
+                        slot = alt_slot
+                        break
+
+            if slot and slot.status.value in ["filled", "confirmed"]:
+                filled_count += 1
+
+        return filled_count >= total
 
     def _user_signals_completion(self, context: 'ConversationContext') -> bool:
         """

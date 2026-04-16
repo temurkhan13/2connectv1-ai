@@ -77,7 +77,13 @@ IMPLIED NEEDS (use carefully):
 - Only use implied needs when the implication is obvious from role + stage. Do not stretch.
 
 Respond with ONLY a JSON object:
-{{"score": <0-100>, "reason": "<one sentence explaining the specific value exchange or why it's weak>"}}"""
+{{"score": <0-100>, "reason": "<one sentence explaining the specific value exchange or why it's weak>", "breakdown": {{"role_fit": <0-100>, "stage_match": <0-100>, "geography_match": <0-100>, "industry_match": <0-100>}}}}
+
+The breakdown dimensions (each 0-100, reflect per-dimension agreement independent of overall score):
+- role_fit: Does the role type / person type align with what the other asked for?
+- stage_match: Do the stages (seed/A/B, experience levels, hiring level) align?
+- geography_match: Do the geographies / timezones / remote preferences align?
+- industry_match: Does the industry / domain / sector align?"""
 
 
 @dataclass
@@ -88,6 +94,7 @@ class LLMMatch:
     llm_score: int
     reason: str
     match_type: str = 'llm_scored'
+    score_breakdown: Optional[Dict[str, int]] = None
 
 
 def _score_pair(
@@ -135,7 +142,8 @@ def _score_pair(
             result = json.loads(text)
             score = int(result.get("score", 0))
             reason = str(result.get("reason", ""))
-            return {"score": max(0, min(100, score)), "reason": reason}
+            breakdown = result.get("breakdown") if isinstance(result.get("breakdown"), dict) else None
+            return {"score": max(0, min(100, score)), "reason": reason, "breakdown": breakdown}
         except (json.JSONDecodeError, ValueError):
             pass
 
@@ -165,13 +173,13 @@ def _score_pair(
                 break
         if score_match:
             score = int(score_match.group(1))
-            return {"score": max(0, min(100, score)), "reason": reason or "no reason parsed"}
+            return {"score": max(0, min(100, score)), "reason": reason or "no reason parsed", "breakdown": None}
 
         logger.warning(f"LLM returned unparseable response: {response[:200]}")
-        return {"score": 0, "reason": "parse_error"}
+        return {"score": 0, "reason": "parse_error", "breakdown": None}
     except Exception as e:
         logger.error(f"LLM scoring failed: {e}")
-        return {"score": 0, "reason": f"error: {str(e)[:50]}"}
+        return {"score": 0, "reason": f"error: {str(e)[:50]}", "breakdown": None}
 
 
 def _get_profile_text(user_id: str) -> Optional[Dict[str, str]]:
@@ -329,12 +337,25 @@ def find_matches(
             user_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
             seeking_raw = user_slots.get('seeking_user_types', {}).get('value', '')
             if seeking_raw:
-                # Parse the seeking types — could be JSON list or semicolon-separated
+                # ISSUE-7 FIX: Handle three storage formats defensively
+                #   1. JSON list: '["Recruiter"]'   (preferred)
+                #   2. Python list repr: "['Recruiter']" (legacy — from str(list))
+                #   3. Semicolon-separated: "Recruiter; Founder"
                 import json as _json
-                try:
-                    seeking_types = _json.loads(seeking_raw) if seeking_raw.startswith('[') else [s.strip() for s in seeking_raw.split(';')]
-                except (ValueError, _json.JSONDecodeError):
-                    seeking_types = [s.strip() for s in seeking_raw.split(';')]
+                import ast as _ast
+                seeking_types = None
+                if isinstance(seeking_raw, list):
+                    seeking_types = seeking_raw
+                elif isinstance(seeking_raw, str) and seeking_raw.startswith('['):
+                    try:
+                        seeking_types = _json.loads(seeking_raw)
+                    except (ValueError, _json.JSONDecodeError):
+                        try:
+                            seeking_types = _ast.literal_eval(seeking_raw)
+                        except (ValueError, SyntaxError):
+                            seeking_types = None
+                if not seeking_types:
+                    seeking_types = [s.strip() for s in str(seeking_raw).split(';') if s.strip()]
 
                 # Normalize to lowercase for comparison
                 seeking_lower = {s.lower().strip() for s in seeking_types if s}
@@ -409,6 +430,7 @@ def find_matches(
                     cosine_score=cosine_score,
                     llm_score=result['score'],
                     reason=result['reason'],
+                    score_breakdown=result.get('breakdown'),
                 )
             return None
 
@@ -522,6 +544,7 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'reason': m.reason,
             'similarity_score': m.llm_score / 100.0,
             'combined_score': m.llm_score / 100.0,
+            'score_breakdown': m.score_breakdown,
             # No explanation yet — will be backfilled async
             # Backend will generate on-demand if user clicks before backfill completes
         })

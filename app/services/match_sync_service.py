@@ -185,8 +185,9 @@ class MatchSyncService:
             synergy_areas = m.get('synergy_areas', [reason] if reason else [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
+            score_breakdown = m.get('score_breakdown')
 
-            match_pairs.append({
+            payload_entry = {
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',  # Backend requires string, not null
@@ -199,7 +200,10 @@ class MatchSyncService:
                 'synergy_areas': synergy_areas,
                 'friction_points': friction_points,
                 'talking_points': talking_points,
-            })
+            }
+            if score_breakdown:
+                payload_entry['score_breakdown'] = score_breakdown
+            match_pairs.append(payload_entry)
 
         # Add offerings matches (what user offers vs others' needs)
         for m in matches.get('offerings_matches', []):
@@ -235,8 +239,9 @@ class MatchSyncService:
             synergy_areas = m.get('synergy_areas', [reason] if reason else [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
+            score_breakdown = m.get('score_breakdown')
 
-            match_pairs.append({
+            payload_entry = {
                 'user_a_id': user_id,
                 'user_b_id': target_id,
                 'user_a_designation': '',
@@ -249,7 +254,10 @@ class MatchSyncService:
                 'synergy_areas': synergy_areas,
                 'friction_points': friction_points,
                 'talking_points': talking_points,
-            })
+            }
+            if score_breakdown:
+                payload_entry['score_breakdown'] = score_breakdown
+            match_pairs.append(payload_entry)
 
         if skipped_invalid > 0:
             logger.info(f"Skipped {skipped_invalid} matches with users not in backend")

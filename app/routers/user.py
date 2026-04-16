@@ -2,6 +2,7 @@
 User-related FastAPI routes.
 """
 import logging
+import time
 from functools import lru_cache
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -26,6 +27,11 @@ from app.workers.scheduled_matching import scheduled_matchmaking_task
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Dedup guard: track in-flight profile-update pipelines to prevent double-trigger
+# Key: user_id, Value: timestamp of last trigger
+_profile_update_in_flight: dict[str, float] = {}
+_PROFILE_UPDATE_COOLDOWN = 5.0  # seconds
 
 
 @lru_cache()
@@ -150,6 +156,19 @@ async def profile_updated(request: ApproveSummaryRequest):
         user_id = request.user_id
         logger.info(f"[ProfileUpdate] User {user_id} edited profile — triggering re-embed + re-match")
 
+        # Dedup guard: skip if pipeline already triggered for this user within cooldown
+        now = time.time()
+        last_trigger = _profile_update_in_flight.get(user_id, 0)
+        if now - last_trigger < _PROFILE_UPDATE_COOLDOWN:
+            logger.warning(f"[ProfileUpdate] DEDUP: Skipping duplicate trigger for {user_id} "
+                           f"({now - last_trigger:.1f}s since last trigger)")
+            return {
+                "code": 200,
+                "message": "Profile update already in progress. Skipping duplicate.",
+                "result": True
+            }
+        _profile_update_in_flight[user_id] = now
+
         # Run in background thread — CELERY_TASK_ALWAYS_EAGER=true makes apply_async
         # run synchronously which takes 3+ min and causes Render 502 timeout
         import threading
@@ -159,6 +178,8 @@ async def profile_updated(request: ApproveSummaryRequest):
                 logger.info(f"[ProfileUpdate] Pipeline completed for {user_id}")
             except Exception as e:
                 logger.error(f"[ProfileUpdate] Pipeline failed for {user_id}: {e}")
+            finally:
+                _profile_update_in_flight.pop(user_id, None)
 
         thread = threading.Thread(target=_run_pipeline, name=f"profile_update_{user_id[:8]}")
         thread.daemon = True

@@ -15,6 +15,7 @@ import os
 import json
 import logging
 import ssl
+import asyncio
 import redis
 from typing import Dict, Any, List, Optional, Set
 from datetime import datetime, timedelta
@@ -152,6 +153,15 @@ class ContextManager:
         # Extraction cache to prevent redundant API calls (P2 fix)
         # Key: hash(content), Value: extracted_names list
         self._extraction_cache: Dict[str, List[str]] = {}
+
+        # In-flight extraction locks — prevents concurrent /onboarding/chat
+        # requests with the SAME (session_id, content) from spawning duplicate
+        # 25-60s LLM extractions. A second request waits on the first's lock
+        # and then reads from _extraction_cache (populated by the first runner).
+        # Apr-18 Follow-up 25: caught a case where one user message triggered
+        # 3 concurrent extractions (frontend auto-retry + backend withRetry +
+        # original) that together consumed ~75s and blew the facade timeout.
+        self._extraction_locks: Dict[str, asyncio.Lock] = {}
 
         # Configuration
         self.max_history_turns = int(os.getenv("MAX_CONVERSATION_TURNS", "50"))
@@ -425,6 +435,53 @@ class ContextManager:
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         cache_key = f"{context.session_id}:{content_hash}"
 
+        # IDEMPOTENCY (Apr-18 Follow-up 25): serialize concurrent extractions
+        # with the SAME (session_id, content) so duplicate /onboarding/chat
+        # requests (frontend auto-retry, backend retries, double-click) do not
+        # spawn parallel 25-60s LLM calls. The first coroutine runs the real
+        # extraction and populates _extraction_cache; later coroutines acquire
+        # the lock after it releases and return the cached result immediately.
+        lock = self._extraction_locks.setdefault(cache_key, asyncio.Lock())
+        was_contended = lock.locked()
+        if was_contended:
+            logger.info(
+                f"[IDEMPOTENCY] Extraction already in-flight for session="
+                f"{context.session_id[:12]}... hash={content_hash[:8]} — waiting"
+            )
+
+        async with lock:
+            # After acquiring the lock (maybe behind a queue), check cache first
+            if cache_key in self._extraction_cache:
+                if was_contended:
+                    logger.info(
+                        f"[IDEMPOTENCY] Returning cached result from first-runner "
+                        f"({len(self._extraction_cache[cache_key])} slots)"
+                    )
+                # Fall through to existing cache-hit path below — the method's
+                # original logic already handles cached_slots correctly.
+
+            try:
+                return await self._extract_slots_from_turn_inner(
+                    context=context, content=content,
+                    cache_key=cache_key, content_hash=content_hash,
+                )
+            finally:
+                # Keep the lock object around briefly in case another concurrent
+                # caller is still acquiring — removing it immediately would make
+                # them re-create a fresh lock and miss the idempotency window.
+                # The _extraction_cache entry (if populated) is the real signal.
+                pass
+
+    async def _extract_slots_from_turn_inner(
+        self,
+        context: ConversationContext,
+        content: str,
+        cache_key: str,
+        content_hash: str,
+    ) -> List[str]:
+        """Inner extraction worker — runs under the per-key lock from the outer
+        _extract_slots_from_turn method. Do NOT call directly from other code
+        paths; always go through _extract_slots_from_turn for idempotency."""
         use_cached_slots = cache_key in self._extraction_cache
         if use_cached_slots:
             logger.info(f"Cache hit for slot extraction (will still generate fresh question)")

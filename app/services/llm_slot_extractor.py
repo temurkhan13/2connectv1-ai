@@ -2607,17 +2607,27 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
                 logger.info(f"[BUG-090] Prioritizing forced slots: {forced_first}")
 
             # Select top 3 slots by priority order
-            # BUG-088 FIX: Previously deferred slots get priority — they don't count toward the limit
+            # BUG-088 FIX: Previously deferred slots get priority and COUNT toward the limit
+            # (Apr-18 Follow-up 25: earlier implementation allowed zero-pass to bypass the cap
+            #  entirely, meaning a rich first message with 16 deferred slots from a prior
+            #  round would blow through the 3-slot cap to 19 slots per turn.)
             limited_slots = {}
             slots_added = 0
             acknowledged_slots = []
 
-            # Zero pass: add previously deferred slots (these bypass the 3-slot limit)
+            # Zero pass: recover previously deferred slots first — they have priority,
+            # but they DO count toward MAX_SLOTS_PER_TURN like any other slot.
             deferred_priority = getattr(self, '_priority_extract_slots', [])
             for deferred_slot in deferred_priority:
                 if deferred_slot in extracted_slots:
-                    limited_slots[deferred_slot] = extracted_slots[deferred_slot]
-                    logger.info(f"[BUG-088] Recovered deferred slot: {deferred_slot}")
+                    if slots_added < MAX_SLOTS_PER_TURN:
+                        limited_slots[deferred_slot] = extracted_slots[deferred_slot]
+                        slots_added += 1
+                        logger.info(f"[BUG-088] Recovered deferred slot: {deferred_slot}")
+                    else:
+                        # Still deferred — gets priority on the next turn
+                        if deferred_slot not in acknowledged_slots:
+                            acknowledged_slots.append(deferred_slot)
 
             # First pass: add slots that are in priority order
             for priority_slot in priority_slots:

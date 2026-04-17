@@ -34,6 +34,35 @@ DEFAULT_MATCH_LIMIT = int(os.getenv('LLM_MATCH_LIMIT', '30'))
 MAX_PARALLEL_LLM = int(os.getenv('LLM_MATCH_PARALLEL', '5'))
 MIN_DIMENSION_WORDS = 15  # Skip dimension embeddings with less than this many words of source text
 
+# Reciprocity hybrid (Apr-17): if a user has >= MIN_RECIPROCAL_MATCHES candidates
+# with complementary primary_goal, we hard-filter to those (quality mode). If
+# fewer, we fall back to including non-reciprocal candidates as backfill to
+# avoid the empty-state trap for users in narrow goal pools (e.g. Seek
+# Mentorship has only 2 potential reciprocals in the whole user base).
+MIN_RECIPROCAL_MATCHES = int(os.getenv('LLM_MATCH_MIN_RECIPROCAL', '3'))
+
+# Primary-goal reciprocity matrix. Each key maps to the set of partner goals
+# that can exchange real value with that goal.
+#   • Finance pairs: Raise Funding ↔ Invest in Startups
+#   • Hiring pairs: Recruit ↔ Find New Job ↔ Hire Talent
+#   • Mentorship pairs: Seek Mentorship ↔ Offer Mentorship
+#   • Self-symmetric: Seek Networking, Explore Partnerships, Find Co-founder
+#   • Service providers reciprocate with anyone whose goal implies a buyer
+PRIMARY_GOAL_RECIPROCITY = {
+    "Raise Funding":        {"Invest in Startups", "Offer Services"},
+    "Find Co-founder":      {"Find Co-founder"},
+    "Seek Mentorship":      {"Offer Mentorship"},
+    "Offer Mentorship":     {"Seek Mentorship", "Find New Job"},
+    "Explore Partnerships": {"Explore Partnerships", "Launch Product", "Offer Services"},
+    "Invest in Startups":   {"Raise Funding", "Find Co-founder", "Launch Product"},
+    "Offer Services":       {"Raise Funding", "Hire Talent", "Launch Product"},
+    "Recruit":              {"Find New Job", "Hire Talent"},
+    "Find New Job":         {"Recruit", "Hire Talent"},
+    "Seek Networking":      {"Seek Networking"},
+    "Hire Talent":          {"Find New Job", "Recruit", "Offer Services"},
+    "Launch Product":       {"Explore Partnerships", "Invest in Startups", "Offer Services", "Raise Funding"},
+}
+
 SCORING_PROMPT = """You are a professional networking match evaluator. Score whether introducing two people would create real value based on what they SPECIFICALLY said they need.
 
 USER A:
@@ -95,6 +124,12 @@ class LLMMatch:
     reason: str
     match_type: str = 'llm_scored'
     score_breakdown: Optional[Dict[str, int]] = None
+    # Apr-17: primary_goal reciprocity flag. True when partner's primary_goal is
+    # in the reciprocity matrix of the user's primary_goal (value-exchange
+    # possible). False when partner got in as backfill under the hybrid filter.
+    # None when reciprocity could not be evaluated (missing goal slots, unknown
+    # enum value). Forward-compatible — downstream stores/ignores as needed.
+    reciprocal: Optional[bool] = None
 
 
 def _score_pair(
@@ -399,6 +434,68 @@ def find_matches(
         except Exception as filter_err:
             logger.warning(f"[LLMMatch] Cheap filter failed, skipping: {filter_err}")
 
+        # 3.6 RECIPROCITY HYBRID (Apr-17): split candidates by primary_goal
+        # reciprocity, then either hard-filter (if enough reciprocal partners
+        # exist) or backfill with non-reciprocal candidates (fallback for
+        # narrow-goal users). Each candidate carries a `reciprocal: bool` flag
+        # forward so downstream consumers can tier the display later.
+        try:
+            user_goal_raw = user_slots.get('primary_goal', {}).get('value', '')
+            user_goal = str(user_goal_raw).strip() if user_goal_raw else ''
+            reciprocal_goals = PRIMARY_GOAL_RECIPROCITY.get(user_goal, set())
+
+            if reciprocal_goals and candidates:
+                reciprocal_cands = []
+                adjacent_cands = []
+                for cand in candidates:
+                    try:
+                        partner_slots = supabase_onboarding_adapter.get_user_slots_sync(cand['user_id'])
+                        partner_goal_raw = partner_slots.get('primary_goal', {}).get('value', '')
+                        partner_goal = str(partner_goal_raw).strip() if partner_goal_raw else ''
+                    except Exception:
+                        partner_goal = ''
+                    if partner_goal and partner_goal in reciprocal_goals:
+                        cand['reciprocal'] = True
+                        reciprocal_cands.append(cand)
+                    else:
+                        cand['reciprocal'] = False
+                        adjacent_cands.append(cand)
+
+                pre_recip = len(candidates)
+                if len(reciprocal_cands) >= MIN_RECIPROCAL_MATCHES:
+                    # Quality mode: hard filter to reciprocal only
+                    candidates = reciprocal_cands
+                    logger.info(
+                        f"[LLMMatch] {user_id[:12]}... Reciprocity HARD: "
+                        f"{pre_recip} → {len(candidates)} reciprocal "
+                        f"(user_goal={user_goal!r}, min={MIN_RECIPROCAL_MATCHES})"
+                    )
+                else:
+                    # Fallback mode: keep reciprocal + top-cosine adjacent
+                    adjacent_cands.sort(key=lambda c: c.get('similarity_score', 0), reverse=True)
+                    budget = pre_recip - len(reciprocal_cands)
+                    candidates = reciprocal_cands + adjacent_cands[:budget]
+                    logger.info(
+                        f"[LLMMatch] {user_id[:12]}... Reciprocity SOFT (fallback): "
+                        f"{len(reciprocal_cands)} reciprocal + {min(budget, len(adjacent_cands))} adjacent "
+                        f"(user_goal={user_goal!r}, threshold={MIN_RECIPROCAL_MATCHES})"
+                    )
+            elif user_goal:
+                # Unknown user_goal (junk value not in enum) — skip reciprocity,
+                # tag all as None so downstream knows we couldn't evaluate.
+                for cand in candidates:
+                    cand['reciprocal'] = None
+                logger.info(
+                    f"[LLMMatch] {user_id[:12]}... Reciprocity SKIPPED: "
+                    f"user_goal={user_goal!r} not in PRIMARY_GOAL_RECIPROCITY matrix"
+                )
+            else:
+                for cand in candidates:
+                    cand['reciprocal'] = None
+                logger.info(f"[LLMMatch] {user_id[:12]}... Reciprocity SKIPPED: no user primary_goal")
+        except Exception as recip_err:
+            logger.warning(f"[LLMMatch] Reciprocity hybrid failed, skipping: {recip_err}")
+
         # 4. Get user's profile text for LLM
         user_profile = _get_profile_text(user_id)
         if not user_profile:
@@ -431,6 +528,10 @@ def find_matches(
                     llm_score=result['score'],
                     reason=result['reason'],
                     score_breakdown=result.get('breakdown'),
+                    # Apr-17: forward the reciprocity flag set by the hybrid
+                    # filter into the stored match so downstream UI can tier
+                    # Primary vs Adjacent matches.
+                    reciprocal=candidate.get('reciprocal'),
                 )
             return None
 
@@ -545,6 +646,7 @@ def find_and_store_matches(user_id: str, limit: int = DEFAULT_MATCH_LIMIT) -> Di
             'similarity_score': m.llm_score / 100.0,
             'combined_score': m.llm_score / 100.0,
             'score_breakdown': m.score_breakdown,
+            'reciprocal': m.reciprocal,
             # No explanation yet — will be backfilled async
             # Backend will generate on-demand if user clicks before backfill completes
         })

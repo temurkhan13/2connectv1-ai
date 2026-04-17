@@ -203,6 +203,12 @@ class MatchSyncService:
             }
             if score_breakdown:
                 payload_entry['score_breakdown'] = score_breakdown
+            # Apr-17: forward reciprocity flag so backend can persist/tier when
+            # schema is ready. Currently backend DTO may ignore unknown fields;
+            # keeping in payload is forward-compatible.
+            reciprocal = m.get('reciprocal')
+            if reciprocal is not None:
+                payload_entry['reciprocal'] = reciprocal
             match_pairs.append(payload_entry)
 
         # Add offerings matches (what user offers vs others' needs)
@@ -257,6 +263,12 @@ class MatchSyncService:
             }
             if score_breakdown:
                 payload_entry['score_breakdown'] = score_breakdown
+            # Apr-17: forward reciprocity flag so backend can persist/tier when
+            # schema is ready. Currently backend DTO may ignore unknown fields;
+            # keeping in payload is forward-compatible.
+            reciprocal = m.get('reciprocal')
+            if reciprocal is not None:
+                payload_entry['reciprocal'] = reciprocal
             match_pairs.append(payload_entry)
 
         if skipped_invalid > 0:

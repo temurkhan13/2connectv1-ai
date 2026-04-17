@@ -157,6 +157,13 @@ Generation rules:
 - Keep requirements and offerings distinct.
 - Always follow the JSON schema exactly.
 - For any missing details, use "Not specified".
+- ANONYMIZATION-FRIENDLY PROSE: In profile_essence, requirements, offerings, strategy,
+  what_theyre_looking_for, and engagement_style — reference the user's name at most
+  ONCE per section (preferably not at all if the narrative reads naturally without it).
+  After any name mention, use pronouns (they/their/them) or role-based references
+  ("this founder", "this recruiter", "this investor") for subsequent references.
+  This keeps prose natural while minimizing name repetition — important for the
+  Discover view which anonymizes other users' profiles by stripping names.
 - CRITICAL: The FULL ONBOARDING CONVERSATION section contains the user's detailed responses in their own words. Use this as your PRIMARY source for narrative detail. The Q&A section has compressed slot values — use those only as factual anchors.
 - The profile_essence, requirements, and offerings fields are used to generate embedding vectors for matching. LONGER AND MORE DETAILED = BETTER MATCHES. Do not compress or summarize — expand and elaborate using all available data.
 

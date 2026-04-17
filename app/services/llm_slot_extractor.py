@@ -801,14 +801,14 @@ CRITICAL: Only return the JSON object. No explanatory text."""
             _msgs = [{"role": "user", "content": f"Extract profile information from this resume:\n\n{truncated}"}]
             try:
                 response = self.client.messages.create(
-                    model=self.personalization_model, max_tokens=1500, system=system_prompt,
+                    model=self.personalization_model, max_tokens=4096, system=system_prompt,
                     messages=_msgs, temperature=0.1
                 )
                 result_text = response.content[0].text.strip()
             except Exception as api_err:
                 from app.services.llm_fallback import fallback_from_anthropic_error
                 result_text = fallback_from_anthropic_error(
-                    service="extraction", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=1500, temperature=0.1
+                    service="extraction", error=api_err, system_prompt=system_prompt, messages=_msgs, max_tokens=4096, temperature=0.1
                 )
                 if not result_text:
                     raise api_err
@@ -1716,7 +1716,7 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                 _sys_cached = [{"type": "text", "text": retry_system, "cache_control": {"type": "ephemeral"}}]
                 try:
                     response = self.client.messages.create(
-                        model=self.model, max_tokens=1500, system=_sys_cached,
+                        model=self.model, max_tokens=4096, system=_sys_cached,
                         messages=messages, temperature=0.1
                     )
                     # Log full response metadata for debugging (including cache stats)
@@ -1727,7 +1727,7 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                     from app.services.llm_fallback import fallback_from_anthropic_error
                     fallback_text = fallback_from_anthropic_error(
                         service="extraction", error=api_err, system_prompt=_sys_cached,
-                        messages=messages, max_tokens=1500, temperature=0.1
+                        messages=messages, max_tokens=4096, temperature=0.1
                     )
                     if fallback_text:
                         # Create a mock response object so downstream code works

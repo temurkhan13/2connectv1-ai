@@ -63,6 +63,118 @@ PRIMARY_GOAL_RECIPROCITY = {
     "Launch Product":       {"Explore Partnerships", "Invest in Startups", "Offer Services", "Raise Funding"},
 }
 
+# =============================================================================
+# Function-keyword secondary filter (Apr-18)
+# =============================================================================
+# Nick Carter's Apr-17 E2E test surfaced that the `user_type` enum is too coarse.
+# "Corporate Executive" catches CPOs, CEOs, M&A execs, peer-networkers — zero
+# functional discrimination. But user_profiles.persona_designation +
+# .persona_archetype (100% populated, LLM-generated) DO carry function.
+#
+# When a user's seeking_user_types contains a generic value AND their
+# requirements text specifies a function, we narrow candidates to those whose
+# persona_designation/archetype matches the same functional bucket. This runs
+# AFTER the existing user_type cheap filter but BEFORE reciprocity hybrid.
+#
+# Guard: only apply when the filter leaves >= MIN_RECIPROCAL_MATCHES candidates
+# so we don't starve the reciprocity stage (soft-fallback would otherwise
+# have nothing to work with).
+FUNCTIONAL_KEYWORDS = {
+    'engineering': [
+        'cto', 'vp engineering', 'vp of engineering', 'head of engineering',
+        'engineering lead', 'engineering director', 'technical', 'engineer',
+        'developer', 'architect', 'devops', 'tech lead', 'staff engineer',
+        'principal engineer', 'sre',
+    ],
+    'product': [
+        'cpo', 'vp product', 'vp of product', 'head of product',
+        'product manager', 'product lead', 'chief product', 'product owner',
+        'product director',
+    ],
+    'design': [
+        'head of design', 'design lead', 'design director', 'ux lead',
+        'chief design', 'creative director',
+    ],
+    'sales_bd': [
+        'vp sales', 'vp of sales', 'head of sales', 'cro', 'chief revenue',
+        'business development', 'sales lead', 'sales director', ' bd ',
+        'account executive',
+    ],
+    'marketing': [
+        'vp marketing', 'vp of marketing', 'cmo', 'chief marketing',
+        'head of marketing', 'growth lead', 'growth director', 'brand director',
+        'demand gen',
+    ],
+    'finance_ma': [
+        'cfo', 'chief financial', 'finance director', 'finance lead',
+        'corporate development', 'corp dev', ' m&a ', 'treasurer',
+        'controller',
+    ],
+    'operations': [
+        'coo', 'chief operating', 'vp operations', 'vp of operations',
+        'head of operations', 'operations director',
+    ],
+    'legal': [
+        'general counsel', 'chief legal', 'head of legal', 'legal director',
+    ],
+    'people_hr': [
+        'chro', 'chief people', 'head of people', 'vp people',
+        'talent acquisition', 'hr director',
+    ],
+    'ceo_founder': [
+        'ceo', 'chief executive', 'founder', 'co-founder', 'cofounder',
+        'entrepreneur',
+    ],
+    'investor': [
+        'general partner', 'venture capital', 'vc partner', 'principal',
+        'managing director', 'angel investor', 'limited partner', 'lp',
+    ],
+}
+
+# Seeking values that don't discriminate on function (benefit from secondary filter).
+GENERIC_SEEKING_USER_TYPES = {
+    'corporate executive', 'executive', 'professional', 'corporate',
+    'founder', 'founder/entrepreneur', 'entrepreneur',
+}
+
+
+def _classify_function(text: str) -> Optional[str]:
+    """Return a functional bucket key if the text contains a distinctive keyword.
+
+    First-match wins (order of FUNCTIONAL_KEYWORDS matters for ties). Returns
+    None when nothing matches — callers should interpret that as "no
+    actionable function signal" and skip the secondary filter.
+    """
+    if not text:
+        return None
+    t = text.lower()
+    for bucket, keywords in FUNCTIONAL_KEYWORDS.items():
+        for kw in keywords:
+            if kw in t:
+                return bucket
+    return None
+
+
+def _get_cand_designation_text(cand_id: str) -> str:
+    """Candidate's function-indicative text.
+
+    Uses persona_designation + persona_archetype + persona_profile_essence —
+    all LLM-generated during persona creation, populated on 100% of profiles.
+    """
+    try:
+        profile = UserProfile.get(cand_id)
+        if not profile or not profile.persona:
+            return ''
+        p = profile.persona
+        parts = []
+        for attr in ('designation', 'archetype', 'profile_essence'):
+            v = getattr(p, attr, '') or ''
+            if v:
+                parts.append(v)
+        return ' '.join(parts)
+    except Exception:
+        return ''
+
 SCORING_PROMPT = """You are a professional networking match evaluator. Score whether introducing two people would create real value based on what they SPECIFICALLY said they need.
 
 USER A:
@@ -434,6 +546,83 @@ def find_matches(
         except Exception as filter_err:
             logger.warning(f"[LLMMatch] Cheap filter failed, skipping: {filter_err}")
 
+        # 3.55 FUNCTION FILTER (Apr-18): when seeking_user_types is a broad
+        # bucket that doesn't discriminate by function (e.g. "Corporate
+        # Executive" catches CPO/CEO/M&A/peer-networker alike), use the
+        # candidate's persona_designation/archetype keywords to narrow to the
+        # same functional bucket the user asked for in their requirements.
+        # Only applies when (a) the seeking value is generic, (b) the user's
+        # requirements clearly specify a function, (c) the filter would leave
+        # at least MIN_RECIPROCAL_MATCHES candidates — else we skip to avoid
+        # starving the reciprocity stage.
+        try:
+            seeking_vals_for_fn = set()
+            try:
+                _tmp = user_slots.get('seeking_user_types', {}).get('value', '')
+                if isinstance(_tmp, list):
+                    seeking_vals_for_fn = {str(s).lower().strip() for s in _tmp if s}
+                elif isinstance(_tmp, str) and _tmp.startswith('['):
+                    import json as _json2, ast as _ast2
+                    _parsed = None
+                    try:
+                        _parsed = _json2.loads(_tmp)
+                    except Exception:
+                        try:
+                            _parsed = _ast2.literal_eval(_tmp)
+                        except Exception:
+                            _parsed = None
+                    if _parsed:
+                        seeking_vals_for_fn = {str(s).lower().strip() for s in _parsed if s}
+                elif _tmp:
+                    seeking_vals_for_fn = {s.strip().lower() for s in str(_tmp).split(';') if s.strip()}
+            except Exception:
+                seeking_vals_for_fn = set()
+
+            seeking_is_generic = any(v in GENERIC_SEEKING_USER_TYPES for v in seeking_vals_for_fn)
+
+            if seeking_is_generic and len(candidates) >= MIN_RECIPROCAL_MATCHES:
+                # Build user's requirements text from slots + persona
+                user_req_text = str(user_slots.get('requirements', {}).get('value', '') or '')
+                try:
+                    _user_profile_obj = UserProfile.get(user_id)
+                    if _user_profile_obj and _user_profile_obj.persona:
+                        _p = _user_profile_obj.persona
+                        for _attr in ('requirements', 'what_theyre_looking_for',
+                                      'focus', 'profile_essence'):
+                            _v = getattr(_p, _attr, '') or ''
+                            if _v:
+                                user_req_text += ' ' + _v
+                except Exception:
+                    pass
+
+                desired_function = _classify_function(user_req_text)
+                if desired_function:
+                    pre_fn = len(candidates)
+                    function_matched = [
+                        c for c in candidates
+                        if _classify_function(_get_cand_designation_text(c['user_id'])) == desired_function
+                    ]
+                    if len(function_matched) >= MIN_RECIPROCAL_MATCHES:
+                        candidates = function_matched
+                        logger.info(
+                            f"[LLMMatch] {user_id[:12]}... Function filter: "
+                            f"{pre_fn} → {len(candidates)} (desired={desired_function!r}, "
+                            f"seeking_generic={sorted(seeking_vals_for_fn & GENERIC_SEEKING_USER_TYPES)})"
+                        )
+                    else:
+                        logger.info(
+                            f"[LLMMatch] {user_id[:12]}... Function filter SKIPPED: "
+                            f"only {len(function_matched)}/{pre_fn} match "
+                            f"{desired_function!r} (threshold={MIN_RECIPROCAL_MATCHES})"
+                        )
+                else:
+                    logger.info(
+                        f"[LLMMatch] {user_id[:12]}... Function filter SKIPPED: "
+                        f"no distinctive function keyword in user requirements"
+                    )
+        except Exception as fn_err:
+            logger.warning(f"[LLMMatch] Function filter failed, skipping: {fn_err}")
+
         # 3.6 RECIPROCITY HYBRID (Apr-17): split candidates by primary_goal
         # reciprocity, then either hard-filter (if enough reciprocal partners
         # exist) or backfill with non-reciprocal candidates (fallback for
@@ -521,13 +710,43 @@ def find_matches(
                 user_b_off=cand_profile['offerings'],
             )
 
-            if result['score'] >= LLM_SCORE_MIN:
+            llm_score = result['score']
+            breakdown = result.get('breakdown')
+            is_reciprocal = candidate.get('reciprocal') is True
+
+            # Apr-18 scoring calibration (from Nick Carter test, Follow-up 12):
+            # the LLM prompt treats all 4 dimensions ~equally when deciding the
+            # overall band. For reciprocal-goal pairs where role_fit is the
+            # dominant value exchange (recruiter↔candidate, investor↔founder-
+            # raising), industry mismatch was pulling overall below role_fit
+            # by 10-20 points (James Morrison: role_fit=85, industry=55,
+            # overall=72 — should've been ~80+).
+            #
+            # Floor the overall at `role_fit - 5` when reciprocal=True AND
+            # role_fit >= 70. Only fires when the LLM actually under-weights;
+            # preserves LLM judgment in all other cases.
+            if (
+                is_reciprocal
+                and isinstance(breakdown, dict)
+                and breakdown.get('role_fit', 0) >= 70
+            ):
+                role_fit = int(breakdown['role_fit'])
+                floor = role_fit - 5
+                if llm_score < floor:
+                    logger.info(
+                        f"[LLMMatch] {cand_id[:12]} recalibrated "
+                        f"{llm_score}→{floor} (reciprocal + role_fit={role_fit}, "
+                        f"industry_match={breakdown.get('industry_match', '?')})"
+                    )
+                    llm_score = floor
+
+            if llm_score >= LLM_SCORE_MIN:
                 return LLMMatch(
                     user_id=cand_id,
                     cosine_score=cosine_score,
-                    llm_score=result['score'],
+                    llm_score=llm_score,
                     reason=result['reason'],
-                    score_breakdown=result.get('breakdown'),
+                    score_breakdown=breakdown,
                     # Apr-17: forward the reciprocity flag set by the hybrid
                     # filter into the stored match so downstream UI can tier
                     # Primary vs Adjacent matches.

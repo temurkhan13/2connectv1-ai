@@ -2280,7 +2280,7 @@ Response:
         "industry_focus": {{"value": ["Technology/SaaS", "Enterprise"], "reasoning": "B2B SaaS = Technology/SaaS + Enterprise"}},
         "experience_years": {{"value": "2 years", "reasoning": "Explicitly stated 'been at it for 2 years'"}},
         "team_size": {{"value": "small team", "reasoning": "Mentioned 'small team' - likely 2-10 people"}},
-        "stage_preference": {{"value": "Series A", "reasoning": "Raising Series A"}},
+        "stage_preference": {{"value": ["Series A"], "reasoning": "Raising Series A — return as array because stage_preference is multi_select (user may target multiple stages)"}},
         "geography": {{"value": ["Europe"], "reasoning": "Expanding into Europe - likely current market elsewhere"}},
         "primary_goal": {{"value": "Raise Funding", "reasoning": "Looking to raise Series A"}}
     }},

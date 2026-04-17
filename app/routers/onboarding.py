@@ -605,19 +605,24 @@ async def chat(request: ChatMessageRequest):
 
         # BUG-027 FIX: Persist slots to Supabase for session resilience
         # This ensures slots survive if Redis session expires before profile creation
+        #
+        # ISSUE-7 FIX (Apr-17, BUG-027 persist path): Pass lists/dicts through as-is
+        # so _save_slots_sync can json.dumps them correctly. Previously str() wrapped
+        # lists in Python repr ("['Recruiter']") instead of JSON. Mirrors the fix in
+        # context_manager._persist_slots_to_supabase() from commit 5958765.
         if newly_extracted and context.user_id:
             try:
-                slots_to_save = [
-                    {
+                slots_to_save = []
+                for slot_name, slot_data in newly_extracted.items():
+                    _v = slot_data.get("value", "")
+                    slots_to_save.append({
                         "name": slot_name,
-                        "value": str(slot_data.get("value", "")),
+                        "value": _v if isinstance(_v, (list, dict)) else str(_v),
                         "confidence": slot_data.get("confidence", 1.0),
                         "source_text": request.message,
                         "extraction_method": "llm",
                         "status": "filled"
-                    }
-                    for slot_name, slot_data in newly_extracted.items()
-                ]
+                    })
                 if slots_to_save:
                     saved_count = await supabase_onboarding_adapter.save_slots_batch(
                         user_id=context.user_id,
@@ -1173,7 +1178,15 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
 
             if value:
                 prompt = slot_to_question_map.get(slot_name, f"What is your {slot_name.replace('_', ' ')}?")
-                questions.append({"prompt": prompt, "answer": str(value)})
+                # ISSUE-7 FIX (Apr-17, Q&A path): Preserve list/dict values as JSON so the
+                # downstream persona-generation LLM sees clean data ("SaaS, FinTech, AI/ML")
+                # instead of Python-repr artifacts (`['SaaS', 'FinTech', 'AI/ML']`).
+                if isinstance(value, (list, dict)):
+                    import json as _json
+                    answer = _json.dumps(value)
+                else:
+                    answer = str(value)
+                questions.append({"prompt": prompt, "answer": answer})
 
         if not questions:
             logger.warning(f"No slots extracted for session {session_id}")

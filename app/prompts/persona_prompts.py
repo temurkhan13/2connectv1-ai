@@ -164,6 +164,25 @@ Generation rules:
   ("this founder", "this recruiter", "this investor") for subsequent references.
   This keeps prose natural while minimizing name repetition — important for the
   Discover view which anonymizes other users' profiles by stripping names.
+- PUBLIC PRIVACY RULE (Apr-19 Issue 8 per [[Apr-18]] Follow-up 27):
+  In profile_essence, requirements, offerings, strategy, and what_theyre_looking_for
+  — DO NOT name specific real-world companies or specific real-world people the
+  user has worked with. Use categorical descriptors that preserve the signal:
+    * "at Stripe" → "at a leading payments infrastructure company"
+    * "at Google" → "at a major tech company"
+    * "ex-Monzo" → "from a prominent UK digital bank"
+    * "scaled Ramp from Series A to C" → "scaled a Series A fintech to Series C"
+    * "co-founded Oscar Health" → "co-founded a health-insurance scale-up"
+    * "mentored by Andy Rachleff" → "mentored by a well-known venture partner"
+  Keep ALL OTHER SPECIFICS intact: years of experience, skill areas, industry focus,
+  fundraising amounts, deal counts, cheque sizes, team sizes, geographies, stage
+  preferences, sector thesis, metrics. The categorical descriptor retains matching
+  signal while making the text safe for the Discover page where identity must not
+  leak.
+  EXCEPTION — the `persona_archetype` and `persona_designation` fields ARE allowed
+  to contain specific companies because they are used for SCORING only and not
+  displayed cross-user. Use the persona title as the place to be fully specific;
+  use the essence/requirements/offerings as the place to be categorically specific.
 - CRITICAL: The FULL ONBOARDING CONVERSATION section contains the user's detailed responses in their own words. Use this as your PRIMARY source for narrative detail. The Q&A section has compressed slot values — use those only as factual anchors.
 - The profile_essence, requirements, and offerings fields are used to generate embedding vectors for matching. LONGER AND MORE DETAILED = BETTER MATCHES. Do not compress or summarize — expand and elaborate using all available data.
 

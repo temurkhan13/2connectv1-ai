@@ -271,36 +271,97 @@ def _score_pair(
             user_b_offerings=user_b_off[:2000],
         )
 
+        # Apr-19 Issue 5 fix ([[Apr-18]] Follow-up 27): raised max_tokens
+        # 200 → 300 to prevent breakdown truncation. Previously tight
+        # window could truncate the breakdown JSON for some scoring calls
+        # (Christian Horner in Aneesh's test returned score+reason but no
+        # breakdown — widget couldn't render dimensional bars).
         response = call_with_fallback(
             service="matching",
-            system_prompt="You are a match scoring system. Respond with ONLY a JSON object, no other text.",
+            system_prompt=(
+                "You are a match scoring system. Respond with ONLY a JSON object, "
+                "no other text. Your response MUST include all four fields: score, "
+                "reason, breakdown (with role_fit, stage_match, geography_match, "
+                "industry_match). A response without breakdown is malformed."
+            ),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            max_tokens=300,
             temperature=0.0,
         )
 
-        # Parse JSON response — handle multiple LLM response formats
-        import re
-        text = response.strip()
+        parsed = _parse_scoring_response(response)
 
-        # Strip markdown code blocks (```json ... ``` or ``` ... ```)
-        code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
-        if code_block:
-            text = code_block.group(1)
-        elif text.startswith("```"):
-            # Fallback: split on backticks
-            parts = text.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    part = part[4:].strip()
-                if part.startswith("{"):
-                    text = part
-                    break
+        # Apr-19 Issue 5 fix: if breakdown is None after parsing, retry once
+        # with an explicit instruction to include it. LLMs occasionally emit
+        # valid JSON minus the breakdown key — the retry fills the gap.
+        if parsed.get("breakdown") is None and parsed.get("score", 0) > 0:
+            logger.info(
+                f"[ScoreRetry] breakdown missing from response — retrying once. "
+                f"Original score={parsed.get('score')}"
+            )
+            retry_response = call_with_fallback(
+                service="matching",
+                system_prompt=(
+                    "You are a match scoring system. Your previous response omitted the "
+                    "'breakdown' field. Re-score the pair, and this time you MUST include "
+                    "breakdown with all four dimensions (role_fit, stage_match, "
+                    "geography_match, industry_match) as integers 0-100. No exceptions."
+                ),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+                temperature=0.0,
+            )
+            retry_parsed = _parse_scoring_response(retry_response)
+            if retry_parsed.get("breakdown") is not None:
+                # Keep the original score+reason (stable), swap in breakdown
+                parsed["breakdown"] = retry_parsed["breakdown"]
+                logger.info(f"[ScoreRetry] breakdown recovered on retry")
 
-        # Try direct JSON parse
+        return parsed
+    except Exception as e:
+        logger.error(f"LLM scoring failed: {e}")
+        return {"score": 0, "reason": f"error: {str(e)[:50]}", "breakdown": None}
+
+
+def _parse_scoring_response(response: str) -> Dict[str, Any]:
+    """Parse the LLM's scoring response into {score, reason, breakdown}.
+
+    Extracted Apr-19 Issue 5 fix from `_score_pair` so the retry path can
+    reuse it. Handles multiple response shapes (markdown code blocks, JSON
+    with prose, partial regex-extractable).
+    """
+    import re
+    text = response.strip()
+
+    # Strip markdown code blocks (```json ... ``` or ``` ... ```)
+    code_block = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+    if code_block:
+        text = code_block.group(1)
+    elif text.startswith("```"):
+        parts = text.split("```")
+        for part in parts:
+            part = part.strip()
+            if part.startswith("json"):
+                part = part[4:].strip()
+            if part.startswith("{"):
+                text = part
+                break
+
+    # Try direct JSON parse
+    try:
+        result = json.loads(text)
+        score = int(result.get("score", 0))
+        reason = str(result.get("reason", ""))
+        breakdown = result.get("breakdown") if isinstance(result.get("breakdown"), dict) else None
+        return {"score": max(0, min(100, score)), "reason": reason, "breakdown": breakdown}
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Extract JSON object from surrounding text (LLM sometimes adds explanation)
+    json_match = re.search(r'\{[^{}]*"score"\s*:\s*\d+[^{}]*\}', text)
+    if json_match:
         try:
-            result = json.loads(text)
+            result = json.loads(json_match.group(0))
             score = int(result.get("score", 0))
             reason = str(result.get("reason", ""))
             breakdown = result.get("breakdown") if isinstance(result.get("breakdown"), dict) else None
@@ -308,39 +369,24 @@ def _score_pair(
         except (json.JSONDecodeError, ValueError):
             pass
 
-        # Extract JSON object from surrounding text (LLM sometimes adds explanation)
-        json_match = re.search(r'\{[^{}]*"score"\s*:\s*\d+[^{}]*\}', text)
-        if json_match:
-            try:
-                result = json.loads(json_match.group(0))
-                score = int(result.get("score", 0))
-                reason = str(result.get("reason", ""))
-                return {"score": max(0, min(100, score)), "reason": reason}
-            except (json.JSONDecodeError, ValueError):
-                pass
+    # Last resort: extract score and reason separately via regex
+    score_match = re.search(r'"score"\s*:\s*(\d+)', text)
+    reason = ""
+    for pattern in [
+        r'"reason"\s*:\s*"((?:[^"\\]|\\.)*)"',  # handles escaped quotes
+        r'"reason"\s*:\s*"([^"]{1,500})',         # truncated at 500 chars
+        r"'reason'\s*:\s*'([^']*)'",              # single quotes
+    ]:
+        reason_match = re.search(pattern, text, re.DOTALL)
+        if reason_match:
+            reason = reason_match.group(1)
+            break
+    if score_match:
+        score = int(score_match.group(1))
+        return {"score": max(0, min(100, score)), "reason": reason or "no reason parsed", "breakdown": None}
 
-        # Last resort: extract score and reason separately via regex
-        score_match = re.search(r'"score"\s*:\s*(\d+)', text)
-        # Try multiple reason patterns: simple quotes, escaped quotes, single quotes
-        reason = ""
-        for pattern in [
-            r'"reason"\s*:\s*"((?:[^"\\]|\\.)*)"',  # handles escaped quotes
-            r'"reason"\s*:\s*"([^"]{1,500})',         # truncated at 500 chars
-            r"'reason'\s*:\s*'([^']*)'",              # single quotes
-        ]:
-            reason_match = re.search(pattern, text, re.DOTALL)
-            if reason_match:
-                reason = reason_match.group(1)
-                break
-        if score_match:
-            score = int(score_match.group(1))
-            return {"score": max(0, min(100, score)), "reason": reason or "no reason parsed", "breakdown": None}
-
-        logger.warning(f"LLM returned unparseable response: {response[:200]}")
-        return {"score": 0, "reason": "parse_error", "breakdown": None}
-    except Exception as e:
-        logger.error(f"LLM scoring failed: {e}")
-        return {"score": 0, "reason": f"error: {str(e)[:50]}", "breakdown": None}
+    logger.warning(f"LLM returned unparseable response: {response[:200]}")
+    return {"score": 0, "reason": "parse_error", "breakdown": None}
 
 
 def _get_profile_text(user_id: str) -> Optional[Dict[str, str]]:

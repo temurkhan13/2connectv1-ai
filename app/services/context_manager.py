@@ -1178,14 +1178,25 @@ class ContextManager:
             context.phase = ConversationPhase.COMPLETE
             return True
 
-        # Check if max questions reached (prevent over-questioning like Alex's 7 questions)
-        if self._max_questions_reached(context):
-            logger.info(f"Session {session_id}: Max questions ({self.max_questions}) reached, auto-completing")
-            context.phase = ConversationPhase.COMPLETE
-            return True
+        # Apr-19 Issue 2 fix ([[Apr-18]] Follow-up 27): reorder so MV-6/6
+        # is checked BEFORE max_questions. Aneesh Sen's test hit
+        # MAX_QUESTIONS=5 before `dealbreakers` (the 6th MV slot) was ever
+        # asked — auto-completed at MV 5/6 which blocked Hard Rule 6 (the
+        # new semantic dealbreaker enforcement) verification. For verbose
+        # personas whose extraction is rich, MV 6/6 is the semantically
+        # correct termination condition; max_questions is the fallback
+        # for users whose answers under-extract.
+        #
+        # Order now:
+        #   1. User explicitly signalled done → complete
+        #   2. MV 6/6 reached AND >= 3 user turns → complete (quality)
+        #   3. Max questions reached AND MV also complete → complete (safe cap)
+        #   4. Max questions reached but MV incomplete AND hard ceiling hit → complete (prevent infinite loop)
+        #   5. Otherwise → keep asking (up to hard ceiling)
 
-        # ISSUE-5 FIX: Auto-complete when multi-vector 6/6 reached AND minimum turns
-        # Prevents getting stuck on conditional slots (achievement, network_strength) after hitting 100%
+        # (1) Was handled above in _user_signals_completion.
+
+        # (2) Quality termination — MV 6/6 + minimum turns
         if self._multi_vector_complete(context):
             user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
             if user_turns >= 3:
@@ -1193,7 +1204,26 @@ class ContextManager:
                 context.phase = ConversationPhase.COMPLETE
                 return True
 
-        # Check if enough required slots are filled
+        # (3) Safe cap — max questions reached AND multi-vector complete
+        if self._max_questions_reached(context) and self._multi_vector_complete(context):
+            logger.info(f"Session {session_id}: Max questions ({self.max_questions}) reached with MV 6/6, auto-completing")
+            context.phase = ConversationPhase.COMPLETE
+            return True
+
+        # (4) Hard ceiling — prevent runaway onboarding on pathological personas
+        questions_asked = len([t for t in context.turns if t.turn_type == TurnType.ASSISTANT and "?" in t.content])
+        hard_ceiling = int(os.getenv("MAX_ONBOARDING_QUESTIONS_HARD_CEILING", "8"))
+        if questions_asked >= hard_ceiling:
+            filled_mv = "complete" if self._multi_vector_complete(context) else "incomplete"
+            logger.warning(
+                f"Session {session_id}: Hard ceiling ({hard_ceiling}) reached with MV {filled_mv} "
+                f"— auto-completing to prevent runaway. Filled slots: "
+                f"{[n for n, s in context.slots.items() if s.status.value in ['filled', 'confirmed']]}"
+            )
+            context.phase = ConversationPhase.COMPLETE
+            return True
+
+        # (5) Check if enough required slots are filled (original fallback)
         return self._all_required_slots_filled(context)
 
     def _multi_vector_complete(self, context: 'ConversationContext') -> bool:

@@ -180,6 +180,7 @@ SCORING_PROMPT = """You are a professional networking match evaluator. Score whe
 USER A:
 What they need: {user_a_requirements}
 What they offer: {user_a_offerings}
+Hard dealbreakers (User A will not accept partners matching ANY of these, in any wording): {user_a_dealbreakers}
 
 USER B:
 What they need: {user_b_requirements}
@@ -192,25 +193,28 @@ STEP 2: Does User B OFFER that specific thing? Not something vaguely related —
 STEP 3: What does User B specifically need? Read their requirements literally.
 STEP 4: Does User A OFFER that specific thing?
 STEP 5: Do the specifics align? (industry, geography, stage, check size, role level, etc.)
+STEP 6: Does User B's profile describe ANYTHING that matches User A's dealbreakers SEMANTICALLY — not just lexically? Same concept in different words is still a violation (e.g. dealbreaker "pure infra plays" is violated by "inference optimization platform" because both describe infrastructure-focused businesses; dealbreaker "fractional arrangements" is violated by "part-time advisory work"; dealbreaker "CTO-for-hire roles" is violated by "contract engineering leadership"). Judge meaning, not words.
 
 SCORE BANDS — your score MUST fall in the correct band:
 90-100: BOTH users directly deliver what the other specifically asked for. Specifics align (stage, geography, industry, check size).
 70-89:  ONE user clearly delivers what the other needs. The reverse direction has some but weaker value.
 50-69:  Neither user directly delivers what the other asked for, but there is a plausible indirect connection (e.g., shared industry knowledge, potential introduction to someone else).
 30-49:  Surface-level similarity only. Same industry or geography but no specific value exchange.
-0-29:   No meaningful connection.
+0-29:   No meaningful connection, OR a hard dealbreaker violation.
 
 HARD RULES — violations mean automatic score cap:
 1. If BOTH users are seeking the SAME thing (both raising capital, both seeking jobs, both looking for co-founders) and NEITHER offers what the other needs → score MUST be below 35. Peer networking is worth 25-35, not 60+.
-2. If your reason contains words like "misaligned", "neither can fulfill", "both seeking", "no direct overlap" → your score MUST be below 45. Your reason and score must agree.
+2. SCORE-REASON COHERENCE: your `reason` field is the ground truth for your score. After writing the reason, re-read it. If your reason concludes — IN ANY WORDING — that these two users cannot genuinely exchange what they seek (one wants X, the other isn't offering X; one wants a cofounder, the other wants something structurally different; the roles are mismatched; it's a peer or advisor relationship rather than a fit; they are pointed in incompatible directions; etc.), then your score MUST be below 45. If your reason and score disagree, trust the reason and lower the score. Do NOT pattern-match on specific phrasings — judge the meaning of what you wrote.
 3. Do NOT invent relationships neither user asked for. If nobody mentioned mentorship, do not score based on "potential mentorship value." If nobody mentioned networking, do not score based on "peer networking."
 4. Check size / stage mismatch: A $5K-$25K pre-seed investor matched with a Series A founder raising $2M+ → score below 40. The capital gap is too large.
 5. Geography mismatch: If a user specified a required geography (e.g., "must be in Southeast Asia") and the match is elsewhere → score below 40.
+6. DEALBREAKER VIOLATION (semantic): If User B's profile describes anything in User A's dealbreaker list — whether lexically identical or semantically equivalent — the score MUST be below 30, regardless of any other alignment. Dealbreakers are hard no-gos. Do not score around them. If dealbreakers is "(none stated)", this rule does not apply.
 
 SELF-CHECK before responding:
 - Re-read what User A SPECIFICALLY said they need. Does User B offer EXACTLY that? If no → your score should be below 50.
 - Re-read what User B SPECIFICALLY said they need. Does User A offer EXACTLY that? If no → your score should be below 70 (one-directional at best).
-- Does your reason match your score? If your reason describes problems, your score must reflect those problems.
+- Re-read User A's dealbreakers. Does User B's profile describe any of them semantically? If yes → score below 30 (Hard Rule 6).
+- Does your reason match your score? If your reason describes problems or structural mismatch, your score must reflect those problems (Hard Rule 2).
 
 IMPLIED NEEDS (use carefully):
 - A "Series B CEO scaling a company" implies hiring needs — matching with qualified engineers/executives IS valid.
@@ -247,12 +251,22 @@ class LLMMatch:
 def _score_pair(
     user_a_req: str, user_a_off: str,
     user_b_req: str, user_b_off: str,
+    user_a_dealbreakers: str = "",
 ) -> Dict[str, Any]:
-    """Score a single pair using LLM. Returns {"score": int, "reason": str}."""
+    """Score a single pair using LLM. Returns {"score": int, "reason": str}.
+
+    Apr-18 Follow-up 27 / [[CODING-DISCIPLINE]] Rule 5:
+    user_a_dealbreakers is injected into the prompt so the LLM can enforce
+    dealbreaker semantics (same concept, any wording). Replaces the
+    lexical-only `_apply_dealbreaker_filter` post-hoc gate, which missed
+    cases like Temur's "pure infra plays" vs. Elena's "inference
+    optimization platform" — semantic match, lexical miss.
+    """
     try:
         prompt = SCORING_PROMPT.format(
             user_a_requirements=user_a_req[:2000],
             user_a_offerings=user_a_off[:2000],
+            user_a_dealbreakers=(user_a_dealbreakers or "(none stated)")[:500],
             user_b_requirements=user_b_req[:2000],
             user_b_offerings=user_b_off[:2000],
         )
@@ -480,8 +494,43 @@ def find_matches(
 
         # 3.5 CHEAP FILTER: Remove candidates whose user_type doesn't match what this user seeks
         # Uses seeking_user_types slot (extracted during onboarding) to filter before LLM scoring
+        user_dealbreakers_text = ""
         try:
             user_slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
+            # Apr-18 Follow-up 27 / [[CODING-DISCIPLINE]] Rule 5: extract user's
+            # dealbreakers once, pass into semantic scoring (replaces the
+            # lexical `_apply_dealbreaker_filter` which missed same-concept-
+            # different-wording violations). Handles the 3 storage formats
+            # (native list, JSON list string, Python-repr — legacy, normalized
+            # Apr-17 but defensive anyway).
+            try:
+                _db_slot = user_slots.get('dealbreakers', {})
+                _db_raw = _db_slot.get('value', '') if isinstance(_db_slot, dict) else _db_slot
+                if isinstance(_db_raw, list):
+                    user_dealbreakers_text = ', '.join(str(x).strip() for x in _db_raw if str(x).strip())
+                elif isinstance(_db_raw, str):
+                    _dbs = _db_raw.strip()
+                    if _dbs.startswith('['):
+                        import json as _json_db
+                        import ast as _ast_db
+                        _parsed = None
+                        try:
+                            _parsed = _json_db.loads(_dbs)
+                        except Exception:
+                            try:
+                                _parsed = _ast_db.literal_eval(_dbs)
+                            except Exception:
+                                _parsed = None
+                        if isinstance(_parsed, list):
+                            user_dealbreakers_text = ', '.join(
+                                str(x).strip() for x in _parsed if str(x).strip()
+                            )
+                        else:
+                            user_dealbreakers_text = _dbs
+                    else:
+                        user_dealbreakers_text = _dbs
+            except Exception:
+                user_dealbreakers_text = ""
             seeking_raw = user_slots.get('seeking_user_types', {}).get('value', '')
             if seeking_raw:
                 # ISSUE-7 FIX: Handle three storage formats defensively
@@ -708,6 +757,7 @@ def find_matches(
                 user_a_off=user_profile['offerings'],
                 user_b_req=cand_profile['requirements'],
                 user_b_off=cand_profile['offerings'],
+                user_a_dealbreakers=user_dealbreakers_text,
             )
 
             llm_score = result['score']
@@ -725,10 +775,18 @@ def find_matches(
             # Floor the overall at `role_fit - 5` when reciprocal=True AND
             # role_fit >= 70. Only fires when the LLM actually under-weights;
             # preserves LLM judgment in all other cases.
+            #
+            # Apr-18 Follow-up 27: added `llm_score >= 30` guard to respect
+            # the LLM's hard-rule caps. If the LLM scored <30 it means a hard
+            # rule fired (dealbreaker violation, same-seeking-pair, invented-
+            # relationship, etc.) — the floor should NOT paper over a
+            # semantic disqualification. Only recalibrate mid-range
+            # under-weightings, not hard caps.
             if (
                 is_reciprocal
                 and isinstance(breakdown, dict)
                 and breakdown.get('role_fit', 0) >= 70
+                and llm_score >= 30
             ):
                 role_fit = int(breakdown['role_fit'])
                 floor = role_fit - 5
@@ -764,10 +822,18 @@ def find_matches(
                 except Exception as e:
                     logger.error(f"[LLMMatch] Candidate scoring error: {e}")
 
-        # 6. Dealbreaker filter
-        matches = _apply_dealbreaker_filter(user_id, matches)
-
-        # 7. Rank by LLM score
+        # 6. Rank by LLM score
+        # Apr-18 Follow-up 27 / [[CODING-DISCIPLINE]] Rule 5: the previous
+        # `_apply_dealbreaker_filter` pass (lexical substring match of
+        # dealbreaker strings against partner profile text) was removed
+        # because it missed semantic violations (e.g. Temur's "pure infra
+        # plays" dealbreaker vs. Elena's "inference optimization platform"
+        # profile — same concept, different wording). Dealbreakers are now
+        # enforced semantically inside `_score_pair` via Hard Rule 6 of
+        # SCORING_PROMPT, which reads the user's dealbreaker list and
+        # judges whether the partner's profile violates any of them in
+        # meaning (not just text). Single enforcement path, handles
+        # phrasings the literal filter could never catch.
         matches.sort(key=lambda m: m.llm_score, reverse=True)
         result = matches[:limit]
 
@@ -1016,41 +1082,24 @@ def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 
     logger.info(f"[ExplainBackfill] Complete for {user_id[:8]}: {completed} generated, {failed} failed out of {len(matches)}")
 
 
-def _apply_dealbreaker_filter(user_id: str, matches: List[LLMMatch]) -> List[LLMMatch]:
-    """Remove matches violating user's stated dealbreakers."""
-    try:
-        from app.adapters.supabase_onboarding import supabase_onboarding_adapter
-        slots = supabase_onboarding_adapter.get_user_slots_sync(user_id)
-        if not slots:
-            return matches
-
-        db_slot = slots.get('dealbreakers', {})
-        db_text = db_slot.get('value', '') if isinstance(db_slot, dict) else str(db_slot)
-        if not db_text or not db_text.strip():
-            return matches
-
-        dealbreakers = [d.strip().lower() for d in db_text.replace(';', ',').split(',') if d.strip()]
-        if not dealbreakers:
-            return matches
-
-        filtered = []
-        for m in matches:
-            try:
-                profile = UserProfile.get(m.user_id)
-                if not profile or not profile.persona:
-                    filtered.append(m)
-                    continue
-                p = profile.persona
-                text = ' '.join([
-                    getattr(p, 'archetype', '') or '',
-                    getattr(p, 'designation', '') or '',
-                    getattr(p, 'focus', '') or '',
-                    getattr(p, 'offerings', '') or '',
-                ]).lower()
-                if not any(db in text for db in dealbreakers):
-                    filtered.append(m)
-            except Exception:
-                filtered.append(m)
-        return filtered
-    except Exception:
-        return matches
+# _apply_dealbreaker_filter REMOVED Apr-18 Follow-up 27 per
+# [[CODING-DISCIPLINE]] Rule 5 "Semantic LLM, Not Keyword LLM".
+#
+# The old function did lexical substring matching of user A's dealbreaker
+# strings against user B's persona text (archetype + designation + focus +
+# offerings). This missed semantic violations where the concept was the
+# same but the wording was different — e.g. Temur Khan's dealbreaker
+# "pure infra plays" failed to match Elena Rodriguez's profile "inference
+# optimization platform" during the Apr-18 E2E test, even though both
+# describe infrastructure-focused businesses. Elena passed through the
+# filter and scored normally, polluting the match list.
+#
+# Dealbreakers are now enforced inside `_score_pair` via Hard Rule 6 of
+# SCORING_PROMPT, which passes the dealbreaker list to the LLM and asks
+# it to judge whether the partner's profile describes any of those
+# concepts in ANY wording. The LLM's semantic comprehension handles the
+# phrasings the literal filter could never enumerate.
+#
+# See [[People/Temur-Khan]] for the Apr-18 test case and
+# [[NEVER-DO]] "LLM Call Design" / SystemVault [[CODING-DISCIPLINE]]
+# Rule 5 for the principle.

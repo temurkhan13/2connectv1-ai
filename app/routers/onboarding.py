@@ -666,8 +666,27 @@ async def chat(request: ChatMessageRequest):
         if is_complete:
             # User signaled completion OR all required slots filled
             # Skip follow-up question generation entirely
-            ai_response = "Perfect! I have everything I need to find your matches. Click the button below to complete your profile."
-            logger.info(f"Session {session_id}: User completion detected, skipping follow-up")
+            #
+            # Apr-19 Issue 4 fix ([[Apr-18]] Follow-up 27): gate the "Perfect"
+            # message on actual MV 6/6 coverage. Aneesh Sen's test hit
+            # MAX_QUESTIONS cap before `dealbreakers` was asked (MV 5/6) and
+            # the bot still said "Perfect! I have everything I need" — which
+            # misaligned with the actual profile state. Honest framing when
+            # MV is incomplete preserves user trust.
+            mv_status = progressive_disclosure.get_multi_vector_status(session_id)
+            mv_coverage = mv_status.get("filled_count", 0) if isinstance(mv_status, dict) else 0
+            mv_total = mv_status.get("total_count", 6) if isinstance(mv_status, dict) else 6
+            if mv_coverage >= mv_total:
+                ai_response = "Perfect! I have everything I need to find your matches. Click the button below to complete your profile."
+            else:
+                ai_response = (
+                    "I've got a strong starting profile — let's find your first matches now. "
+                    "You can refine additional details anytime from your profile settings."
+                )
+            logger.info(
+                f"Session {session_id}: User completion detected "
+                f"(MV={mv_coverage}/{mv_total}), skipping follow-up"
+            )
         else:
             # ISSUE #5 FIX: If MV override is active, prioritize MV dimension questions
             mv_question = None

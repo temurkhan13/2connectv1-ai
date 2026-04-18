@@ -1206,7 +1206,10 @@ class ProgressiveDisclosure:
             List of slot names relevant to this goal
         """
         goal_questions = {
-            'fundraising': ['funding_need', 'company_stage', 'industry_focus', 'geography', 'timeline'],
+            # Apr-19 Issue 3 fix: removed company_stage from fundraising —
+            # the enum is startup-only and misbuckets fund managers (Aneesh
+            # Sen test). See use_case_templates.py for full rationale.
+            'fundraising': ['funding_need', 'industry_focus', 'geography', 'timeline'],
             'investing': ['check_size', 'portfolio_size', 'investment_thesis', 'stage_preference', 'industry_focus'],
             'hiring': ['role_type', 'team_size', 'industry_focus', 'geography', 'engagement_style'],
             'partnership': ['primary_goal', 'industry_focus', 'company_stage', 'engagement_style', 'geography'],

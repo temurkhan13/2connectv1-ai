@@ -111,8 +111,16 @@ Be direct about misalignments. It's better to identify poor fits quickly than wa
             VerdictLevel.NO_MATCH.value: []
         },
         # BUG-103 FIX: Added engagement_style and dealbreakers for MV coverage
+        # Apr-19 Issue 3 fix ([[Apr-18]] Follow-up 27): removed `company_stage`.
+        # The enum ("Idea / MVP / Product-Market Fit / Scaling / Established")
+        # is startup-lifecycle only; fund managers raising LP capital (the
+        # FUNDRAISING objective ALSO matches GPs via keyword "fund/raise")
+        # get shoehorned into nonsense values like MVP (Aneesh Sen test).
+        # MV `stage` dimension is still satisfied by `stage_preference`
+        # (see progressive_disclosure MULTI_VECTOR_DIMENSIONS), which
+        # handles both founders' own stage AND investors' target stage.
         onboarding_focus_slots=[
-            "funding_need", "company_stage", "industry_focus", "geography", "timeline",
+            "funding_need", "industry_focus", "geography", "timeline",
             "engagement_style", "dealbreakers"
         ],
         match_weight_overrides={

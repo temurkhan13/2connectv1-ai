@@ -864,11 +864,23 @@ def _generate_match_explanations(user_id: str, matches: list) -> list:
             match_persona = _get_user_persona(match_user_id)
 
             # Build scores for the prompt
+            # Apr-19 Issue 7 fix ([[Apr-18]] Follow-up 27): pass Phase 1 LLM
+            # verdict into Phase 2 so the explanation prompt is constrained
+            # by the scoring reasoning. Previously `overall_score` was the
+            # COSINE similarity (~0.5) and the Phase 1 `reason` was never
+            # passed, so Phase 2 wrote positive narratives even for
+            # <45 matches (e.g. Bob Investor 42% with a glowing 4-point
+            # case for why he was a good LP). Now Phase 2 sees the real
+            # Phase 1 score + reason and must align its narrative.
+            phase1_score = int(match.get('llm_score', match.get('score', 50)) or 50)
+            phase1_reason = match.get('reason', '') or ''
             scores = {
                 'req_to_off': match.get('similarity_score', 0.5),
                 'off_to_req': match.get('similarity_score', 0.5),
                 'industry_match': 0.7 if user_persona.get('industry', '').lower() == match_persona.get('industry', '').lower() else 0.4,
-                'overall_score': match.get('similarity_score', 0.5),
+                'overall_score': phase1_score / 100.0,  # LLM verdict, not cosine
+                'phase1_llm_score': phase1_score,
+                'phase1_reason': phase1_reason,
             }
 
             # Run async LLM call synchronously (we're in a background worker)
@@ -1008,11 +1020,23 @@ def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 
             match_user_id = match['user_id']
             match_persona = _get_user_persona(match_user_id)
 
+            # Apr-19 Issue 7 fix ([[Apr-18]] Follow-up 27): pass Phase 1 LLM
+            # verdict into Phase 2 so the explanation prompt is constrained
+            # by the scoring reasoning. Previously `overall_score` was the
+            # COSINE similarity (~0.5) and the Phase 1 `reason` was never
+            # passed, so Phase 2 wrote positive narratives even for
+            # <45 matches (e.g. Bob Investor 42% with a glowing 4-point
+            # case for why he was a good LP). Now Phase 2 sees the real
+            # Phase 1 score + reason and must align its narrative.
+            phase1_score = int(match.get('llm_score', match.get('score', 50)) or 50)
+            phase1_reason = match.get('reason', '') or ''
             scores = {
                 'req_to_off': match.get('similarity_score', 0.5),
                 'off_to_req': match.get('similarity_score', 0.5),
                 'industry_match': 0.7 if user_persona.get('industry', '').lower() == match_persona.get('industry', '').lower() else 0.4,
-                'overall_score': match.get('similarity_score', 0.5),
+                'overall_score': phase1_score / 100.0,  # LLM verdict, not cosine
+                'phase1_llm_score': phase1_score,
+                'phase1_reason': phase1_reason,
             }
 
             # Run async LLM call synchronously

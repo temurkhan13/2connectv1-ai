@@ -139,12 +139,32 @@ Stage alignment: {scores.get('stage_match', 0.5):.0%}
 Geography overlap: {scores.get('geography_match', 0.5):.0%}
 Overall match: {scores.get('overall_score', 0.5):.0%}
 
+=== PHASE 1 SCORING VERDICT (ground truth) ===
+Final score: {scores.get('phase1_llm_score', 50)}/100
+Scoring reasoning: "{scores.get('phase1_reason', '(not available)')}"
+
+PHASE 1 COHERENCE RULE (non-negotiable):
+Your headline, key_points, summary, synergy_areas, and friction_points MUST be semantically consistent with the Phase 1 verdict above. The verdict was produced by a separate scoring pass that judged whether these two users can genuinely exchange what they each seek. Your job is to expand that verdict into a richer narrative — NEVER to contradict it.
+
+How to align:
+- **If Phase 1 score is below 45**: the scoring pass determined these users cannot genuinely exchange what they seek (e.g. both are the same kind of investor, neither has what the other needs, structural mismatch). Your narrative MUST reflect this honestly:
+    * Headline should NOT be optimistic. It should name the honest shape — e.g. "Peer connection, same space — limited direct exchange" or "Thesis overlap without structural fit" or whatever the Phase 1 reason actually describes. Do NOT write a headline like "potential LP and co-investor" when the scoring said "neither is offering what the other needs."
+    * Key_points should describe what's genuinely present AND what's structurally missing. If Phase 1 said "both seeking LPs," say that — don't pretend they could LP each other.
+    * Summary should explain in 2-3 sentences why the match is low-value despite surface similarity.
+    * Synergy_areas: only list items where CONCRETE exchange is possible at the Phase 1 score level. If the verdict is "neither offers what the other needs," list no more than 1-2 genuinely useful (even if small) items like "peer conversation for deal-flow signals" — do NOT fabricate 4 positive synergies.
+    * Friction_points should reflect the structural mismatch Phase 1 identified, not fluffy "different timezones" filler.
+- **If Phase 1 score is 45-69**: worth exploring with explicit caveats. Acknowledge both value and structural gaps in equal weight.
+- **If Phase 1 score is 70-89**: solid value exchange exists but with one or more limitations. Lead with the exchange, name the limits honestly.
+- **If Phase 1 score is 90+**: strong mutual value exchange. Specific, celebratory, concrete.
+
+Before you finalize: re-read your headline and ask yourself — does it match the Phase 1 verdict? If the verdict says "neither is offering what the other needs" and your headline calls this person a "potential LP and co-investor," you are contradicting the verdict. Fix it.
+
 CRITICAL INSTRUCTIONS:
 1. You have FULL profile data for both users above. Use it. CITE SPECIFIC DETAILS — names, numbers, industries, companies, achievements, geographies.
 2. Don't say "Industry match: AI" — say "Both scaling AI models in healthcare (your drug discovery, their diagnostics)"
 3. Don't say "They offer expertise" — say "{name_b} built 3 React Native apps to 100K+ users"
-4. Don't say "Mutually beneficial" — explain WHY and HOW it's beneficial with specifics from their profiles
-5. Focus on VALUE EXCHANGE: what can each person specifically do for the other based on their profile, strategy, offerings, and requirements?
+4. Don't say "Mutually beneficial" — explain WHY and HOW it's beneficial with specifics from their profiles. When the Phase 1 verdict is low, explain WHY NOT with specifics too.
+5. Focus on HONEST value exchange — including the absence of one when the Phase 1 reasoning found none. Your role is to expand the Phase 1 verdict, not to overwrite it with optimism.
 6. ALWAYS use "you/your" for the viewer and "{name_b}" for the match — NEVER "User A" or "User B"
 
 Respond with a JSON object containing:

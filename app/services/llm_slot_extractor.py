@@ -2593,11 +2593,19 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             # Even with objective-specific slots, primary_goal must come first
             # FIX (Mar 30, 2026): Also prioritize user_type — critical for mentor/mentee
             # disambiguation. Without it, "Seek Mentorship" can't be distinguished.
+            # FIX (Apr 19, 2026 — Brian Limba test): Also prioritize seeking_user_types.
+            # Without it the cheap filter can't narrow to the user's target partner type
+            # (e.g. founder raising Series A wanting "lead VC partners" gets flattened to
+            # any reciprocal goal — 6:15 VC:Angel dilution visible in Brian's 14 matches).
+            # seeking_user_types drives the cheap filter pool composition just as much as
+            # primary_goal drives the reciprocity matrix.
             forced_first = []
             if "primary_goal" not in already_filled:
                 forced_first.append("primary_goal")
             if "user_type" not in already_filled:
                 forced_first.append("user_type")
+            if "seeking_user_types" not in already_filled:
+                forced_first.append("seeking_user_types")
 
             if forced_first:
                 for slot in forced_first:

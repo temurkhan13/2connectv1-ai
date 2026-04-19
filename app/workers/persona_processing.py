@@ -25,17 +25,32 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
     - Changed "What They're Looking For" to "Looking For" (less awkward on own profile)
     - Removed redundant "Requirements" section (duplicated Looking For content)
     - Using "Strategy" instead of "Investment Philosophy" (role-agnostic)
+
+    Apr-19 Follow-up 29 privacy fix (Brian Limba test):
+    DROPPED `archetype` and `designation` from the summary composition.
+    These two fields legitimately contain real company names (Stripe,
+    Ramp, YC, Sequoia) because the persona prompt EXPLICITLY allows them
+    to be specific — they're used for SCORING and for the bilateral
+    MATCH EXPLANATION prompt (where real names are appropriate context).
+    But `user_summaries.summary` flows downstream to Discover, which is
+    a BROADCAST surface where any user can browse any profile. Real
+    company names in the Discover header ("at Stripe, Platform Team Lead
+    at Ramp") are identity leaks — trivial to Google back to the person.
+    Categorical fields (profile_essence, requirements, offerings,
+    strategy, what_theyre_looking_for) remain — those are already
+    categorical-descriptor-only via the PUBLIC PRIVACY RULE in
+    persona_prompts.py.
+    Architecture: user_profiles table keeps archetype + designation
+    (scoring + explanation LLMs read directly from there). Only this
+    summary composition drops them.
     """
     parts = []
 
     if persona.get('name'):
         parts.append(f"# {persona['name']}")
 
-    if persona.get('archetype'):
-        parts.append(f"**Profile Type:** {persona['archetype']}")
-
-    if persona.get('designation'):
-        parts.append(f"**Designation:** {persona['designation']}")
+    # INTENTIONALLY DROPPED archetype + designation here — see docstring above.
+    # They remain in user_profiles for scoring + match-explanation LLM consumption.
 
     if persona.get('experience'):
         parts.append(f"**Experience:** {persona['experience']}")

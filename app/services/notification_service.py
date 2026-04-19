@@ -91,15 +91,21 @@ class NotificationService:
         """
         markdown_parts = []
 
-        # Add name and archetype at the top if available
+        # Apr-19 Follow-up 29 privacy fix (Brian Limba test):
+        # Dropped archetype + designation from the summary composition —
+        # they contain real company names (Stripe, Ramp, YC, Sequoia)
+        # which are legitimate for scoring + bilateral match explanations
+        # but leak identity when the composed summary flows to Discover
+        # (broadcast surface). user_profiles table retains these fields
+        # for scoring + explanation LLM consumption; they just don't
+        # reach user_summaries.summary anymore. Keep the two paths
+        # (persona_processing + notification_service) in sync so any
+        # downstream consumer of either composed summary gets the same
+        # sanitized view.
         if persona_data.get('name'):
             markdown_parts.append(f"# {persona_data['name']}")
 
-        if persona_data.get('archetype'):
-            markdown_parts.append(f"**Profile Type:** {persona_data['archetype']}")
-
-        if persona_data.get('designation'):
-            markdown_parts.append(f"**Designation:** {persona_data['designation']}")
+        # INTENTIONALLY DROPPED archetype + designation here — privacy per above.
 
         if persona_data.get('experience'):
             markdown_parts.append(f"**Experience:** {persona_data['experience']}")

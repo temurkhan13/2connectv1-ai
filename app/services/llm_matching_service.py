@@ -187,7 +187,19 @@ def _get_cand_designation_text(cand_id: str) -> str:
     except Exception:
         return ''
 
-SCORING_PROMPT = """You are a professional networking match evaluator. Score whether introducing two people would create real value based on what they SPECIFICALLY said they need.
+SCORING_PROMPT = """You are a professional networking match evaluator.
+
+⚠️ OUTPUT FORMAT (read this first):
+Respond with EXACTLY ONE JSON object and NOTHING ELSE. Do NOT write "STEP 1:",
+"STEP 2:", reasoning paragraphs, analysis prose, or any other text before or
+after the JSON. Think through the scoring internally; write only the final
+JSON object as your response. Text outside the JSON is a parse error and
+causes the match to be dropped silently.
+
+JSON SHAPE (required):
+{{"score": <0-100>, "reason": "<one sentence — the specific value exchange, or why it's weak>", "breakdown": {{"role_fit": <0-100>, "stage_match": <0-100>, "geography_match": <0-100>, "industry_match": <0-100>}}}}
+
+---
 
 USER A:
 What they need: {user_a_requirements}
@@ -198,14 +210,16 @@ USER B:
 What they need: {user_b_requirements}
 What they offer: {user_b_offerings}
 
-SCORING PROCESS — follow these steps IN ORDER:
+---
+
+SCORING PROCESS — apply these steps INTERNALLY before outputting JSON. Do NOT write them in your response.
 
 STEP 1: What does User A specifically need? Read their requirements literally.
 STEP 2: Does User B OFFER that specific thing? Not something vaguely related — the actual thing.
 STEP 3: What does User B specifically need? Read their requirements literally.
 STEP 4: Does User A OFFER that specific thing?
 STEP 5: Do the specifics align? (industry, geography, stage, check size, role level, etc.)
-STEP 6: Does User B's profile describe ANYTHING that matches User A's dealbreakers SEMANTICALLY — not just lexically? Same concept in different words is still a violation (e.g. dealbreaker "pure infra plays" is violated by "inference optimization platform" because both describe infrastructure-focused businesses; dealbreaker "fractional arrangements" is violated by "part-time advisory work"; dealbreaker "CTO-for-hire roles" is violated by "contract engineering leadership"). Judge meaning, not words.
+STEP 6: Evaluate dealbreakers (both presence AND absence — see Hard Rule 6 below).
 
 SCORE BANDS — your score MUST fall in the correct band:
 90-100: BOTH users directly deliver what the other specifically asked for. Specifics align (stage, geography, industry, check size).
@@ -220,12 +234,51 @@ HARD RULES — violations mean automatic score cap:
 3. Do NOT invent relationships neither user asked for. If nobody mentioned mentorship, do not score based on "potential mentorship value." If nobody mentioned networking, do not score based on "peer networking."
 4. Check size / stage mismatch: A $5K-$25K pre-seed investor matched with a Series A founder raising $2M+ → score below 40. The capital gap is too large.
 5. Geography mismatch: If a user specified a required geography (e.g., "must be in Southeast Asia") and the match is elsewhere → score below 40.
-6. DEALBREAKER VIOLATION (semantic): If User B's profile describes anything in User A's dealbreaker list — whether lexically identical or semantically equivalent — the score MUST be below 30, regardless of any other alignment. Dealbreakers are hard no-gos. Do not score around them. If dealbreakers is "(none stated)", this rule does not apply.
 
-SELF-CHECK before responding:
+6. DEALBREAKER ENFORCEMENT (semantic, two-orientation): Dealbreakers are hard
+   no-gos. Do not score around them. If dealbreakers is "(none stated)", skip
+   this rule entirely. Otherwise evaluate BOTH orientations:
+
+   6a. PRESENCE — If User B's profile DESCRIBES anything matching User A's
+       dealbreaker list, whether lexically identical or semantically equivalent,
+       the score MUST be below 30. Same concept in different words is still a
+       violation. Examples:
+         - dealbreaker "pure infra plays" VIOLATED BY "inference optimization platform"
+         - dealbreaker "fractional arrangements" VIOLATED BY "part-time advisory work"
+         - dealbreaker "CTO-for-hire roles" VIOLATED BY "contract engineering leadership"
+         - dealbreaker "angels writing sub-$500K" VIOLATED BY "$5K–$25K cheque size"
+
+   6b. ABSENCE — If User A's dealbreaker is phrased as a REQUIRED QUALITY that
+       must be present (forms: "partners without X", "no funds lacking Y",
+       "no partners who don't have Z", "require X — not acceptable without"),
+       then User B's profile must provide POSITIVE, EXPLICIT EVIDENCE of the
+       required quality X/Y/Z to be considered compliant. Absence of evidence
+       on a required trait IS a violation — do NOT treat silence as compliance.
+       Examples:
+         - dealbreaker "partners without clinical-workflow board experience" —
+           COMPLIANT only if User B's profile explicitly describes clinical-
+           workflow board experience; VIOLATED if profile is silent on this
+           (even if profile mentions healthcare investing generally).
+         - dealbreaker "no funds lacking cross-Atlantic LP bases" — COMPLIANT
+           only if fund's profile explicitly describes EU + US LP exposure;
+           VIOLATED if profile only mentions one or neither.
+         - dealbreaker "no partners who don't have deep-tech thesis conviction" —
+           COMPLIANT only if partner's profile explicitly documents deep-tech
+           portfolio or thesis; VIOLATED if profile mentions other sectors
+           without specific deep-tech evidence.
+
+       The judgment call: was the trait EXPLICITLY demonstrated in User B's
+       profile? If the answer is "not mentioned" or "can't tell", treat as
+       violation → score below 30. This mirrors how the user themselves
+       would approach diligence: a fund that doesn't mention healthcare deals
+       in its public materials is presumed not to have them.
+
+SELF-CHECK before outputting JSON (internally — do not write the check in your response):
 - Re-read what User A SPECIFICALLY said they need. Does User B offer EXACTLY that? If no → your score should be below 50.
 - Re-read what User B SPECIFICALLY said they need. Does User A offer EXACTLY that? If no → your score should be below 70 (one-directional at best).
-- Re-read User A's dealbreakers. Does User B's profile describe any of them semantically? If yes → score below 30 (Hard Rule 6).
+- Re-read User A's dealbreakers ONE BY ONE:
+    (a) For each presence-phrased dealbreaker: does User B's profile describe this trait semantically? If yes → score below 30 (Hard Rule 6a).
+    (b) For each absence-phrased dealbreaker (form "partners without X"): does User B's profile provide EXPLICIT POSITIVE EVIDENCE of the required trait X? If not → score below 30 (Hard Rule 6b). Silence counts as violation.
 - Does your reason match your score? If your reason describes problems or structural mismatch, your score must reflect those problems (Hard Rule 2).
 
 IMPLIED NEEDS (use carefully):
@@ -233,14 +286,13 @@ IMPLIED NEEDS (use carefully):
 - A "VP Engineering seeking a role" implies they need hiring companies — NOT other job seekers.
 - Only use implied needs when the implication is obvious from role + stage. Do not stretch.
 
-Respond with ONLY a JSON object:
-{{"score": <0-100>, "reason": "<one sentence explaining the specific value exchange or why it's weak>", "breakdown": {{"role_fit": <0-100>, "stage_match": <0-100>, "geography_match": <0-100>, "industry_match": <0-100>}}}}
-
 The breakdown dimensions (each 0-100, reflect per-dimension agreement independent of overall score):
 - role_fit: Does the role type / person type align with what the other asked for?
 - stage_match: Do the stages (seed/A/B, experience levels, hiring level) align?
 - geography_match: Do the geographies / timezones / remote preferences align?
-- industry_match: Does the industry / domain / sector align?"""
+- industry_match: Does the industry / domain / sector align?
+
+⚠️ FINAL REMINDER: output ONLY the JSON object described at the top. No "STEP 1:", no prose, no markdown code fences. Just the JSON."""
 
 
 @dataclass
@@ -283,21 +335,34 @@ def _score_pair(
             user_b_offerings=user_b_off[:2000],
         )
 
-        # Apr-19 Issue 5 fix ([[Apr-18]] Follow-up 27): raised max_tokens
-        # 200 → 300 to prevent breakdown truncation. Previously tight
-        # window could truncate the breakdown JSON for some scoring calls
-        # (Christian Horner in Aneesh's test returned score+reason but no
-        # breakdown — widget couldn't render dimensional bars).
+        # Apr-19 Follow-up 30 Fix #7: raised max_tokens 300 → 800 to prevent
+        # parse failures when the LLM emits chain-of-thought before the JSON.
+        # Root cause visible on [[People/Sara-Mendoza]]'s matching run: 8 of 9
+        # reciprocal candidates failed to parse because the LLM followed the
+        # SCORING_PROMPT's "STEP 1..STEP 6" scaffolding literally and ran out
+        # of tokens before emitting the JSON. Rich dealbreaker lists (Sara had
+        # 7) make this worse — more reasoning to verbalize before JSON.
+        # Combined with the prompt restructure (OUTPUT FORMAT banner at top,
+        # STEP instructions reframed as internal-only), 800 tokens gives
+        # comfortable headroom even if the LLM still emits some prose.
+        #
+        # Apr-19 Follow-up 28 precedent: earlier bump 200 → 300 (commit 3cb250f)
+        # fixed breakdown truncation. This bump is in the same family but for
+        # the larger reasoning-before-JSON failure mode.
         response = call_with_fallback(
             service="matching",
             system_prompt=(
-                "You are a match scoring system. Respond with ONLY a JSON object, "
-                "no other text. Your response MUST include all four fields: score, "
-                "reason, breakdown (with role_fit, stage_match, geography_match, "
-                "industry_match). A response without breakdown is malformed."
+                "You are a match scoring system. Your response MUST be EXACTLY "
+                "one JSON object and NOTHING ELSE — no prose, no 'STEP 1:', no "
+                "reasoning paragraphs, no markdown code fences. Think internally, "
+                "then output only the JSON. The JSON must include all four fields: "
+                "score (0-100 int), reason (one sentence string), breakdown "
+                "(object with role_fit, stage_match, geography_match, "
+                "industry_match, each 0-100 int). Any text outside the JSON "
+                "causes a parse error and the match is dropped."
             ),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=300,
+            max_tokens=800,
             temperature=0.0,
         )
 
@@ -315,12 +380,13 @@ def _score_pair(
                 service="matching",
                 system_prompt=(
                     "You are a match scoring system. Your previous response omitted the "
-                    "'breakdown' field. Re-score the pair, and this time you MUST include "
-                    "breakdown with all four dimensions (role_fit, stage_match, "
-                    "geography_match, industry_match) as integers 0-100. No exceptions."
+                    "'breakdown' field. Re-score the pair, and this time output EXACTLY "
+                    "one JSON object with all four fields: score, reason, and breakdown "
+                    "(with role_fit, stage_match, geography_match, industry_match). "
+                    "No prose, no 'STEP 1:', no reasoning before or after the JSON."
                 ),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=300,
+                max_tokens=800,
                 temperature=0.0,
             )
             retry_parsed = _parse_scoring_response(retry_response)

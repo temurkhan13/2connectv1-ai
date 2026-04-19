@@ -179,6 +179,29 @@ Generation rules:
   preferences, sector thesis, metrics. The categorical descriptor retains matching
   signal while making the text safe for the Discover page where identity must not
   leak.
+
+  ** CONSISTENCY MANDATE (Apr-19 Brian Limba test): APPLY THIS RULE TO EVERY
+  MENTION OF EVERY REAL-WORLD NAMED ENTITY IN EVERY ONE OF THE FIVE FIELDS
+  ABOVE — FROM THE FIRST WORD TO THE LAST. **
+  Once you've chosen a categorical descriptor for a company or person (e.g.
+  "a leading payments infrastructure company" for Stripe), USE THAT SAME
+  DESCRIPTOR every subsequent time you refer to that entity in the same field
+  or across fields — NEVER slip back to the literal name. Do not let the rule
+  relax as the text grows longer. The LLM's tendency to revert to the verbatim
+  name on the N-th mention after using a categorical descriptor early on IS
+  the failure mode we are explicitly preventing. Paragraphs 1, 2, AND the
+  closing sentences of offerings get the same treatment.
+
+  SELF-CHECK before finalizing your JSON response:
+  Re-scan the five public fields (profile_essence, requirements, offerings,
+  strategy, what_theyre_looking_for) for any real-world company name, fund
+  name, accelerator name, institution name, or person name that appears
+  verbatim. If you find any — replace with the same categorical descriptor
+  you used earlier in the text. "Sequoia seed network" → use the categorical
+  equivalent ("premier early-stage venture fund's network"). "Priya" (a
+  co-founder's first name) → "the co-founder". This check is non-negotiable;
+  a single literal name slipping through defeats the whole privacy guarantee.
+
   EXCEPTION — the `persona_archetype` and `persona_designation` fields ARE allowed
   to contain specific companies because they are used for SCORING only and not
   displayed cross-user. Use the persona title as the place to be fully specific;

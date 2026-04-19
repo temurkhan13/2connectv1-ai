@@ -1040,7 +1040,7 @@ def _generate_match_explanations(user_id: str, matches: list) -> list:
             match['headline'] = ''
             match['key_points'] = []
             match['explanation'] = match.get('reason', '')
-            match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
+            match['synergy_areas'] = []
             match['friction_points'] = []
             match['talking_points'] = []
 
@@ -1190,7 +1190,7 @@ def _backfill_explanations_async(user_id: str, matches: list, batch_size: int = 
             match['headline'] = ''
             match['key_points'] = []
             match['explanation'] = match.get('reason', '')
-            match['synergy_areas'] = [match.get('reason', '')] if match.get('reason') else []
+            match['synergy_areas'] = []
             match['friction_points'] = []
             match['talking_points'] = []
             failed += 1

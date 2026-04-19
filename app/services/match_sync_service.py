@@ -182,7 +182,9 @@ class MatchSyncService:
             explanation = m.get('explanation', reason)
             headline = m.get('headline', '')
             key_points = m.get('key_points', [])
-            synergy_areas = m.get('synergy_areas', [reason] if reason else [])
+            # Empty when Phase 2 hasn't populated yet — UI hides the section rather
+            # than echoing the reason/summary as a duplicate synergy bullet.
+            synergy_areas = m.get('synergy_areas', [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
             score_breakdown = m.get('score_breakdown')
@@ -242,7 +244,7 @@ class MatchSyncService:
             explanation = m.get('explanation', reason)
             headline = m.get('headline', '')
             key_points = m.get('key_points', [])
-            synergy_areas = m.get('synergy_areas', [reason] if reason else [])
+            synergy_areas = m.get('synergy_areas', [])
             friction_points = m.get('friction_points', [])
             talking_points = m.get('talking_points', [])
             score_breakdown = m.get('score_breakdown')

@@ -42,14 +42,26 @@ MIN_DIMENSION_WORDS = 15  # Skip dimension embeddings with less than this many w
 MIN_RECIPROCAL_MATCHES = int(os.getenv('LLM_MATCH_MIN_RECIPROCAL', '3'))
 
 # Primary-goal reciprocity matrix. Each key maps to the set of partner goals
-# that can exchange real value with that goal.
+# that can exchange real value with that goal. The matrix is intentionally
+# asymmetric — a partner may be a legitimate prospect from one direction
+# without the reverse being a "Primary" tier match.
+#
 #   • Finance pairs: Raise Funding ↔ Invest in Startups
 #   • Hiring pairs: Recruit ↔ Find New Job ↔ Hire Talent
 #   • Mentorship pairs: Seek Mentorship ↔ Offer Mentorship
 #   • Self-symmetric: Seek Networking, Explore Partnerships, Find Co-founder
-#   • Service providers reciprocate with anyone whose goal implies a buyer
+#   • Service providers reciprocate with anyone whose goal implies a buyer —
+#     but the *reverse* is not always true (see Raise Funding below)
+#
+# Apr-19 (Brian Limba test): `Raise Funding` previously listed `Offer Services`
+# as reciprocal. From the founder's perspective this is wrong — founders raising
+# Series A want capital, not to buy services. LLM correctly devalued these (Marcus
+# Chen fractional CTO 42, Marcus Thompson M&A advisor 32) but the Primary tier
+# badge was misleading. Removed from Raise Funding's set. Kept `Raise Funding`
+# inside `Offer Services`'s set — service providers legitimately view fundraising
+# founders as prospective buyers for their services (asymmetric reciprocity).
 PRIMARY_GOAL_RECIPROCITY = {
-    "Raise Funding":        {"Invest in Startups", "Offer Services"},
+    "Raise Funding":        {"Invest in Startups"},
     "Find Co-founder":      {"Find Co-founder"},
     "Seek Mentorship":      {"Offer Mentorship"},
     "Offer Mentorship":     {"Seek Mentorship", "Find New Job"},

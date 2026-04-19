@@ -105,10 +105,12 @@ class NotificationService:
         if persona_data.get('name'):
             markdown_parts.append(f"# {persona_data['name']}")
 
-        # INTENTIONALLY DROPPED archetype + designation here — privacy per above.
-
-        if persona_data.get('experience'):
-            markdown_parts.append(f"**Experience:** {persona_data['experience']}")
+        # INTENTIONALLY DROPPED archetype + designation + experience here —
+        # privacy per above (Apr-19 F/u 29 Fix #5 + Fix #6). Real company
+        # names in any of these three fields are legitimate for scoring +
+        # bilateral match explanations but leak identity on the Discover
+        # broadcast surface. Keep the two summary-composition paths
+        # (persona_processing + notification_service) in lockstep.
 
         # Add sections with headers
         if persona_data.get('focus'):

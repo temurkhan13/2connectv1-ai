@@ -49,11 +49,16 @@ def _convert_persona_to_markdown(persona: Dict[str, Any], requirements: str, off
     if persona.get('name'):
         parts.append(f"# {persona['name']}")
 
-    # INTENTIONALLY DROPPED archetype + designation here — see docstring above.
-    # They remain in user_profiles for scoring + match-explanation LLM consumption.
-
-    if persona.get('experience'):
-        parts.append(f"**Experience:** {persona['experience']}")
+    # INTENTIONALLY DROPPED archetype + designation + experience here —
+    # see docstring above (Apr-19 F/u 29 Fix #5 + Fix #6).
+    # All three remain in user_profiles for scoring + match-explanation LLM
+    # consumption (bilateral context where real names are appropriate).
+    # Experience was dropped alongside archetype/designation because pre-Fix-#4
+    # personas ship literal company names in it (Temur: "12+ years across
+    # Google, Palantir, Monzo Bank, and Pixelette Technologies"). New personas
+    # (post-Fix #6b) are prompted to use categorical descriptors in experience,
+    # so after a future persona-regeneration pass we can reintroduce this line
+    # to the summary with clean content.
 
     if persona.get('focus'):
         parts.append(f"\n## Focus\n{persona['focus']}")

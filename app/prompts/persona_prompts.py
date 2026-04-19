@@ -164,10 +164,12 @@ Generation rules:
   ("this founder", "this recruiter", "this investor") for subsequent references.
   This keeps prose natural while minimizing name repetition — important for the
   Discover view which anonymizes other users' profiles by stripping names.
-- PUBLIC PRIVACY RULE (Apr-19 Issue 8 per [[Apr-18]] Follow-up 27):
-  In profile_essence, requirements, offerings, strategy, and what_theyre_looking_for
-  — DO NOT name specific real-world companies or specific real-world people the
-  user has worked with. Use categorical descriptors that preserve the signal:
+- PUBLIC PRIVACY RULE (Apr-19 Issue 8 per [[Apr-18]] Follow-up 27;
+  extended Apr-19 Follow-up 29 Fix #6 to also include `experience`):
+  In profile_essence, requirements, offerings, strategy, what_theyre_looking_for,
+  AND experience — DO NOT name specific real-world companies or specific real-world
+  people the user has worked with. Use categorical descriptors that preserve the
+  signal:
     * "at Stripe" → "at a leading payments infrastructure company"
     * "at Google" → "at a major tech company"
     * "ex-Monzo" → "from a prominent UK digital bank"
@@ -181,7 +183,7 @@ Generation rules:
   leak.
 
   ** CONSISTENCY MANDATE (Apr-19 Brian Limba test): APPLY THIS RULE TO EVERY
-  MENTION OF EVERY REAL-WORLD NAMED ENTITY IN EVERY ONE OF THE FIVE FIELDS
+  MENTION OF EVERY REAL-WORLD NAMED ENTITY IN EVERY ONE OF THE SIX FIELDS
   ABOVE — FROM THE FIRST WORD TO THE LAST. **
   Once you've chosen a categorical descriptor for a company or person (e.g.
   "a leading payments infrastructure company" for Stripe), USE THAT SAME
@@ -193,10 +195,10 @@ Generation rules:
   closing sentences of offerings get the same treatment.
 
   SELF-CHECK before finalizing your JSON response:
-  Re-scan the five public fields (profile_essence, requirements, offerings,
-  strategy, what_theyre_looking_for) for any real-world company name, fund
-  name, accelerator name, institution name, or person name that appears
-  verbatim. If you find any — replace with the same categorical descriptor
+  Re-scan the six public fields (profile_essence, requirements, offerings,
+  strategy, what_theyre_looking_for, experience) for any real-world company
+  name, fund name, accelerator name, institution name, or person name that
+  appears verbatim. If you find any — replace with the same categorical descriptor
   you used earlier in the text. "Sequoia seed network" → use the categorical
   equivalent ("premier early-stage venture fund's network"). "Priya" (a
   co-founder's first name) → "the co-founder". This check is non-negotiable;

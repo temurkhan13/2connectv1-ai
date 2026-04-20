@@ -2599,6 +2599,13 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
             # any reciprocal goal — 6:15 VC:Angel dilution visible in Brian's 14 matches).
             # seeking_user_types drives the cheap filter pool composition just as much as
             # primary_goal drives the reciprocity matrix.
+            # F/u 38 #7 + #8 (Apr-20 — Jerry Lawler native-APK test): add company_name
+            # and experience_years to forced_first. Jerry mentioned "Piperflow" turn 1 +
+            # turn 6 but company_name was deferred by BUG-088 every turn and never recovered.
+            # Same with "17 months in" + "prior fintech ops role" → experience_years never
+            # extracted. Both slots carry signal the scoring LLM + Phase 2 explanation LLM
+            # use for coherence — skipping them erodes match-explanation quality. Same
+            # pattern as Apr-19 F/u 29 Fix #3 for seeking_user_types.
             forced_first = []
             if "primary_goal" not in already_filled:
                 forced_first.append("primary_goal")
@@ -2606,6 +2613,10 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
                 forced_first.append("user_type")
             if "seeking_user_types" not in already_filled:
                 forced_first.append("seeking_user_types")
+            if "company_name" not in already_filled:
+                forced_first.append("company_name")
+            if "experience_years" not in already_filled:
+                forced_first.append("experience_years")
 
             if forced_first:
                 for slot in forced_first:

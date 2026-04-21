@@ -133,6 +133,22 @@ class EngagementMetrics:
 
     def get_engagement_level(self) -> UserEngagementLevel:
         """Determine engagement level from metrics."""
+        # Apr-21 Fix (F/u 38 #4): guard against zero-data misclassification.
+        # `record_response()` is defined (line 1096) but no call site exists
+        # anywhere in the codebase, so this method was consistently running
+        # against default (all-zero) metrics. With defaults:
+        #   avg_response_length=0.0 → < 10 (TRUE)
+        #   avg_response_time_seconds=0.0 → < 5 (TRUE)
+        # → returned FRUSTRATED every time regardless of actual engagement.
+        # Jerry Lawler's Apr-20 test logged this firing at 21%, 55%, 79%
+        # progress throughout rich onboarding turns (not actually frustrated).
+        # Until record_response is wired into the chat handler, return
+        # MODERATE (the default) when we have no data to judge on — that
+        # matches what the classifier should report for an indeterminate
+        # engagement state, not the worst possible label.
+        if self.questions_answered == 0 and self.questions_skipped == 0:
+            return UserEngagementLevel.MODERATE
+
         # High engagement: detailed responses, few skips
         if self.avg_response_length > 100 and self.questions_skipped == 0:
             return UserEngagementLevel.HIGH

@@ -693,13 +693,49 @@ class ContextManager:
 
             # Convert LLM extractions to our slot format
             for slot_name, llm_slot in llm_result.extracted_slots.items():
-                # Skip already filled slots (unless it's a correction with high confidence)
+                # Apr-21 Fix (F/u 38 #6): content-richness-aware slot updates.
+                # Previous rule was confidence-only (>=0.95 overrides), which
+                # produced two symmetric bugs on Jerry Lawler's Apr-20 test:
+                #   (a) Rich turn-6 `dealbreakers` (crypto-first funds,
+                #       strategic CVC, governance structures, fintech-operator
+                #       experience) REJECTED because LLM confidence < 0.95 —
+                #       weak turn-4 values ("weekly check-ins; micromanagement")
+                #       kept instead.
+                #   (b) Rich turn-1 `achievement` (metric-based, $60M walk-away)
+                #       OVERWRITTEN by weaker turn-3 "data room ready"
+                #       phrasing that had >= 0.95 confidence.
+                # New rule: prefer the richer extraction. Accept low-confidence
+                # new value if it's materially richer; accept high-confidence
+                # new value only if existing is short/generic (legitimate
+                # correction path — e.g. user typo on turn 1 then spelled
+                # correctly on turn 3).
                 if slot_name in context.slots:
                     existing = context.slots[slot_name]
                     if existing.status in [SlotStatus.FILLED, SlotStatus.CONFIRMED]:
-                        # Only override if LLM is very confident (correction detection)
-                        if llm_slot.confidence < 0.95:
+                        existing_str = str(existing.value).strip() if existing.value else ""
+                        new_str = str(llm_slot.value).strip() if llm_slot.value else ""
+                        existing_len = len(existing_str)
+                        new_len = len(new_str)
+                        is_richer = new_len > existing_len * 1.3  # at least 30% longer
+                        is_high_conf_correction = (
+                            llm_slot.confidence >= 0.95 and existing_len < 50
+                        )
+
+                        # Skip the new value if it's neither richer nor a
+                        # legitimate correction on a short prior value.
+                        if not (is_richer or is_high_conf_correction):
+                            logger.info(
+                                f"Slot {slot_name} update rejected: "
+                                f"existing_len={existing_len} new_len={new_len} "
+                                f"confidence={llm_slot.confidence:.2f} — keeping existing"
+                            )
                             continue
+
+                        logger.info(
+                            f"Slot {slot_name} update accepted: "
+                            f"existing_len={existing_len} new_len={new_len} "
+                            f"is_richer={is_richer} is_correction={is_high_conf_correction}"
+                        )
 
                 # Create ExtractedSlot from LLM result
                 extracted = ExtractedSlot(
@@ -1210,6 +1246,29 @@ class ContextManager:
             context.phase = ConversationPhase.COMPLETE
             return True
 
+        # (3.5) Apr-21 Fix (F/u 38 #5): graceful termination on near-complete
+        # profile. Jerry Lawler's Apr-20 test logged the bot looping
+        # engagement-style questions across turns 6, 7, 8 — MV stuck at 5/6
+        # and the extractor kept failing on the same slot. Hard ceiling (8)
+        # eventually terminated but the user experience was poor (same slot
+        # re-asked in different phrasings across 3 turns).
+        #
+        # If the user has engaged meaningfully (>=5 user turns) AND we've
+        # already asked our intended max_questions AND MV is near-complete
+        # (5 of 6), accept the profile and stop. The "strong starting profile"
+        # messaging from F/u 28 Issue 4 (`onboarding.py:669`) already handles
+        # the sub-6/6 case honestly; user can refine in profile settings.
+        if self._max_questions_reached(context):
+            user_turns = sum(1 for turn in context.turns if turn.turn_type == TurnType.USER)
+            if user_turns >= 5 and self._multi_vector_near_complete(context):
+                logger.info(
+                    f"Session {session_id}: Max questions reached with MV near-complete "
+                    f"(>=5/6) and {user_turns} user turns — auto-completing to avoid "
+                    f"question-loop on the last MV slot (F/u 38 #5)"
+                )
+                context.phase = ConversationPhase.COMPLETE
+                return True
+
         # (4) Hard ceiling — prevent runaway onboarding on pathological personas
         questions_asked = len([t for t in context.turns if t.turn_type == TurnType.ASSISTANT and "?" in t.content])
         hard_ceiling = int(os.getenv("MAX_ONBOARDING_QUESTIONS_HARD_CEILING", "8"))
@@ -1233,10 +1292,32 @@ class ContextManager:
         ISSUE-5 FIX: Uses same logic as progressive_disclosure._check_multi_vector_coverage
         to avoid divergent completion signals.
         """
+        filled, total = self._multi_vector_counts(context)
+        return filled >= total
+
+    def _multi_vector_near_complete(self, context: 'ConversationContext') -> bool:
+        """
+        Check if at least (total-1) multi-vector dimensions are covered.
+
+        Apr-21 Fix (F/u 38 #5): used by is_complete() to allow graceful
+        termination when a single MV slot can't be extracted after extended
+        questioning. Jerry Lawler's test showed the bot looping on the same
+        slot across turns 6-8 (different phrasings, same extractor miss).
+        """
+        filled, total = self._multi_vector_counts(context)
+        return filled >= (total - 1)
+
+    def _multi_vector_counts(self, context: 'ConversationContext') -> tuple:
+        """
+        Return (filled_count, total) for MULTI_VECTOR_DIMENSIONS.
+
+        Extracted from _multi_vector_complete so the near-complete check
+        can reuse the same slot-resolution logic without duplication.
+        """
         try:
             from app.services.progressive_disclosure import MULTI_VECTOR_DIMENSIONS
         except ImportError:
-            return False
+            return 0, 0
 
         filled_count = 0
         total = len(MULTI_VECTOR_DIMENSIONS)
@@ -1256,7 +1337,7 @@ class ContextManager:
             if slot and slot.status.value in ["filled", "confirmed"]:
                 filled_count += 1
 
-        return filled_count >= total
+        return filled_count, total
 
     def _user_signals_completion(self, context: 'ConversationContext') -> bool:
         """

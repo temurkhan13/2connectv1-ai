@@ -583,6 +583,54 @@ async def chat(request: ChatMessageRequest):
             content=request.message
         )
 
+        # Apr-21 Fix (F/u 52 follow-on): wire record_response so
+        # EngagementMetrics reflect real user behavior. Previously this
+        # method existed at progressive_disclosure.py:1096 but had zero
+        # call sites anywhere — metrics stayed at default zeros forever,
+        # so get_engagement_level() was stuck reporting the same value
+        # regardless of how the user was actually engaging. F/u 52 added
+        # a zero-data guard that returns MODERATE; wiring this call makes
+        # the classifier report accurate HIGH/MODERATE/LOW/FRUSTRATED
+        # based on response length + cadence. Observability-only —
+        # failure here never fails the chat path.
+        try:
+            # Compute response time from the prior ASSISTANT turn to this
+            # USER turn. Cap at 300s to stop AFK-returns from poisoning
+            # the rolling average; fall back to 30s when this is the
+            # first user turn (no prior assistant turn to diff against).
+            response_time_seconds: float = 30.0
+            if turn is not None:
+                prior_turns = list(context.turns[:-1]) if context.turns else []
+                prior_assistant = None
+                for t in reversed(prior_turns):
+                    if t.turn_type == TurnType.ASSISTANT:
+                        prior_assistant = t
+                        break
+                if prior_assistant is not None:
+                    delta = (turn.timestamp - prior_assistant.timestamp).total_seconds()
+                    if delta > 0:
+                        response_time_seconds = min(delta, 300.0)
+
+            # slot_name is consumed only for log formatting inside
+            # record_response; pass the first newly-extracted slot or a
+            # stable fallback.
+            slot_for_log = "chat_turn"
+            if turn is not None and turn.extracted_slots:
+                slot_for_log = next(iter(turn.extracted_slots))
+
+            progressive_disclosure.record_response(
+                session_id=session_id,
+                slot_name=slot_for_log,
+                response_length=len(request.message or ""),
+                response_time_seconds=response_time_seconds,
+                was_skipped=False,  # no skip mechanism on the chat endpoint
+            )
+        except Exception as engagement_err:
+            logger.warning(
+                f"Engagement metric update failed (non-fatal, "
+                f"session={session_id}): {engagement_err}"
+            )
+
         # Get newly extracted slots from this turn
         newly_extracted = {}
         if turn and turn.extracted_slots:

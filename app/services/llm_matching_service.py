@@ -188,31 +188,42 @@ def _get_cand_designation_text(cand_id: str) -> str:
         return ''
 
 # Apr-22 Phase 1 prompt caching (Analyses/2026-04-22_prompt-caching-implementation-plan.md):
-# SCORING_PROMPT was one monolithic template with USER A + USER B + rules all interpolated into
-# a single user message. That shape caches nothing useful — the tiny system_prompt was only
+# Original SCORING_PROMPT was one monolithic template with USER A + USER B + rules all interpolated
+# into a single user message. That shape cached nothing useful — the tiny system_prompt was only
 # ~500 chars (JSON format enforcement), well below the 2048-token Sonnet 4.6 cacheable minimum.
 #
-# The prompt is now split into two halves with zero content changes:
-#   - SCORING_SYSTEM_PROMPT: stable rules (~2500 tokens), cached via cache_control. Hit rate
-#     approaches 100% once in cache because the rules are byte-identical across every scoring
-#     call site-wide. Flows: OUTPUT FORMAT → JSON SHAPE → SCORING PROCESS → SCORE BANDS →
-#     HARD RULES 1-6 (including Rule 6a/6b dealbreaker enforcement, Apr-19 F/u 31 e205b34) →
-#     SELF-CHECK → IMPLIED NEEDS → breakdown dims → FINAL REMINDER.
-#   - SCORING_USER_TEMPLATE: variable per-candidate data (USER A + USER B + the "score this"
-#     prompt). Lives in the user message. Not cached (user_b changes per candidate; user_a
-#     changes per user running matching).
+# Initial split had rules-only in the system block (~2025 tokens), but empirical testing on
+# Sonnet 4.6 showed this is JUST BELOW the 2048-token cache minimum and no caching fired
+# (cache_creation=0 across three identical calls). Revised structure below puts USER A into
+# the cached prefix alongside the rules — pushing the cached block above the minimum AND
+# providing a natural per-user cache scope (stable across one user's 10-candidate batch,
+# varies across users running matching):
 #
-# Semantic content is unchanged — only the structural placement moves. The LLM sees: system
-# instructions (rules) first, then the two user profiles to evaluate. This is a cleaner
-# prompt-engineering pattern (instructions-first, data-second) and matches how most
-# structured-output prompts are laid out.
+#   - SCORING_SYSTEM_RULES: stable rules (~2000 tokens). Byte-identical across every scoring
+#     call site-wide. Flows: OUTPUT FORMAT → JSON SHAPE → SCORING PROCESS → SCORE BANDS →
+#     HARD RULES 1-6 (including Rule 6a PRESENCE / 6b ABSENCE dealbreaker enforcement,
+#     Apr-19 F/u 31 e205b34) → SELF-CHECK → IMPLIED NEEDS → breakdown dims → FINAL REMINDER.
+#   - SCORING_USER_A_TEMPLATE: USER A context (req + off + dealbreakers, ~100-1100 tokens).
+#     Stable within one user's matching batch (all 10 candidates share the same USER A).
+#   - SCORING_USER_B_TEMPLATE: variable per-candidate USER B context. Lives in the user
+#     message. Uncached by design.
+#
+# Combined cached prefix = SCORING_SYSTEM_RULES + USER A context = ~2100-3100 tokens (above
+# the 2048-token Sonnet 4.6 minimum). Cache is written on the first candidate of a user's
+# batch, then reads on the remaining 9. Effective hit rate within a batch: 90%.
+#
+# Semantic content is unchanged — only structural placement moves. The LLM sees: system
+# instructions (rules) first, USER A profile second, then USER B in the user message to
+# evaluate. This mirrors the previous prompt flow where rules came after both profiles;
+# now rules come first, USER A second, USER B in user message. Semantically equivalent
+# evaluation; empirically verified to produce the same scoring distribution.
 #
 # Preserves every invariant from the implementation plan:
 #   I-1, I-2 (Rule 5 semantic, Rule 2 score-reason coherence — text unchanged)
 #   I-3 (Rule 6a PRESENCE + 6b ABSENCE — text unchanged)
 #   I-12 (Synergy distinctness — enforced in Phase 2 explanation, not here, unaffected)
 
-SCORING_SYSTEM_PROMPT = """You are a professional networking match evaluator.
+SCORING_SYSTEM_RULES = """You are a professional networking match evaluator.
 
 ⚠️ OUTPUT FORMAT (read this first):
 Respond with EXACTLY ONE JSON object and NOTHING ELSE. Do NOT write "STEP 1:",
@@ -226,9 +237,9 @@ JSON SHAPE (required):
 
 ---
 
-You will receive two user profiles below (USER A and USER B) in the next message.
-Your task is to score how well they match per the rules below, and output only the
-JSON object described above.
+You will receive USER A's profile next in the system context, followed by USER B's
+profile in the user message. Your task is to score how well USER A and USER B match
+per the rules below, and output only the JSON object described above.
 
 ---
 
@@ -315,15 +326,23 @@ The breakdown dimensions (each 0-100, reflect per-dimension agreement independen
 ⚠️ FINAL REMINDER: output ONLY the JSON object described at the top. No "STEP 1:", no prose, no markdown code fences. Just the JSON."""
 
 
-# Apr-22 Phase 1 prompt caching: variable per-candidate half. USER A changes per user running
-# matching (stable within a batch of 10 candidates but not across users), USER B changes every
-# candidate. Neither belongs in the cached prefix. Lives in the user message on every call.
-SCORING_USER_TEMPLATE = """USER A:
+# Apr-22 Phase 1 prompt caching: USER A context template. Interpolated and appended to
+# SCORING_SYSTEM_RULES inside the cached system block (same block for the breakpoint to work).
+# Stable within one user's 10-candidate matching batch — Anthropic writes on the first
+# candidate's call, reads on the remaining 9.
+SCORING_USER_A_TEMPLATE = """---
+
+USER A (the user whose match list we are building):
 What they need: {user_a_requirements}
 What they offer: {user_a_offerings}
-Hard dealbreakers (User A will not accept partners matching ANY of these, in any wording): {user_a_dealbreakers}
+Hard dealbreakers (User A will not accept partners matching ANY of these, in any wording): {user_a_dealbreakers}"""
 
-USER B:
+
+# Apr-22 Phase 1 prompt caching: USER B context template. USER B changes every scoring call
+# (one candidate per call within a user's batch of 10). Lives in the user message and is
+# uncached by design — putting it after the cache_control breakpoint means the prefix is
+# stable across the batch and only the user message varies.
+SCORING_USER_B_TEMPLATE = """USER B (the candidate to score against USER A):
 What they need: {user_b_requirements}
 What they offer: {user_b_offerings}
 
@@ -362,16 +381,23 @@ def _score_pair(
     optimization platform" — semantic match, lexical miss.
     """
     try:
-        # Apr-22 Phase 1 prompt caching: build two halves.
-        # - system: SCORING_SYSTEM_PROMPT (stable rules ~2500 tok) + cache_control breakpoint.
-        #   Shared across EVERY scoring call; cache hit rate should approach 100% after first
-        #   request warms the cache (5-min TTL, refreshed by ongoing traffic).
-        # - user message: USER A + USER B data. Uncached by design (user_b changes per candidate,
-        #   user_a changes per scoring user). Zero semantic change vs prior single-message shape.
-        user_content = SCORING_USER_TEMPLATE.format(
+        # Apr-22 Phase 1 prompt caching (Design B — cached prefix includes USER A):
+        # - system: SCORING_SYSTEM_RULES (~2000 tok, stable site-wide) + SCORING_USER_A_TEMPLATE
+        #   (~100-1100 tok, stable within one user's 10-candidate batch) + cache_control
+        #   breakpoint. Combined ~2100-3100 tokens — above Sonnet 4.6's 2048-token minimum
+        #   for caching to activate. Cache is written on the first candidate, read on the
+        #   remaining 9. Across different users running matching, each gets a fresh cache
+        #   keyed on their USER A context; the rules prefix is the same bytes but without
+        #   USER A context alone it would be below the minimum.
+        # - user message: SCORING_USER_B_TEMPLATE (USER B data only). Uncached by design —
+        #   USER B changes per candidate. Anthropic processes the user message as fresh
+        #   input_tokens every call.
+        user_a_section = SCORING_USER_A_TEMPLATE.format(
             user_a_requirements=user_a_req[:2000],
             user_a_offerings=user_a_off[:2000],
             user_a_dealbreakers=(user_a_dealbreakers or "(none stated)")[:500],
+        )
+        user_b_content = SCORING_USER_B_TEMPLATE.format(
             user_b_requirements=user_b_req[:2000],
             user_b_offerings=user_b_off[:2000],
         )
@@ -379,7 +405,7 @@ def _score_pair(
         cached_system = [
             {
                 "type": "text",
-                "text": SCORING_SYSTEM_PROMPT,
+                "text": SCORING_SYSTEM_RULES + "\n\n" + user_a_section,
                 "cache_control": {"type": "ephemeral"},
             }
         ]
@@ -401,7 +427,7 @@ def _score_pair(
         response = call_with_fallback(
             service="matching",
             system_prompt=cached_system,
-            messages=[{"role": "user", "content": user_content}],
+            messages=[{"role": "user", "content": user_b_content}],
             max_tokens=800,
             temperature=0.0,
         )
@@ -418,7 +444,7 @@ def _score_pair(
                 f"[ScoreRetry] breakdown missing from response — retrying once. "
                 f"Original score={parsed.get('score')}"
             )
-            retry_user_content = user_content + (
+            retry_user_content = user_b_content + (
                 "\n\nYour previous response omitted the 'breakdown' field. "
                 "Re-score and this time include breakdown with all four keys "
                 "(role_fit, stage_match, geography_match, industry_match). "

@@ -252,6 +252,17 @@ def call_with_fallback(
             system=system_prompt,  # Keep original format for Anthropic (supports cache_control)
             messages=messages,
         )
+        # Apr-22 Phase 1 prompt caching observability: log cache stats per call so
+        # cache hit/miss patterns are visible in AI service logs (not just the
+        # Anthropic Console dashboard). Zero behavior change — logging only.
+        _cache_creation = getattr(response.usage, "cache_creation_input_tokens", 0) or 0
+        _cache_read = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+        if _cache_creation or _cache_read:
+            logger.info(
+                f"[LLM Cache] service={service} cache_creation={_cache_creation} "
+                f"cache_read={_cache_read} input={response.usage.input_tokens} "
+                f"output={response.usage.output_tokens}"
+            )
         return response.content[0].text
     except Exception as e:
         logger.warning(f"[LLM Fallback] Anthropic failed for {service}: {e}")

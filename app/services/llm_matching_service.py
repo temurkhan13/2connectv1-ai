@@ -187,7 +187,32 @@ def _get_cand_designation_text(cand_id: str) -> str:
     except Exception:
         return ''
 
-SCORING_PROMPT = """You are a professional networking match evaluator.
+# Apr-22 Phase 1 prompt caching (Analyses/2026-04-22_prompt-caching-implementation-plan.md):
+# SCORING_PROMPT was one monolithic template with USER A + USER B + rules all interpolated into
+# a single user message. That shape caches nothing useful — the tiny system_prompt was only
+# ~500 chars (JSON format enforcement), well below the 2048-token Sonnet 4.6 cacheable minimum.
+#
+# The prompt is now split into two halves with zero content changes:
+#   - SCORING_SYSTEM_PROMPT: stable rules (~2500 tokens), cached via cache_control. Hit rate
+#     approaches 100% once in cache because the rules are byte-identical across every scoring
+#     call site-wide. Flows: OUTPUT FORMAT → JSON SHAPE → SCORING PROCESS → SCORE BANDS →
+#     HARD RULES 1-6 (including Rule 6a/6b dealbreaker enforcement, Apr-19 F/u 31 e205b34) →
+#     SELF-CHECK → IMPLIED NEEDS → breakdown dims → FINAL REMINDER.
+#   - SCORING_USER_TEMPLATE: variable per-candidate data (USER A + USER B + the "score this"
+#     prompt). Lives in the user message. Not cached (user_b changes per candidate; user_a
+#     changes per user running matching).
+#
+# Semantic content is unchanged — only the structural placement moves. The LLM sees: system
+# instructions (rules) first, then the two user profiles to evaluate. This is a cleaner
+# prompt-engineering pattern (instructions-first, data-second) and matches how most
+# structured-output prompts are laid out.
+#
+# Preserves every invariant from the implementation plan:
+#   I-1, I-2 (Rule 5 semantic, Rule 2 score-reason coherence — text unchanged)
+#   I-3 (Rule 6a PRESENCE + 6b ABSENCE — text unchanged)
+#   I-12 (Synergy distinctness — enforced in Phase 2 explanation, not here, unaffected)
+
+SCORING_SYSTEM_PROMPT = """You are a professional networking match evaluator.
 
 ⚠️ OUTPUT FORMAT (read this first):
 Respond with EXACTLY ONE JSON object and NOTHING ELSE. Do NOT write "STEP 1:",
@@ -197,18 +222,13 @@ JSON object as your response. Text outside the JSON is a parse error and
 causes the match to be dropped silently.
 
 JSON SHAPE (required):
-{{"score": <0-100>, "reason": "<one sentence — the specific value exchange, or why it's weak>", "breakdown": {{"role_fit": <0-100>, "stage_match": <0-100>, "geography_match": <0-100>, "industry_match": <0-100>}}}}
+{"score": <0-100>, "reason": "<one sentence — the specific value exchange, or why it's weak>", "breakdown": {"role_fit": <0-100>, "stage_match": <0-100>, "geography_match": <0-100>, "industry_match": <0-100>}}
 
 ---
 
-USER A:
-What they need: {user_a_requirements}
-What they offer: {user_a_offerings}
-Hard dealbreakers (User A will not accept partners matching ANY of these, in any wording): {user_a_dealbreakers}
-
-USER B:
-What they need: {user_b_requirements}
-What they offer: {user_b_offerings}
+You will receive two user profiles below (USER A and USER B) in the next message.
+Your task is to score how well they match per the rules below, and output only the
+JSON object described above.
 
 ---
 
@@ -295,6 +315,21 @@ The breakdown dimensions (each 0-100, reflect per-dimension agreement independen
 ⚠️ FINAL REMINDER: output ONLY the JSON object described at the top. No "STEP 1:", no prose, no markdown code fences. Just the JSON."""
 
 
+# Apr-22 Phase 1 prompt caching: variable per-candidate half. USER A changes per user running
+# matching (stable within a batch of 10 candidates but not across users), USER B changes every
+# candidate. Neither belongs in the cached prefix. Lives in the user message on every call.
+SCORING_USER_TEMPLATE = """USER A:
+What they need: {user_a_requirements}
+What they offer: {user_a_offerings}
+Hard dealbreakers (User A will not accept partners matching ANY of these, in any wording): {user_a_dealbreakers}
+
+USER B:
+What they need: {user_b_requirements}
+What they offer: {user_b_offerings}
+
+Score this pair per the rules in your system prompt. Output JSON only."""
+
+
 @dataclass
 class LLMMatch:
     """A single match result from LLM-scored matching."""
@@ -327,13 +362,27 @@ def _score_pair(
     optimization platform" — semantic match, lexical miss.
     """
     try:
-        prompt = SCORING_PROMPT.format(
+        # Apr-22 Phase 1 prompt caching: build two halves.
+        # - system: SCORING_SYSTEM_PROMPT (stable rules ~2500 tok) + cache_control breakpoint.
+        #   Shared across EVERY scoring call; cache hit rate should approach 100% after first
+        #   request warms the cache (5-min TTL, refreshed by ongoing traffic).
+        # - user message: USER A + USER B data. Uncached by design (user_b changes per candidate,
+        #   user_a changes per scoring user). Zero semantic change vs prior single-message shape.
+        user_content = SCORING_USER_TEMPLATE.format(
             user_a_requirements=user_a_req[:2000],
             user_a_offerings=user_a_off[:2000],
             user_a_dealbreakers=(user_a_dealbreakers or "(none stated)")[:500],
             user_b_requirements=user_b_req[:2000],
             user_b_offerings=user_b_off[:2000],
         )
+
+        cached_system = [
+            {
+                "type": "text",
+                "text": SCORING_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
 
         # Apr-19 Follow-up 30 Fix #7: raised max_tokens 300 → 800 to prevent
         # parse failures when the LLM emits chain-of-thought before the JSON.
@@ -351,17 +400,8 @@ def _score_pair(
         # the larger reasoning-before-JSON failure mode.
         response = call_with_fallback(
             service="matching",
-            system_prompt=(
-                "You are a match scoring system. Your response MUST be EXACTLY "
-                "one JSON object and NOTHING ELSE — no prose, no 'STEP 1:', no "
-                "reasoning paragraphs, no markdown code fences. Think internally, "
-                "then output only the JSON. The JSON must include all four fields: "
-                "score (0-100 int), reason (one sentence string), breakdown "
-                "(object with role_fit, stage_match, geography_match, "
-                "industry_match, each 0-100 int). Any text outside the JSON "
-                "causes a parse error and the match is dropped."
-            ),
-            messages=[{"role": "user", "content": prompt}],
+            system_prompt=cached_system,
+            messages=[{"role": "user", "content": user_content}],
             max_tokens=800,
             temperature=0.0,
         )
@@ -371,21 +411,23 @@ def _score_pair(
         # Apr-19 Issue 5 fix: if breakdown is None after parsing, retry once
         # with an explicit instruction to include it. LLMs occasionally emit
         # valid JSON minus the breakdown key — the retry fills the gap.
+        # Apr-22 Phase 1: retry reuses the SAME cached system block to hit cache
+        # again (retry is often within seconds of the primary call, same 5-min TTL).
         if parsed.get("breakdown") is None and parsed.get("score", 0) > 0:
             logger.info(
                 f"[ScoreRetry] breakdown missing from response — retrying once. "
                 f"Original score={parsed.get('score')}"
             )
+            retry_user_content = user_content + (
+                "\n\nYour previous response omitted the 'breakdown' field. "
+                "Re-score and this time include breakdown with all four keys "
+                "(role_fit, stage_match, geography_match, industry_match). "
+                "No prose, no 'STEP 1:', no reasoning. JSON only."
+            )
             retry_response = call_with_fallback(
                 service="matching",
-                system_prompt=(
-                    "You are a match scoring system. Your previous response omitted the "
-                    "'breakdown' field. Re-score the pair, and this time output EXACTLY "
-                    "one JSON object with all four fields: score, reason, and breakdown "
-                    "(with role_fit, stage_match, geography_match, industry_match). "
-                    "No prose, no 'STEP 1:', no reasoning before or after the JSON."
-                ),
-                messages=[{"role": "user", "content": prompt}],
+                system_prompt=cached_system,  # same bytes → cache hit
+                messages=[{"role": "user", "content": retry_user_content}],
                 max_tokens=800,
                 temperature=0.0,
             )

@@ -480,6 +480,12 @@ class LLMSlotExtractor:
         # Session-specific pattern memory (keyed by session_id to avoid cross-user pollution)
         # CRITICAL: Service is singleton, so patterns must be session-specific
         self._session_patterns = {}  # {session_id: {'openers': [], 'structures': [], 'punctuation': [], 'interpretations': []}}
+        # Apr-22 Phase 2 prompt caching: cache the stable extraction rules (built once with
+        # empty variable state → byte-identical across all calls, cache-control-marker goes
+        # on this block). Per-turn variable state (already_filled, covered_topics, priority,
+        # resume_context, BUG-045 objective filter) is formatted into the user message as
+        # a SESSION STATE block. See _build_extraction_session_state and extract_slots.
+        self._cached_stable_rules: Optional[str] = None
 
     @property
     def client(self) -> Anthropic:
@@ -1651,6 +1657,33 @@ Return ONLY the follow-up question, nothing else."""
                 consolidated.append(msg)
         messages = consolidated
 
+        # Apr-22 Phase 2 prompt caching: build the stable rules (byte-identical across all
+        # calls; cache hits across all sessions and users site-wide) and the per-turn
+        # SESSION STATE block (variable; lives in the user message). The LLM reads stable
+        # rules first, then the SESSION STATE which overrides any stale info in the rules
+        # (the cached rules were built with empty variable state for cache stability).
+        stable_rules = self._get_cached_stable_rules()
+        session_state_text = self._build_extraction_session_state(
+            already_filled, target_slots, covered_topics, resume_context
+        )
+
+        # Prepend SESSION STATE to the first user message. Anthropic requires alternating
+        # user/assistant — consolidation above already ensured first role is "user".
+        messages_with_state = [dict(m) for m in messages]  # shallow copy
+        if messages_with_state and messages_with_state[0]["role"] == "user":
+            messages_with_state[0]["content"] = (
+                "⚠️ SESSION STATE (overrides any stale info in the system rules — "
+                "the rules list ALL slots and generic defaults for cache stability; "
+                "THIS block is the authoritative state for the current turn):\n\n"
+                f"{session_state_text}\n\n---\n\n{messages_with_state[0]['content']}"
+            )
+        else:
+            # No user message in history — insert one carrying only the session state.
+            messages_with_state.insert(0, {
+                "role": "user",
+                "content": f"⚠️ SESSION STATE (authoritative state for the current turn):\n\n{session_state_text}",
+            })
+
         # Retry loop for JSON parsing failures
         max_retries = 2
         last_error = None
@@ -1659,12 +1692,19 @@ Return ONLY the follow-up question, nothing else."""
             try:
                 logger.info(f"Calling Anthropic API with model: {self.model} (attempt {attempt + 1}/{max_retries + 1})")
                 logger.info(f"Messages count: {len(messages)}, roles: {[m['role'] for m in messages]}")
-                logger.debug(f"System prompt length: {len(system_prompt)} chars")
+                logger.debug(f"System prompt length: {len(system_prompt)} chars (stable={len(stable_rules)} chars)")
 
                 # BUG-016 FIX: On retry, use drastically simplified JSON-only prompt
-                # Strip away overwhelming conversational instructions that confuse the LLM
-                retry_system = system_prompt
-                if attempt > 0:
+                # Strip away overwhelming conversational instructions that confuse the LLM.
+                # Apr-22 Phase 2: on attempt 0, use the cached stable rules (byte-stable across
+                # all calls, cross-session/cross-user cache shared). On retry attempts use the
+                # minimal retry prompt as before; SESSION STATE stays on the user message for
+                # both paths so retry still has real state.
+                if attempt == 0:
+                    retry_system = stable_rules
+                    messages_for_call = messages_with_state
+                else:
+                    messages_for_call = messages_with_state
                     # Build minimal slots list for retry (all slots minus already filled)
                     all_slots = SLOT_DEFINITIONS.keys()
                     if target_slots:
@@ -1717,7 +1757,7 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                 try:
                     response = self.client.messages.create(
                         model=self.model, max_tokens=4096, system=_sys_cached,
-                        messages=messages, temperature=0.1
+                        messages=messages_for_call, temperature=0.1
                     )
                     # Log full response metadata for debugging (including cache stats)
                     cache_creation = getattr(response.usage, 'cache_creation_input_tokens', 0)
@@ -1727,7 +1767,7 @@ Your response MUST be parseable JSON. Begin with {{ now."""
                     from app.services.llm_fallback import fallback_from_anthropic_error
                     fallback_text = fallback_from_anthropic_error(
                         service="extraction", error=api_err, system_prompt=_sys_cached,
-                        messages=messages, max_tokens=4096, temperature=0.1
+                        messages=messages_for_call, max_tokens=4096, temperature=0.1
                     )
                     if fallback_text:
                         # Create a mock response object so downstream code works
@@ -2361,6 +2401,176 @@ NEVER DO THIS (causes system failure):
 "I do not see the message 'wrap up' in the conversation."
 
 ALWAYS OUTPUT JSON, even when confused or apologizing."""
+
+    def _get_cached_stable_rules(self) -> str:
+        """Get the byte-stable extraction rules for the cached system block.
+
+        Apr-22 Phase 2 prompt caching:
+        Calls _build_system_prompt with empty variable state (already_filled={},
+        target_slots=None, covered_topics=[], resume_context=None). The output is
+        deterministic byte-for-byte per call — caches cleanly across all sessions
+        and users site-wide. Memoized on the instance so we don't rebuild the
+        ~18K-char prompt on every extraction call.
+
+        The real per-turn variable state is moved to a SESSION STATE block in
+        the user message (see _build_extraction_session_state), which the LLM
+        reads as the "overrides-anything-stale-in-system-rules" source of truth
+        for the current turn.
+        """
+        if self._cached_stable_rules is None:
+            self._cached_stable_rules = self._build_system_prompt(
+                already_filled={},
+                target_slots=None,
+                covered_topics=[],
+                resume_context=None,
+            )
+            logger.info(
+                f"Apr-22 Phase 2: cached stable extraction rules ({len(self._cached_stable_rules)} chars, "
+                f"~{len(self._cached_stable_rules)//4} tok estimate)"
+            )
+        return self._cached_stable_rules
+
+    def _build_extraction_session_state(
+        self,
+        already_filled: Dict[str, Any],
+        target_slots: Optional[List[str]],
+        covered_topics: Optional[List[str]],
+        resume_context: Optional[str],
+    ) -> str:
+        """Build a SESSION STATE string for the user message (per-turn variable content).
+
+        Apr-22 Phase 2 prompt caching:
+        The stable extraction rules (cached in the system block) were built with
+        empty variable state, so they contain stale defaults for things like
+        "REQUIRED SLOTS STILL MISSING" (claims all 7 are missing) and priority
+        order (uses default). This session-state block tells the LLM the REAL
+        state for the current turn — already-filled slots, covered topics,
+        priority for this turn, BUG-045 objective-filter exclusions, and resume
+        context if present. The ⚠️ OVERRIDES header makes explicit that this
+        block supersedes anything in the system rules that contradicts it.
+
+        Preserves every per-turn behavior from the original _build_system_prompt:
+          - BUG-045 FIX: objective-filter slot exclusions (shown as "DO NOT extract")
+          - BUG-088 FIX: 3-slot-per-turn cap, priority ordering
+          - BUG-002 FIX: covered topics
+          - ISSUE-1 FIX: resume context
+        """
+        from app.services.use_case_templates import get_onboarding_slots
+
+        parts = []
+
+        # Resume context (session-stable, present only for users who uploaded a resume).
+        if resume_context:
+            truncated_resume = resume_context[:3000] if len(resume_context) > 3000 else resume_context
+            parts.append(
+                "## 📄 USER'S RESUME (Background Context)\n"
+                "The user has uploaded a resume/CV. Use this background to:\n"
+                "1. **ACKNOWLEDGE IT FIRST** — Your follow_up_question MUST start by briefly acknowledging you've seen their background (e.g., \"I see from your CV that you have experience in [X]...\" or \"Your background in [Y] is impressive...\")\n"
+                "2. SKIP questions about information already clear from resume (e.g., industry, experience level)\n"
+                "3. Infer their OFFERINGS (what they can provide) from their background\n"
+                "4. Focus questions on what's MISSING (requirements, specific goals, what they're seeking)\n\n"
+                f"Resume Summary:\n{truncated_resume}\n\n"
+                "CRITICAL: Your follow_up_question MUST acknowledge the resume in the first sentence, then ask about what's NOT in the resume (their goals, what they're seeking, who they want to connect with).\n"
+                "DO NOT ask about information clearly stated in the resume above."
+            )
+
+        # Already-filled slots (per-turn variable, grows as session progresses).
+        if already_filled:
+            filled_items = [f"- {k}: {v}" for k, v in already_filled.items()]
+            parts.append(
+                "## ALREADY COLLECTED - DO NOT ASK AGAIN\n"
+                "The following information has ALREADY been collected. Do NOT ask for these again:\n"
+                + "\n".join(filled_items)
+                + "\n\nCRITICAL: Your follow_up_question must NEVER ask for information listed above. Only ask about what's MISSING."
+            )
+
+        # Covered topics (per-turn variable).
+        if covered_topics:
+            covered_set = set(covered_topics)
+            alt_topics = [k for k in SEMANTIC_TOPIC_CLUSTERS.keys() if k not in covered_set][:8]
+            parts.append(
+                "## Already Discussed Topics\n"
+                "We've already covered these areas, so please focus your next question on something new:\n\n"
+                f"Already covered: {', '.join(covered_topics)}\n\n"
+                f"Good alternative topics to explore: {', '.join(alt_topics)}\n\n"
+                "Note: It's fine to briefly reference covered topics for context, just don't make them the main focus of your question."
+            )
+
+        # Objective-based slot filter (BUG-045 FIX). If primary_goal is known, compute the
+        # "slots to exclude" and pass that as guidance — the LLM sees all slot definitions
+        # in the cached rules but is told here which ones do NOT apply to this user.
+        primary_goal = already_filled.get("primary_goal")
+        slots_to_exclude_list: List[str] = []
+        if primary_goal:
+            full = dict(SLOT_DEFINITIONS)
+            filtered = filter_slots_by_objective(full, primary_goal)
+            slots_to_exclude_list = sorted(set(full.keys()) - set(filtered.keys()))
+            if slots_to_exclude_list:
+                parts.append(
+                    f"## 🚫 DO NOT EXTRACT these slots (BUG-045 objective filter for goal '{primary_goal}')\n"
+                    f"{', '.join(slots_to_exclude_list)}\n\n"
+                    "These slot definitions appear in the system rules only because the rules list ALL slots for cache stability. For THIS user's objective, these slots are irrelevant. Do not emit values for them even if the conversation mentions them in passing."
+                )
+
+        # Priority ordering + missing required (BUG-088 FIX).
+        required_slots = ["primary_goal", "requirements", "offerings", "user_type", "industry_focus", "geography"]
+        focus_slots: List[str] = []
+        user_type_value = (already_filled.get("user_type") or "").lower()
+        objective: Optional[str] = None
+        if primary_goal:
+            objective = primary_goal
+        elif user_type_value:
+            if any(k in user_type_value for k in ["founder", "entrepreneur", "building", "startup"]):
+                objective = "fundraising"
+            elif any(k in user_type_value for k in ["investor", "vc", "angel"]):
+                objective = "investing"
+            elif any(k in user_type_value for k in ["advisor", "mentor", "consultant"]):
+                objective = "mentorship"
+            elif any(k in user_type_value for k in ["hiring", "recruiter", "hr"]):
+                objective = "hiring"
+            elif any(k in user_type_value for k in ["partner", "alliance", "collaboration"]):
+                objective = "partnership"
+            elif any(k in user_type_value for k in ["cofounder", "co-founder"]):
+                objective = "cofounder"
+            elif any(k in user_type_value for k in ["launch", "product", "gtm"]):
+                objective = "product_launch"
+        if objective:
+            try:
+                focus_slots = get_onboarding_slots(objective)
+                for s in focus_slots:
+                    if s not in required_slots:
+                        required_slots.append(s)
+            except Exception as e:
+                logger.warning(f"Could not get onboarding slots for objective '{objective}': {e}")
+
+        remaining_priority = [s for s in (focus_slots or required_slots) if s not in already_filled]
+        priority_slots_text = f"Extract in this order (first 3 that apply): {', '.join(remaining_priority[:6])}"
+        parts.append(
+            "## 🎯 PRIORITY SLOTS FOR THIS TURN (BUG-088 3-slot-per-turn cap)\n"
+            f"{priority_slots_text}"
+        )
+
+        missing_required = [s for s in required_slots if s not in already_filled]
+        if missing_required:
+            parts.append(
+                "## ⚠️ REQUIRED SLOTS STILL MISSING\n"
+                "These slots are REQUIRED for profile completion. Your follow-up question should naturally guide toward collecting one of these:\n"
+                f"{', '.join(missing_required)}\n\n"
+                "- requirements = What they NEED from connections (funding, advisors, partnerships, etc.)\n"
+                "- offerings = What they can OFFER to connections (capital, expertise, introductions, etc.)\n"
+                "- geography = Where they're focused (UK, US, Europe, Asia, Global, etc.)\n"
+                "- stage_preference = What company stages they work with (Pre-seed, Seed, Series A, etc.)\n\n"
+                "CRITICAL: If 3+ required slots are missing, prioritize collecting them over drilling into details."
+            )
+
+        # Target-slot override (rare; used when caller explicitly specifies which slots to extract).
+        if target_slots:
+            parts.append(
+                "## 🎯 TARGET SLOTS (caller-specified focus)\n"
+                f"Focus extraction on this subset: {', '.join(target_slots)}"
+            )
+
+        return "\n\n".join(parts)
 
     def _parse_llm_response(
         self,

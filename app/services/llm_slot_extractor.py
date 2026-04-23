@@ -2619,31 +2619,45 @@ ALWAYS OUTPUT JSON, even when confused or apologizing."""
                     logger.warning(f"team_size value '{value}' is not a valid number, skipping slot")
                     continue
 
-            # CRITICAL VALIDATION: Reject generic descriptions for company_name
-            # A proper company name is a specific brand like "MedFlow AI", "Acme Corp"
-            # NOT generic descriptions like "healthtech startup", "my company", "tech startup"
+            # CRITICAL VALIDATION: Reject canonical placeholder values for company_name.
+            #
+            # History: this block previously contained a 24-pattern substring-match
+            # "generic descriptions" list ("startup", "company", "a ", "an ", "ai ",
+            # "tech", etc.). That was a [[CODING-DISCIPLINE]] Rule 5 violation
+            # ("Semantic LLM, Not Keyword LLM") — the set of "generic company
+            # descriptions" is open-ended English, not a closed enum. Worse, the
+            # substring match created false positives on any legitimate 2-word
+            # brand where the first word ends in 'a' (pattern "a " matched
+            # "Lumina AI", "Nvidia Corp", "Tesla Inc", "Figma Inc") or contained
+            # "Tech" ("Pixelette Tech"). [[Apr-22]] Follow-up 12 Aaron Smith test
+            # surfaced this on "Lumina AI" — entire class of AI-named startups
+            # silently dropped.
+            #
+            # Fix ([[Apr-23]]): trust the LLM prompt at line 234 which already
+            # enumerates exactly what counts as a valid company_name ("proper
+            # noun like 'Stripe', 'MedFlow AI', 'Acme Corp'" + "NEVER return:
+            # 'startup', 'company', 'tech company', ..."). The LLM (Sonnet 4.6)
+            # is a semantic reasoner; asking it in the prompt is the right
+            # enforcement layer. Keep only exact-match rejection for the handful
+            # of canonical placeholder values the LLM sometimes emits literally
+            # ("n/a", "none", "unknown", "tbd", "not specified"). That set IS
+            # a closed enum — Rule 5 exception applies.
             if slot_name == "company_name" and value is not None and isinstance(value, str):
                 value_lower = value.lower().strip()
-                # Generic patterns that are NOT valid company names
-                generic_patterns = [
-                    "startup", "company", "business", "venture", "firm", "enterprise",
-                    "my ", "our ", "the ", "a ", "an ",
-                    "tech", "healthtech", "fintech", "edtech", "cleantech", "biotech",
-                    "ai ", "ml ", "saas", "b2b", "b2c", "d2c",
-                    "platform", "solution", "service", "app", "application",
-                    "not specified", "n/a", "none", "unknown", "tbd"
-                ]
-                # Check if the value is just a generic description
-                is_generic = any(pattern in value_lower for pattern in generic_patterns)
-                # Also check if it's too short (< 3 chars) or has no capital letters (proper nouns are capitalized)
-                has_proper_noun = any(c.isupper() for c in value)
-                is_too_short = len(value.strip()) < 3
+                PLACEHOLDER_VALUES = {"n/a", "none", "unknown", "tbd", "not specified", ""}
 
-                if is_generic or is_too_short or (not has_proper_noun and len(value) < 20):
-                    logger.warning(
-                        f"company_name '{value}' appears to be a generic description, not a proper company name. Skipping slot."
+                if value_lower in PLACEHOLDER_VALUES:
+                    logger.info(
+                        f"company_name {value!r} is a placeholder value. Skipping slot."
                     )
-                    continue  # Skip this slot - will trigger follow-up question for company name
+                    continue  # Skip this slot - will trigger follow-up question
+
+                # Minimum viable length check (a legitimate brand name is at least 2 chars).
+                if len(value.strip()) < 2:
+                    logger.info(
+                        f"company_name {value!r} too short (<2 chars). Skipping slot."
+                    )
+                    continue
 
             # BUG-005 FIX: Validate offerings/requirements are concise, not full message text
             # If LLM returns full sentences/paragraphs, truncate or flag for re-extraction

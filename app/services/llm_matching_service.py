@@ -1004,15 +1004,46 @@ def find_matches(
                 )
             return None
 
-        with ThreadPoolExecutor(max_workers=MAX_PARALLEL_LLM) as executor:
-            futures = {executor.submit(score_candidate, c): c for c in candidates}
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    if result:
-                        matches.append(result)
-                except Exception as e:
-                    logger.error(f"[LLMMatch] Candidate scoring error: {e}")
+        # [[Apr-23]] prompt-cache concurrency fix (from [[Apr-22]] F/u 12 Aaron
+        # Smith test audit): the prior pattern fanned out all N candidates in
+        # parallel via ThreadPoolExecutor. Because Anthropic's cache becomes
+        # readable ONLY after the first response finishes streaming, every call
+        # in the first wave raced ahead of cache creation and paid the
+        # cache_write premium (1.25x). Aaron's 10-candidate batch measured
+        # 5 cache_creation + 5 cache_read = 50% hit rate.
+        #
+        # Prime-and-fan-out: run the first candidate sequentially so the
+        # ~2,848-token cached prefix (SCORING_SYSTEM_RULES + SCORING_USER_A_TEMPLATE
+        # filled with this user's profile) lands in Anthropic's cache. All
+        # remaining N-1 candidates then fan out in parallel and each reads the
+        # cache at 0.1x cost. Expected post-fix: 1 cache_creation + (N-1) cache_read
+        # ≈ 90%+ hit rate. Wall-clock cost: one sequential call's RTT (~1-3s)
+        # before parallel batch starts, still well under the MAX_PARALLEL_LLM=5
+        # ceiling the old pattern already had.
+        #
+        # Behavior preserved: same matches list semantics, same exception
+        # handling, same downstream sort + limit. Only the call ordering changes.
+        if candidates:
+            try:
+                first_result = score_candidate(candidates[0])
+                if first_result:
+                    matches.append(first_result)
+            except Exception as e:
+                logger.error(f"[LLMMatch] Candidate scoring error (primer): {e}")
+            remaining = candidates[1:]
+        else:
+            remaining = []
+
+        if remaining:
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL_LLM) as executor:
+                futures = {executor.submit(score_candidate, c): c for c in remaining}
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            matches.append(result)
+                    except Exception as e:
+                        logger.error(f"[LLMMatch] Candidate scoring error: {e}")
 
         # 6. Rank by LLM score
         # Apr-18 Follow-up 27 / [[CODING-DISCIPLINE]] Rule 5: the previous

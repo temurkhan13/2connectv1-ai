@@ -143,27 +143,78 @@ def process_reciprocal_updates_and_notify_task(self, batch_id: str, phase2_resul
 
         logger.info(f"[PHASE 3] Dedupe complete: {len(filtered_pairs)} pairs to notify, {backfilled_count} backfilled as already notified")
 
-        webhook_match_pairs = []
+        # Apr-23 fix ([[Apr-22]] F/u 12 audit → Apr-23 F/u 3 investigation):
+        # the webhook handler /webhooks/matches-ready assumes a single source
+        # user per batch (uses `incoming[0].user_a_id` as the source and only
+        # fetches existing matches for that user). For a signup-flow batch
+        # that's correct (one new user → N pairs). For this cron's multi-user
+        # batch (139 users → 1,390 pairs) it breaks: pairs with user_a ≠
+        # sourceUserId go into blind bulkCreate → (user_a_id, user_b_id)
+        # unique-constraint violation → entire batch 500s and the cron has
+        # been silent-failing since Apr 15 (9 consecutive days, 0 notifications).
+        #
+        # Fix: split the batch by user_a_id and send one webhook call per
+        # source user. This matches the handler's single-source assumption
+        # exactly and isolates per-user failures (one bad user no longer
+        # poisons the other 138). Sequential to avoid racing the match_batches
+        # row creation in the handler's transaction.
+        from collections import defaultdict
+        pairs_by_source_user = defaultdict(list)
         for pair in filtered_pairs:
-            webhook_match_pairs.append({
-                'user_a_id': pair['user_a_id'],
-                'user_a_designation': pair['user_a_designation'],
-                'user_b_id': pair['user_b_id'],
-                'user_b_designation': pair['user_b_designation']
-            })
-        
-        notification_service = NotificationService()
-        notification_result = notification_service.send_batch_matches_notification(
-            batch_id=batch_id,
-            match_pairs=webhook_match_pairs
+            pairs_by_source_user[pair['user_a_id']].append(pair)
+
+        logger.info(
+            f"[PHASE 3] Split {len(filtered_pairs)} pairs across "
+            f"{len(pairs_by_source_user)} source users for per-user webhook calls"
         )
-        
-        # POINT 4: Mark pairs as notified AFTER successful notification
-        # This prevents duplicate notifications in future cycles
+
+        notification_service = NotificationService()
+        successfully_notified_pairs = []
+        notification_failures = []
+
+        for source_user_id, source_pairs in pairs_by_source_user.items():
+            webhook_match_pairs = [{
+                'user_a_id': p['user_a_id'],
+                'user_a_designation': p['user_a_designation'],
+                'user_b_id': p['user_b_id'],
+                'user_b_designation': p['user_b_designation'],
+            } for p in source_pairs]
+
+            result = notification_service.send_batch_matches_notification(
+                batch_id=batch_id,
+                match_pairs=webhook_match_pairs
+            )
+            if result.get('success', False):
+                successfully_notified_pairs.extend(source_pairs)
+            else:
+                notification_failures.append({
+                    'source_user_id': source_user_id,
+                    'pair_count': len(source_pairs),
+                    'message': result.get('message', ''),
+                })
+                logger.error(
+                    f"[PHASE 3] Batch notification failed for source user "
+                    f"{source_user_id} ({len(source_pairs)} pairs): "
+                    f"{result.get('message', 'unknown error')}"
+                )
+
+        logger.info(
+            f"[PHASE 3] Per-user notification results: "
+            f"{len(pairs_by_source_user) - len(notification_failures)} succeeded, "
+            f"{len(notification_failures)} failed"
+        )
+
+        # POINT 4: Mark pairs as notified AFTER successful notification.
+        # Apr-23: now scoped to pairs whose specific source-user batch
+        # succeeded — prevents marking pairs as notified when their batch
+        # actually 500ed on the backend side.
         pairs_marked = 0
-        if notification_result.get('success', False) and filtered_pairs:
-            logger.info(f"[PHASE 3] Marking {len(filtered_pairs)} pairs as notified...")
-            for pair in filtered_pairs:
+        if successfully_notified_pairs:
+            logger.info(
+                f"[PHASE 3] Marking {len(successfully_notified_pairs)} "
+                f"(of {len(filtered_pairs)}) pairs as notified..."
+            )
+            for pair in successfully_notified_pairs:
                 try:
                     NotifiedMatchPairs.mark_pair_notified(
                         user_id_1=pair['user_a_id'],
@@ -173,19 +224,34 @@ def process_reciprocal_updates_and_notify_task(self, batch_id: str, phase2_resul
                     pairs_marked += 1
                 except Exception as e:
                     logger.error(f"[PHASE 3] Failed to mark pair as notified: {pair['user_a_id']} <-> {pair['user_b_id']}: {str(e)}")
-            logger.info(f"[PHASE 3] Successfully marked {pairs_marked}/{len(filtered_pairs)} pairs as notified")
-        
+            logger.info(f"[PHASE 3] Successfully marked {pairs_marked}/{len(successfully_notified_pairs)} pairs as notified")
+
+        # Derived aggregate for backwards-compat with the old single-call result
+        # shape expected by the task-level caller.
+        overall_success = len(notification_failures) == 0
+        summary_message = (
+            f"Processed {len(successful_users)} users, "
+            f"created {len(all_match_pairs)} match pairs, "
+            f"{pairs_marked} marked as notified "
+            f"({len(notification_failures)} per-user batch(es) failed)"
+        )
+
         return {
             "success": True,
             "batch_id": batch_id,
             "total_match_pairs": len(filtered_pairs),
             "successful_users": len(successful_users),
             "failed_users": len(failed_users),
-            "notification_sent": notification_result.get('success', False),
+            "notification_sent": overall_success,
+            "notification_failures": len(notification_failures),
+            "notification_failure_details": notification_failures,
             "pairs_marked_notified": pairs_marked,
             "webhook_attempted": True,
-            "notification_message": notification_result.get('message', ''),
-            "message": f"Processed {len(successful_users)} users, created {len(all_match_pairs)} match pairs, {pairs_marked} marked as notified"
+            "notification_message": (
+                "all per-user batches succeeded" if overall_success
+                else f"{len(notification_failures)} per-user batch(es) failed"
+            ),
+            "message": summary_message,
         }
             
     except Exception as e:

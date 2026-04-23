@@ -28,6 +28,40 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _numpy_safe_default(o):
+    """JSON encoder fallback for numpy types.
+
+    Apr-23 fix ([[Apr-22]] F/u 12 audit → Apr-23 F/u 3 investigation):
+    the daily `scheduled_matchmaking_task` cron was failing with
+    `Object of type float32 is not JSON serializable` since Apr 15 —
+    7,197 failed match-cache writes across 142 users. Root cause:
+    pgvector's `<=>` cosine op returns similarity scores that flow
+    through `find_similar_users` → `format_match_results` → `MatchResult.dict()`
+    retaining numpy.float32 identity; when `psycopg2.extras.Json(...)`
+    calls `json.dumps()` → TypeError.
+
+    Scoped at the SINK so every `store_user_matches` caller benefits
+    (the cron, inline_matching, criteria_matching, future callers).
+    This is a [[CODING-DISCIPLINE]] Rule 2 minimum-change fix: one
+    defensive coercion at the JSON serialization boundary. No Rule 5
+    concern — numpy scalar-type set is closed enum.
+    """
+    try:
+        import numpy as _np
+        if isinstance(o, (_np.integer, _np.floating)):
+            return o.item()
+        if isinstance(o, _np.ndarray):
+            return o.tolist()
+    except ImportError:
+        pass
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
+def _safe_json_dumps(data):
+    """json.dumps with numpy-safe fallback for psycopg2 Json wrapper."""
+    return json.dumps(data, default=_numpy_safe_default)
+
+
 class SupabaseProfileAdapter:
     """Base adapter for Supabase profile operations."""
 
@@ -656,7 +690,7 @@ class SupabaseUserMatches:
                     matches = EXCLUDED.matches,
                     total_matches = EXCLUDED.total_matches,
                     last_updated = CURRENT_TIMESTAMP
-            """, (user_id, Json(matches_data), total_matches))
+            """, (user_id, Json(matches_data, dumps=_safe_json_dumps), total_matches))
 
             conn.commit()
             logger.info(f"Stored {total_matches} matches for user {user_id}")

@@ -1046,6 +1046,17 @@ class CompleteOnboardingRequest(BaseModel):
     """Request to complete onboarding and create user profile."""
     session_id: str = Field(..., description="Session ID to complete")
     user_id: Optional[str] = Field(None, description="User ID for the profile (optional - derived from session if not provided)")
+    # [[Apr-23]] Fix #4 (from [[Apr-22]] F/u 12 Aaron Smith review-screen UX
+    # gap): allow the client to send slot-level edits made on the preview
+    # screen. Merged into the slot_summary right after fetch + before
+    # conversion to Q&A, so edits flow through to persona generation +
+    # downstream matching exactly as the original extracted values would.
+    # Keys must match canonical slot names (e.g. `industry_focus`, `dealbreakers`).
+    # Values are strings (arrays are joined on the client as comma-separated).
+    slot_overrides: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional slot-level overrides from the review screen. Keys are slot names; values replace the extracted value for that slot."
+    )
 
 
 class OnboardingDiagnostics(BaseModel):
@@ -1233,6 +1244,35 @@ async def complete_onboarding(request: CompleteOnboardingRequest):
         }
 
         slots = slot_summary.get("slots", {})
+
+        # [[Apr-23]] Fix #4: apply user-edited slot_overrides from the review
+        # screen. Overrides are keyed by slot_name → string value. Only apply
+        # overrides for slots that exist in the extracted set (don't let the
+        # client inject new slots, which could poison downstream persona gen
+        # if they smuggle in unvalidated fields). Overrides REPLACE the
+        # extracted value — the user explicitly corrected what the LLM got wrong.
+        if request.slot_overrides:
+            applied = []
+            skipped = []
+            for override_name, override_value in request.slot_overrides.items():
+                if override_name in slots and override_value is not None:
+                    existing = slots[override_name]
+                    if isinstance(existing, dict):
+                        existing["value"] = override_value
+                    else:
+                        slots[override_name] = override_value
+                    applied.append(override_name)
+                else:
+                    skipped.append(override_name)
+            if applied:
+                logger.info(
+                    f"[SlotOverrides] Applied {len(applied)} user edits for user {user_id}: {applied}"
+                )
+            if skipped:
+                logger.warning(
+                    f"[SlotOverrides] Skipped {len(skipped)} override(s) for user {user_id} (not in extracted slots): {skipped}"
+                )
+
         for slot_name, slot_data in slots.items():
             # Skip internal/metadata slots
             if slot_name in INTERNAL_SLOTS_TO_SKIP:

@@ -197,12 +197,159 @@ class SupabaseOnboardingAdapter:
         if not slots:
             return 0
 
+        # Apr-24 fix: drop objective-incompatible slots before save, and run a cleanup sweep
+        # of already-stored stale slots once primary_goal is known. Prevents mentorship-specific
+        # slots (e.g. "Mentorship Format") surfacing for Service Providers — and the general
+        # class of "slot extracted early before primary_goal was set, stays stored even after
+        # the filter would exclude it." See filter_slots_by_objective in llm_slot_extractor.py
+        # (BUG-045 FIX). This wraps that filter so it applies at the persistence layer too,
+        # not just at the LLM extraction layer.
+        incoming_count = len(slots)
+        slots = await self._drop_objective_incompatible_slots(user_id, slots)
+        if not slots:
+            logger.info(
+                f"save_slots_batch: all {incoming_count} slots filtered out by objective — nothing to save"
+            )
+            return 0
+
         count = await asyncio.to_thread(self._save_slots_sync, user_id, slots)
 
         # Validate persistence
         await self._validate_persistence(user_id, slots)
 
+        # Cleanup sweep: if this batch set/changed primary_goal, delete any previously-stored
+        # slots that no longer fit the new objective. Idempotent — safe to run on every save.
+        await self._cleanup_stale_slots_by_objective(user_id)
+
         return count
+
+    async def _drop_objective_incompatible_slots(
+        self,
+        user_id: str,
+        slots: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter out slots that don't fit the user's primary_goal (if known).
+
+        Looks up primary_goal from either this batch (if it's being set now) or
+        the existing stored slots. Then runs filter_slots_by_objective to get the
+        allowed-slot set and drops any incoming slot not in it. If primary_goal
+        is unknown, passes all slots through unchanged (early-conversation grace).
+        """
+        try:
+            # Local import to avoid circular dep at module load time.
+            from app.services.llm_slot_extractor import (
+                filter_slots_by_objective,
+                SLOT_DEFINITIONS,
+            )
+        except Exception as e:
+            logger.warning(f"objective filter unavailable, skipping: {e}")
+            return slots
+
+        # Determine primary_goal: batch value wins over stored value (user is updating it).
+        primary_goal: Optional[str] = None
+        for slot in slots:
+            if slot.get("name") == "primary_goal":
+                val = slot.get("value")
+                if isinstance(val, str) and val.strip():
+                    primary_goal = val.strip()
+                break
+        if not primary_goal:
+            try:
+                stored = await asyncio.to_thread(self._get_user_slots_sync_internal, user_id)
+                pg_val = stored.get("primary_goal", {}).get("value")
+                if isinstance(pg_val, str) and pg_val.strip():
+                    primary_goal = pg_val.strip()
+            except Exception as e:
+                logger.debug(f"could not fetch stored primary_goal for filter: {e}")
+
+        if not primary_goal:
+            return slots  # Early-conversation grace — no filtering until goal known.
+
+        allowed = set(filter_slots_by_objective(SLOT_DEFINITIONS, primary_goal).keys())
+        kept: List[Dict[str, Any]] = []
+        dropped: List[str] = []
+        for slot in slots:
+            name = slot.get("name")
+            # primary_goal itself always passes (it's the filter key).
+            if name == "primary_goal" or name in allowed:
+                kept.append(slot)
+            else:
+                dropped.append(str(name))
+        if dropped:
+            logger.info(
+                f"[obj-filter] user {user_id[:8]}... goal='{primary_goal}' dropped {len(dropped)} "
+                f"incompatible slot(s) from save: {dropped}"
+            )
+        return kept
+
+    async def _cleanup_stale_slots_by_objective(self, user_id: str) -> None:
+        """
+        Delete already-stored slots that don't fit the user's current primary_goal.
+
+        Handles the case where a slot (e.g. mentorship_format) was extracted early
+        before primary_goal was known, got stored, then primary_goal was later
+        resolved to something incompatible (e.g. 'Offer Services'). Without this
+        cleanup, the stale slot would remain in the DB and surface in downstream
+        consumers (AI summary, focus_slot embeddings, review UI).
+
+        Idempotent: if nothing is stale, runs a cheap SELECT and returns.
+        """
+        try:
+            from app.services.llm_slot_extractor import (
+                filter_slots_by_objective,
+                SLOT_DEFINITIONS,
+            )
+        except Exception as e:
+            logger.warning(f"objective cleanup unavailable, skipping: {e}")
+            return
+
+        try:
+            stored = await asyncio.to_thread(self._get_user_slots_sync_internal, user_id)
+        except Exception as e:
+            logger.debug(f"cleanup could not read stored slots: {e}")
+            return
+
+        pg_val = stored.get("primary_goal", {}).get("value") if isinstance(stored.get("primary_goal"), dict) else None
+        if not (isinstance(pg_val, str) and pg_val.strip()):
+            return  # No goal set yet — nothing to filter against.
+        primary_goal = pg_val.strip()
+
+        allowed = set(filter_slots_by_objective(SLOT_DEFINITIONS, primary_goal).keys())
+        stale: List[str] = [
+            name for name in stored.keys()
+            if name != "primary_goal" and name not in allowed
+        ]
+        if not stale:
+            return
+
+        def _delete_stale() -> int:
+            conn = None
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM onboarding_answers WHERE user_id = %s AND slot_name = ANY(%s)",
+                    (user_id, stale),
+                )
+                deleted = cursor.rowcount
+                conn.commit()
+                return deleted
+            except Exception as e:
+                if conn:
+                    conn.rollback()
+                logger.error(f"cleanup delete failed for user {user_id[:8]}...: {e}")
+                return 0
+            finally:
+                if conn:
+                    conn.close()
+
+        deleted = await asyncio.to_thread(_delete_stale)
+        if deleted:
+            logger.info(
+                f"[obj-cleanup] user {user_id[:8]}... goal='{primary_goal}' deleted {deleted} "
+                f"stale slot(s): {stale}"
+            )
 
     async def _validate_persistence(self, user_id: str, saved_slots: List[Dict[str, Any]]) -> None:
         """Validate that slots were actually persisted to database."""

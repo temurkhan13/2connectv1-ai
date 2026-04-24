@@ -199,60 +199,138 @@ class EmbeddingService:
         """
         Generate and store embeddings for user's requirements and offerings.
 
+        Apr-24 fix (Pierre Johnson test): previously returned `success_count > 0`,
+        so a silent partial failure (one text embeds, the other returns None from
+        the LLM provider) looked like success to callers. Downstream matching then
+        tripped `[LLMMatch] No requirements embedding for <user_id>` and the user
+        got 0 matches — no ERROR, no retry, no visibility. Hit 4 users in prod
+        (Pierre, Helen Stavros, Chen Wei, Beth — last one missing offerings, not
+        requirements, proving it's a generic partial-failure class not an
+        objective-branch bug).
+
+        Now:
+          1. Each embedding attempt retries up to 3x with exponential backoff
+             before giving up (handles transient Gemini/OpenAI rate-limits and
+             5xx flakes that previously wrote nothing).
+          2. Result is `True` only if every REQUESTED embedding (i.e. every
+             non-empty input text) was actually persisted. Partial success
+             logs at ERROR with the specific missing type so ops can see it
+             and a downstream caller can decide whether to retry the whole
+             batch rather than proceed to matching with an incomplete fixture.
+
         Args:
             user_id: User identifier
-            requirements: User's requirements text
-            offerings: User's offerings text
+            requirements: User's requirements text (empty string = skip)
+            offerings: User's offerings text (empty string = skip)
 
         Returns:
-            True if successful, False otherwise
+            True only if all requested embeddings were successfully stored.
         """
         try:
             logger.info(f"Generating and storing embeddings for user {user_id}")
-            success_count = 0
 
             # Get version metadata for tracking
             versioning = _get_versioning_service()
             version_metadata = versioning.get_version_metadata() if versioning else {}
 
+            requested: list[str] = []
+            stored: list[str] = []
             if requirements:
-                req_embedding = self.generate_embedding(requirements)
-                if req_embedding:
-                    metadata = {
-                        'text_length': len(requirements),
-                        **version_metadata
-                    }
-                    if postgresql_adapter.store_embedding(
-                        user_id=user_id,
-                        embedding_type='requirements',
-                        vector_data=req_embedding,
-                        metadata=metadata
-                    ):
-                        success_count += 1
-                        logger.info(f"Stored requirements embedding for user {user_id}")
-
+                requested.append("requirements")
+                if self._try_store_embedding(
+                    user_id=user_id,
+                    embedding_type="requirements",
+                    text=requirements,
+                    version_metadata=version_metadata,
+                ):
+                    stored.append("requirements")
             if offerings:
-                off_embedding = self.generate_embedding(offerings)
-                if off_embedding:
-                    metadata = {
-                        'text_length': len(offerings),
-                        **version_metadata
-                    }
-                    if postgresql_adapter.store_embedding(
-                        user_id=user_id,
-                        embedding_type='offerings',
-                        vector_data=off_embedding,
-                        metadata=metadata
-                    ):
-                        success_count += 1
-                        logger.info(f"Stored offerings embedding for user {user_id}")
+                requested.append("offerings")
+                if self._try_store_embedding(
+                    user_id=user_id,
+                    embedding_type="offerings",
+                    text=offerings,
+                    version_metadata=version_metadata,
+                ):
+                    stored.append("offerings")
 
-            logger.info(f"Successfully stored {success_count} embeddings for user {user_id}")
-            return success_count > 0
+            missing = [t for t in requested if t not in stored]
+            if missing:
+                logger.error(
+                    f"[embedding-partial-failure] user={user_id} "
+                    f"requested={requested} stored={stored} missing={missing} "
+                    f"— returning False so downstream matching is NOT run on an "
+                    f"incomplete fixture"
+                )
+                return False
+
+            logger.info(
+                f"Successfully stored {len(stored)}/{len(requested)} embeddings "
+                f"for user {user_id}: {stored}"
+            )
+            return True
 
         except Exception as e:
             logger.error(f"Error storing user embeddings for {user_id}: {str(e)}")
             return False
+
+    def _try_store_embedding(
+        self,
+        user_id: str,
+        embedding_type: str,
+        text: str,
+        version_metadata: Dict[str, Any],
+        max_attempts: int = 3,
+    ) -> bool:
+        """
+        Generate + persist a single user embedding with bounded retry.
+
+        Returns True only if the vector ended up in pgvector. Logs each retry
+        and the final failure reason. With max_attempts=3 the wait schedule is
+        1s after the first failure, 4s after the second (no wait after the
+        final attempt) — short enough to not noticeably slow the success path,
+        long enough to ride out transient provider rate-limits and 5xx blips.
+        Worst-case overhead on the failure path is ~5s before we return False.
+        """
+        import time
+        last_reason = "unknown"
+        for attempt in range(1, max_attempts + 1):
+            try:
+                embedding = self.generate_embedding(text)
+                if not embedding:
+                    last_reason = "generate_embedding returned None (provider error)"
+                else:
+                    metadata = {"text_length": len(text), **version_metadata}
+                    persisted = postgresql_adapter.store_embedding(
+                        user_id=user_id,
+                        embedding_type=embedding_type,
+                        vector_data=embedding,
+                        metadata=metadata,
+                    )
+                    if persisted:
+                        if attempt > 1:
+                            logger.warning(
+                                f"[embedding-retry-ok] user={user_id} "
+                                f"type={embedding_type} succeeded on attempt {attempt}"
+                            )
+                        logger.info(f"Stored {embedding_type} embedding for user {user_id}")
+                        return True
+                    last_reason = "postgresql_adapter.store_embedding returned False"
+            except Exception as e:
+                last_reason = f"exception: {e!r}"
+            if attempt < max_attempts:
+                wait_s = (attempt * attempt)  # 1s, 4s
+                logger.warning(
+                    f"[embedding-retry] user={user_id} type={embedding_type} "
+                    f"attempt={attempt}/{max_attempts} reason='{last_reason}' "
+                    f"sleeping {wait_s}s before retry"
+                )
+                time.sleep(wait_s)
+        logger.error(
+            f"[embedding-final-failure] user={user_id} type={embedding_type} "
+            f"gave up after {max_attempts} attempts last_reason='{last_reason}'"
+        )
+        return False
 
     def get_stats(self) -> Dict[str, Any]:
         """

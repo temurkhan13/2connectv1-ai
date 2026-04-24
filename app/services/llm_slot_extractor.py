@@ -175,23 +175,67 @@ SLOT_DEFINITIONS = {
     "primary_goal": {
         "description": "What the user wants to achieve on the platform",
         "options": ["Raise Funding", "Find Co-founder", "Seek Mentorship", "Offer Mentorship", "Explore Partnerships", "Invest in Startups", "Offer Services", "Recruit", "Find New Job", "Seek Networking", "Hire Talent", "Launch Product"],
-        "extraction_hint": "KEYWORD-TO-GOAL MAPPING (extract on first match): "
-                          "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
-                          "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
-                          "• MENTORSHIP DIRECTION IS CRITICAL: "
-                          "  - If user wants to RECEIVE mentorship ('find a mentor', 'looking for guidance', 'need advice', 'learn from', 'seeking mentor') → 'Seek Mentorship'. "
-                          "  - If user wants to GIVE mentorship ('I want to mentor', 'offer mentorship', 'guide others', 'give back', 'help founders', 'advise', 'coach') → 'Offer Mentorship'. "
-                          "• 'partnership', 'collaborate', 'strategic alliance', 'joint venture' → 'Explore Partnerships'. "
-                          "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
-                          "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
-                          "• 'network', 'connections', 'meet people', 'expand my network' → 'Seek Networking'. "
-                          "• 'hiring', 'build team', 'need talent', 'looking for developers', 'need engineers' → 'Hire Talent'. "
-                          "• 'recruiter', 'recruitment firm', 'staffing', 'headhunter', 'talent acquisition', 'placing candidates', 'executive search' → 'Recruit'. "
-                          "• 'launch', 'go-to-market', 'GTM', 'product launch', 'market entry', 'release product' → 'Launch Product'. "
-                          "• 'services', 'consulting', 'agency', 'freelance', 'offer expertise', 'provide services' → 'Offer Services'. "
-                          "IMPORTANT: A recruiter/recruitment firm is NOT a generic service provider. If someone runs a recruitment/staffing/headhunting business, use 'Recruit' not 'Offer Services'. "
-                          "CRITICAL: If user says 'I need a technical co-founder' or 'looking for someone to build with', extract 'Find Co-founder' IMMEDIATELY. "
-                          "ALWAYS extract something - never leave blank if ANY goal-related intent is mentioned."
+        "extraction_hint": (
+            # Apr-25 F/u 20 rewrite — semantic disambiguation tree prepended to
+            # keyword mapping. Canary of 11 Seek Networking users showed 8/11
+            # were drift cases — Seek Networking had become a dumping ground
+            # for users whose operational intent was burrowed under relational
+            # framing ("connect", "meet", "network"). [[Rules/CODING-DISCIPLINE]]
+            # Rule 5 fix: reason about the concept, not substrings.
+
+            "PRIORITY DISAMBIGUATION — apply THESE FIRST, before any keyword matching below.\n\n"
+
+            "QUESTION 1 — Does the user have a SPECIFIC OPERATIONAL PROJECT they're actively running or actively progressing? A project is operational if there's a concrete thing happening NOW: a shipped product with users, an active fundraise, a role they're hiring for, a job search underway, an M&A mandate, a specific set of people they need to reach for a BUSINESS purpose (distribution targets, acquirers, speakers for an event, regulators, etc.).\n"
+            "   • \"Launched 3 weeks back, 11 users, converting to paid\" → Launch Product\n"
+            "   • \"Raising $2M seed, closing in two months\" → Raise Funding\n"
+            "   • \"Looking for investors actively deploying into [sector]\" → Raise Funding\n"
+            "   • \"Hiring a CTO / Head of Product\" → Hire Talent\n"
+            "   • \"Job-hunting / exploring my next role\" → Find New Job\n"
+            "   • \"Seeking founders building in [specific segment] for acquisition\" → Invest in Startups (M&A counts)\n"
+            "   • \"Need introductions to FDA reviewers / regulators for my trial\" → Launch Product (operational need for a product in market)\n"
+            "   • \"Recruiting speakers for my conference\" → Recruit\n"
+            "   • \"Need to reach training and placement officers at universities\" → Explore Partnerships (B2B outreach to a named cohort)\n"
+            "IF QUESTION 1 HITS A MATCH: that goal wins EVEN IF the user also describes their approach as \"connect\", \"meet peers\", \"build relationships\", \"network\" — those words describe the HOW, not the WHY. The operational project is the WHY.\n\n"
+
+            "QUESTION 2 — Does the user explicitly describe wanting a co-founder? Accept SOFT framings, not just literal \"I need a cofounder\":\n"
+            "   • \"Open to potential co-founders\" → Find Co-founder\n"
+            "   • \"Would consider the right cofounder\" → Find Co-founder\n"
+            "   • \"Exploring / looking for a technical partner\" → Find Co-founder\n"
+            "   • \"Want someone to build with\" → Find Co-founder\n"
+            "IF QUESTION 2 HITS: Find Co-founder wins over Seek Networking, even if the cofounder intent is mentioned alongside other goals.\n\n"
+
+            "QUESTION 3 — Is the user GIVING or RECEIVING mentorship?\n"
+            "   • Receiving: \"find a mentor\", \"looking for guidance\", \"need advice\", \"learn from operators who've done X\" → Seek Mentorship\n"
+            "   • Giving: \"want to mentor\", \"guide others\", \"give back\", \"help founders\", \"coach\" → Offer Mentorship\n\n"
+
+            "QUESTION 4 — ONLY if questions 1-3 all return NO: is the user's primary framing broad relationship-building for its own sake, with NO specific operational project in market? Examples of LEGITIMATE Seek Networking:\n"
+            "   • VC/angel wanting peer investor network for deal-flow sharing, NOT looking for startups to invest in → Seek Networking\n"
+            "   • Executive wanting peer-level exchange with others in same function, no project → Seek Networking\n"
+            "   • Founder seeking peer support for mental health / founder journey / general camaraderie → Seek Networking\n"
+            "IF QUESTION 4: Seek Networking.\n\n"
+
+            "CONCRETE COUNTER-EXAMPLES — real user cases the old keyword matcher got wrong:\n"
+            "   • \"Launched 3 weeks back, trying to convert first paying ones, would love to meet peer founders who cracked early GTM\" → Launch Product (NOT Seek Networking — \"meet peer founders\" is the HOW of getting GTM help for the shipped product)\n"
+            "   • \"Building my professional network, open to potential co-founders and investors\" → Find Co-founder (NOT Seek Networking — cofounder intent is explicit even if softly framed)\n"
+            "   • \"Looking for someone to help my company go to the next level\" → Launch Product OR Seek Mentorship (NOT Seek Networking — this is operational GTM/advisor seeking)\n"
+            "   • \"Recruiting speakers for my B2B SaaS conference\" → Recruit (NOT Seek Networking — specific operational recruitment)\n"
+            "   • \"Fortune 500 M&A team seeking cybersecurity founders for acquisition\" → Invest in Startups (NOT Seek Networking — M&A counts as investing)\n\n"
+
+            # Keyword mapping preserved as fallback for cases question-1-4 don't resolve cleanly.
+            "FALLBACK KEYWORD-TO-GOAL MAPPING (use only if the priority tree above didn't resolve):\n"
+            "• 'co-founder', 'cofounder', 'technical partner', 'business partner', 'need someone to build', 'looking for a partner' → 'Find Co-founder'. "
+            "• 'raise', 'funding', 'investors', 'seed', 'series', 'investment', 'capital' → 'Raise Funding'. "
+            "• 'partnership', 'collaborate', 'strategic alliance', 'joint venture' → 'Explore Partnerships'. "
+            "• 'invest', 'angel', 'deploy capital', 'fund startups' → 'Invest in Startups'. "
+            "• 'job', 'career', 'employment', 'role', 'position', 'hire me' → 'Find New Job'. "
+            "• 'network', 'connections', 'meet people', 'expand my network' → 'Seek Networking' (but see Question 4 above — only if no operational project). "
+            "• 'hiring', 'build team', 'need talent', 'looking for developers', 'need engineers' → 'Hire Talent'. "
+            "• 'recruiter', 'recruitment firm', 'staffing', 'headhunter', 'talent acquisition', 'placing candidates', 'executive search' → 'Recruit'. "
+            "• 'launch', 'go-to-market', 'GTM', 'product launch', 'market entry', 'release product' → 'Launch Product'. "
+            "• 'services', 'consulting', 'agency', 'freelance', 'offer expertise', 'provide services' → 'Offer Services'. "
+            "IMPORTANT: A recruiter/recruitment firm is NOT a generic service provider. If someone runs a recruitment/staffing/headhunting business, use 'Recruit' not 'Offer Services'. "
+            "ALWAYS extract something — never leave blank if ANY goal-related intent is mentioned."
+        )
     },
     "industry_focus": {
         "description": "Industries or sectors the user focuses on",

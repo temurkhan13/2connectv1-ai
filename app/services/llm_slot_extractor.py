@@ -369,7 +369,18 @@ SLOT_DEFINITIONS = {
     "dealbreakers": {
         "description": "What would make the user immediately pass on a connection - absolute non-starters",
         "type": "text",
-        "extraction_hint": "Extract clear rejections and non-starters: 'not interested in generalist VCs' → 'generalist VCs', 'won't work with agencies' → 'agencies', 'no crypto' → 'crypto projects'. CRITICAL: This is DIFFERENT from 'requirements' - dealbreakers are EXCLUSIONS, things they actively avoid. CONCISE ONLY: 3-8 words max per item, semicolon-separated."
+        "extraction_hint": (
+            "Extract ONLY items describing TYPES OF PEOPLE or SITUATIONS the user refuses to CONNECT WITH. "
+            "Examples: 'not interested in generalist VCs' → 'generalist VCs'; 'won't work with pre-seed founders' → 'pre-seed companies'; 'no crypto projects' → 'crypto projects'; 'avoid consumer/marketplace deals' → 'consumer; marketplace'. "
+            "CRITICAL SEMANTIC TEST — apply to every candidate phrase: "
+            "'Would this user REJECT a connection because of this?' → dealbreaker. "
+            "'Would this user HAPPILY connect but just not personally do this work / refer it elsewhere?' → NOT a dealbreaker (that's service scope, not avoidance). "
+            "CONCRETE FAILURE CASE to prevent: a fractional CFO says 'I'll intro good lawyers or comms people when it comes up but don't pretend to do that work myself.' Lawyers/comms are services the user DOESN'T PROVIDE, not partner types the user AVOIDS. Do NOT extract 'legal' or 'comms' as dealbreakers here. The user is happy to meet founders who need legal or comms help; they just refer the work elsewhere. "
+            "RULE: phrases like 'I don't do X myself', 'not my scope', 'refer out', 'hand off', 'I'll intro them to someone' → service scope, NOT dealbreakers. "
+            "Phrases like 'won't work with X', 'refuse to match with X', 'no interest in X people', 'absolute no to X founders' → dealbreakers. "
+            "Dealbreakers are DIFFERENT from 'requirements' — requirements = what they seek, dealbreakers = what they reject. "
+            "CONCISE: 3-8 words max per item, semicolon-separated."
+        )
     },
     # Conditional identity slots — activated by dependency triggers
     "achievement": {

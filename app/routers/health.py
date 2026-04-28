@@ -146,7 +146,7 @@ async def get_system_health():
     # 2. Backend Service
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get("https://twoconnectv1-backend.onrender.com/api/v1/health")
+            resp = await client.get("https://api.2connect.ai/api/v1/health")
             if resp.status_code == 200:
                 health["services"]["components"]["backend_service"] = {
                     "status": "healthy",
@@ -168,7 +168,7 @@ async def get_system_health():
     # 3. Frontend
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get("https://2connectv1-frontend.vercel.app/")
+            resp = await client.get("https://app.2connect.ai/")
             if resp.status_code == 200:
                 health["services"]["components"]["frontend"] = {
                     "status": "healthy",

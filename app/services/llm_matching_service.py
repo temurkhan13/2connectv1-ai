@@ -21,6 +21,14 @@ from app.adapters.postgresql import postgresql_adapter
 from app.adapters.supabase_profiles import UserProfile, UserMatches
 from app.adapters.supabase_onboarding import supabase_onboarding_adapter
 from app.services.llm_fallback import call_with_fallback
+# Apr-28 Phase 4 A6: lightweight Redis counters for admin-dashboard observability.
+# All call sites are wrapped in `try/except` so a Redis hiccup or counter bug
+# can never break matching. See app/utils/match_counters.py for design.
+try:
+    from app.utils.match_counters import incr as _counter_incr
+except Exception:  # pragma: no cover — defensive
+    def _counter_incr(_name: str) -> None:  # type: ignore[no-redef]
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -380,6 +388,10 @@ def _score_pair(
     cases like Temur's "pure infra plays" vs. Elena's "inference
     optimization platform" — semantic match, lexical miss.
     """
+    # Apr-28 Phase 4 A6: count every scoring call. Wrapped via _counter_incr
+    # which itself is try/except-safe.
+    try: _counter_incr('scoring_calls_total')
+    except Exception: pass
     try:
         # Apr-22 Phase 1 prompt caching (Design B — cached prefix includes USER A):
         # - system: SCORING_SYSTEM_RULES (~2000 tok, stable site-wide) + SCORING_USER_A_TEMPLATE
@@ -465,6 +477,10 @@ def _score_pair(
 
         return parsed
     except Exception as e:
+        # Apr-28 Phase 4 A6: count parse/exception failures. F/u 30 baseline
+        # was 89% (8 of 9) on Sara's run; post-Fix-#7 should be <1%.
+        try: _counter_incr('scoring_parse_failure')
+        except Exception: pass
         logger.error(f"LLM scoring failed: {e}")
         return {"score": 0, "reason": f"error: {str(e)[:50]}", "breakdown": None}
 
@@ -845,6 +861,9 @@ def find_matches(
                     ]
                     if len(function_matched) >= MIN_RECIPROCAL_MATCHES:
                         candidates = function_matched
+                        # Apr-28 Phase 4 A6
+                        try: _counter_incr('function_filter_activated')
+                        except Exception: pass
                         logger.info(
                             f"[LLMMatch] {user_id[:12]}... Function filter: "
                             f"{pre_fn} → {len(candidates)} (desired={desired_function!r}, "
@@ -895,6 +914,9 @@ def find_matches(
                 if len(reciprocal_cands) >= MIN_RECIPROCAL_MATCHES:
                     # Quality mode: hard filter to reciprocal only
                     candidates = reciprocal_cands
+                    # Apr-28 Phase 4 A6
+                    try: _counter_incr('reciprocity_hard_fired')
+                    except Exception: pass
                     logger.info(
                         f"[LLMMatch] {user_id[:12]}... Reciprocity HARD: "
                         f"{pre_recip} → {len(candidates)} reciprocal "
@@ -905,6 +927,9 @@ def find_matches(
                     adjacent_cands.sort(key=lambda c: c.get('similarity_score', 0), reverse=True)
                     budget = pre_recip - len(reciprocal_cands)
                     candidates = reciprocal_cands + adjacent_cands[:budget]
+                    # Apr-28 Phase 4 A6
+                    try: _counter_incr('reciprocity_soft_fired')
+                    except Exception: pass
                     logger.info(
                         f"[LLMMatch] {user_id[:12]}... Reciprocity SOFT (fallback): "
                         f"{len(reciprocal_cands)} reciprocal + {min(budget, len(adjacent_cands))} adjacent "
@@ -989,6 +1014,18 @@ def find_matches(
                         f"industry_match={breakdown.get('industry_match', '?')})"
                     )
                     llm_score = floor
+                    # Apr-28 Phase 4 A6
+                    try: _counter_incr('calibration_floor_applied')
+                    except Exception: pass
+
+            # Apr-28 Phase 4 A6 — count drops below LLM_SCORE_MIN as a proxy
+            # for "hard rule fired" (Rule 6 dealbreaker, Rule 2 score-reason
+            # coherence cap, etc.). The actual rule attribution lives inside
+            # the LLM's internal reasoning; here we just observe the score
+            # outcome.
+            if llm_score < LLM_SCORE_MIN:
+                try: _counter_incr('scoring_score_below_min')
+                except Exception: pass
 
             if llm_score >= LLM_SCORE_MIN:
                 return LLMMatch(

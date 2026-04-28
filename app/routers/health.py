@@ -1058,6 +1058,80 @@ async def verify_test_users():
         return {"success": False, "message": str(e)}
 
 
+@router.get("/admin/match-quality-counters")
+async def match_quality_counters(days: int = 30):
+    """Phase 4 A6: per-day match-quality counter rollup for admin dashboard.
+
+    Reads Redis counters populated by `app/utils/match_counters.py` writes
+    at 7 instrumentation sites in `llm_matching_service.py`. Returns:
+
+      {
+        "code": 200,
+        "result": {
+          "period_days": <N>,
+          "summary": {<counter_name>: <total over N days>, ...},
+          "by_day":  {<counter_name>: {<YYYY-MM-DD>: <count>, ...}, ...},
+          "rates": {  // derived helpers
+            "parse_failure_rate": parse_failure / scoring_calls_total,
+            "score_below_min_rate": score_below_min / scoring_calls_total,
+            "calibration_floor_rate": floor_applied / scoring_calls_total,
+          }
+        }
+      }
+
+    Counter writes are silent-on-error (try/except wrapped) so a Redis
+    outage never breaks matching. Read here is also silent-on-error;
+    returns shape with empty dicts if Redis unreachable.
+
+    See vault Analyses/2026-04-28_admin-dashboard-phase4-design.md for
+    the design + Apr-28 session log F/u 11 for ship details.
+    """
+    try:
+        from app.utils.match_counters import read_counters, summary as counter_summary
+    except Exception as e:
+        return {
+            "code": 500,
+            "message": f"Counter module unavailable: {e}",
+            "result": None,
+        }
+
+    days_capped = max(1, min(int(days or 30), 90))
+    by_day = read_counters(days=days_capped)
+    totals = counter_summary(days=days_capped)
+
+    total_calls = max(1, totals.get("scoring_calls_total", 0))  # avoid div-by-zero
+
+    rates = {
+        "parse_failure_rate": round(
+            totals.get("scoring_parse_failure", 0) / total_calls, 4
+        ),
+        "score_below_min_rate": round(
+            totals.get("scoring_score_below_min", 0) / total_calls, 4
+        ),
+        "calibration_floor_rate": round(
+            totals.get("calibration_floor_applied", 0) / total_calls, 4
+        ),
+    }
+
+    return {
+        "code": 200,
+        "message": "success",
+        "result": {
+            "period_days": days_capped,
+            "summary": totals,
+            "by_day": by_day,
+            "rates": rates,
+            "notes": (
+                "Counters populated lazily by matching pipeline. Empty buckets are "
+                "expected on days with no matching activity. 'scoring_score_below_min' "
+                "is a proxy for 'hard rule fired' (Rule 6 dealbreaker, Rule 2 "
+                "score-reason coherence cap, etc.) — actual rule attribution lives "
+                "inside the LLM's reasoning."
+            ),
+        },
+    }
+
+
 @router.get("/admin/wiring-audit")
 async def wiring_audit():
     """

@@ -172,7 +172,7 @@ async def get_system_health():
             if resp.status_code == 200:
                 health["services"]["components"]["frontend"] = {
                     "status": "healthy",
-                    "detail": "Vercel deployment live"
+                    "detail": "CloudFront + S3 live"
                 }
             else:
                 health["services"]["components"]["frontend"] = {
